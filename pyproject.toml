@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "bird-cv"
+version = "0.1.0"
+description = "Caged bird migratory behavior detection"
+authors = ["Sean Dougherty <sldough21@gmail.com>"]
+license = "LICENSE"
+readme = "README.md"
+
+
+[tool.poetry.dependencies]
+python = ">=3.11"
+numpy = "^2.0.0"
+pandas = "2.2.2"
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

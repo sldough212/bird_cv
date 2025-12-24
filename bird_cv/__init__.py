@@ -1,0 +1,1 @@
+"""Module initialization for bird_cv package."""
