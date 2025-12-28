@@ -10,6 +10,7 @@ init:
 	@echo "Virtual environment created at $(VENV)"
 	@echo "source $(VENV)/bin/activate"
 	poetry install
+	pre-commit install
 
 # Remove the virtual environment
 clean:
