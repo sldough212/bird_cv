@@ -117,8 +117,10 @@ def get_label_studio_client(
         [
             "label-studio",
             "start",
-            "--port", str(port),
-            "--host", host,
+            "--port",
+            str(port),
+            "--host",
+            host,
         ],
         stderr=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -131,9 +133,7 @@ def get_label_studio_client(
             logger.info("Label Studio connection verified")
             break
         except Exception:
-            logger.debug(
-                "Label Studio not ready yet (attempt %d/30)", attempt + 1
-            )
+            logger.debug("Label Studio not ready yet (attempt %d/30)", attempt + 1)
             time.sleep(1)
     else:
         logger.error("Failed to connect to Label Studio at %s", base_url)
@@ -179,9 +179,7 @@ def export_label_studio_annotations(
 
     job = client.projects.exports.get(id=project_id, export_pk=export_id)
     if job.status != "completed":
-        logger.error(
-            "Export snapshot not ready (status=%s)", job.status
-        )
+        logger.error("Export snapshot not ready (status=%s)", job.status)
         raise BadRequestError(
             status_code=409,
             body=f"Export not ready: {job.status}",
