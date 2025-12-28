@@ -174,6 +174,7 @@ def export_label_studio_annotations(
     export = client.projects.exports.create(
         id=project_id,
         title=snapshot_title,
+        serialization_options={"interpolate_key_frames": True},
     )
     export_id = export.id
 
@@ -187,6 +188,7 @@ def export_label_studio_annotations(
 
     logger.info("Downloading annotations to %s", out_path)
 
+    out_path.mkdir(parents=True, exist_ok=True)
     with open(out_path, "wb") as f:
         for chunk in client.projects.exports.download(
             id=project_id,
