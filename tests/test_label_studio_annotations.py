@@ -231,7 +231,7 @@ def test_get_label_studio_annotations(
         port=8080,
         api_key="APIKEY",
         project_name="Test Project",
-        out_path=out_path,
+        output_path=out_path,
     )
 
     mock_port.assert_called_once()
