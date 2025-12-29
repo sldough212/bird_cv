@@ -145,7 +145,7 @@ def get_label_studio_client(
 def export_label_studio_annotations(
     client: LabelStudio,
     project_id: int,
-    out_path: Path,
+    output_path: Path,
     snapshot_title: str | None = None,
 ) -> None:
     """Export annotations for a Label Studio project to a JSON file.
@@ -156,7 +156,7 @@ def export_label_studio_annotations(
     Args:
         client (LabelStudio): Authenticated Label Studio client.
         project_id (int): ID of the project to export.
-        out_path (Path): File path where the exported JSON will be saved.
+        output_path (Path): File path path where the exported JSON will be saved.
         snapshot_title (st | None): Name assigned to exported snapshot.
 
     Raises:
@@ -186,10 +186,10 @@ def export_label_studio_annotations(
             body=f"Export not ready: {job.status}",
         )
 
-    logger.info("Downloading annotations to %s", out_path)
+    logger.info("Downloading annotations to %s", output_path)
 
-    out_path.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "wb") as f:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "wb") as f:
         for chunk in client.projects.exports.download(
             id=project_id,
             export_pk=export_id,
@@ -198,7 +198,7 @@ def export_label_studio_annotations(
         ):
             f.write(chunk)
 
-    logger.info("Annotations saved to %s", out_path)
+    logger.info("Annotations saved to %s", output_path)
 
 
 def get_project_id_from_name(client: LabelStudio, project_name: str) -> int:
@@ -235,7 +235,7 @@ def get_label_studio_annotations(
     port: int,
     api_key: str,
     project_name: str,
-    out_path: Path,
+    output_path: Path,
     snapshot_title: str | None = None,
 ) -> None:
     """Export Label Studio annotations for a project by name.
@@ -249,7 +249,7 @@ def get_label_studio_annotations(
         port (int): Starting port number to try.
         api_key (str): API key for Label Studio authentication.
         project_name (str): Name (title) of the project to export.
-        out_path (Path): Destination file path for exported annotations.
+        output_path (Path): Destination file path for exported annotations.
         snapshot_title (str | None): Name assigned to exported snapshot.
     """
     logger.info("Starting annotation export for project '%s'", project_name)
@@ -270,7 +270,7 @@ def get_label_studio_annotations(
     export_label_studio_annotations(
         client=client,
         project_id=project_id,
-        out_path=out_path,
+        output_path=output_path,
         snapshot_title=snapshot_title,
     )
 
