@@ -146,6 +146,7 @@ def export_label_studio_annotations(
     client: LabelStudio,
     project_id: int,
     output_path: Path,
+    interpolate_frames: bool = True,
     snapshot_title: str | None = None,
 ) -> None:
     """Export annotations for a Label Studio project to a JSON file.
@@ -157,6 +158,7 @@ def export_label_studio_annotations(
         client (LabelStudio): Authenticated Label Studio client.
         project_id (int): ID of the project to export.
         output_path (Path): File path path where the exported JSON will be saved.
+        interpolate_frames (bool): Whether to interpolate frames in the exported JSON.
         snapshot_title (st | None): Name assigned to exported snapshot.
 
     Raises:
@@ -174,7 +176,8 @@ def export_label_studio_annotations(
     export = client.projects.exports.create(
         id=project_id,
         title=snapshot_title,
-        serialization_options={"interpolate_key_frames": True},
+        serialization_options={"interpolate_key_frames": interpolate_frames},
+        task_filter_options={"only_with_annotations": True},
     )
     export_id = export.id
 
@@ -236,6 +239,7 @@ def get_label_studio_annotations(
     api_key: str,
     project_name: str,
     output_path: Path,
+    interpolate_frames: bool = True,
     snapshot_title: str | None = None,
 ) -> None:
     """Export Label Studio annotations for a project by name.
@@ -250,6 +254,7 @@ def get_label_studio_annotations(
         api_key (str): API key for Label Studio authentication.
         project_name (str): Name (title) of the project to export.
         output_path (Path): Destination file path for exported annotations.
+        interpolate_frames (bool): Whether to interpolate frames in the exported JSON.
         snapshot_title (str | None): Name assigned to exported snapshot.
     """
     logger.info("Starting annotation export for project '%s'", project_name)
@@ -271,6 +276,7 @@ def get_label_studio_annotations(
         client=client,
         project_id=project_id,
         output_path=output_path,
+        interpolate_frames=interpolate_frames,
         snapshot_title=snapshot_title,
     )
 
