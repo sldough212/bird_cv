@@ -54,13 +54,39 @@ def get_label_tables(
 
     # Subselect frame metadata
     frames = (
-        annotations.select("video_id", "sequence", "labels", "id")
+        annotations.select("video_id", "sequence", "labels", "id", "framesCount")
         .with_columns(labels=pl.col("labels").list[0])
         .explode("sequence")
         .unnest("sequence")
+        .drop_nulls(subset="frame")
         .rename({"labels": "label", "id": "track_id"})
-        .select("video_id", "track_id", "label", "frame", "x", "y", "width", "height")
+        .select(
+            "video_id",
+            "track_id",
+            "label",
+            "frame",
+            "x",
+            "y",
+            "width",
+            "height",
+            "framesCount",
+        )
     )
+
+    # Groupby the track id to get the frame beginning and end
+    frames = frames.group_by("track_id").agg(
+        pl.col("video_id").first().alias("video_id"),
+        pl.col("label").first().alias("label"),
+        pl.col("frame").first().alias("frame_begin"),
+        pl.col("frame").last().alias("frame_end"),
+        pl.col("framesCount").first().alias("framesCount"),
+    )
+    frames = frames.with_columns(
+        pl.when(pl.col("frame_begin") == pl.col("frame_end"))
+        .then(pl.col("framesCount"))
+        .otherwise(pl.col("frame_end"))
+        .alias("frame_end")
+    ).drop("framesCount")
 
     # Save
     output_dir.mkdir(parents=True, exist_ok=True)
