@@ -31,26 +31,21 @@ def get_label_tables(
         .rename({"inner_id": "video_id"})
         .select("data", "video_id", "annotations")
         .unnest("data")
-        .with_columns(
-            pl.col("video")
-            .str.split("2021_bunting_clips")
-            .list[-1]
-            .str.replace("%2C", ",")
-            .alias("video_path")
-        )
-        .drop("video")
         .explode("annotations")
         .unnest("annotations")
         .drop("id")
         .explode("result")
         .unnest("result")
         .unnest("value")
+        .rename({"video": "video_path"})
     )
 
     # Subselect video metadata
-    videos = annotations.select(
-        "video_id", "video_path", "framesCount", "duration"
-    ).unique(subset="video_id")
+    videos = (
+        annotations.select("video_id", "video_path", "framesCount", "duration")
+        .unique(subset="video_id")
+        .with_columns(camera_id=pl.col("video_path").str.split("/").list[-2])
+    )
 
     # Subselect frame metadata
     frames = (
