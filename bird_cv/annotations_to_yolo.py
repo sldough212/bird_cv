@@ -6,6 +6,8 @@ from tqdm import tqdm
 from functools import partial
 from collections import defaultdict
 from typing import Any, Dict, Optional
+import polars as pl
+import numpy as np
 
 
 def process_item(
@@ -13,6 +15,7 @@ def process_item(
     path_to_videos: Path,
     path_to_output_frames: Path,
     path_to_output_labels: Path,
+    path_to_guidance: Path,
 ) -> None:
     """Process a single annotation item and write YOLO-format labels per frame.
 
@@ -44,6 +47,22 @@ def process_item(
 
     # Get a unique identifier for each video
     video_filename = video_path.replace("/", ".").replace(",", "%2C")
+
+    # Load in the guidance
+    guidance = pl.read_parquet(path_to_guidance)
+    video_guidance = guidance.filter(
+        pl.col("video_path")
+        .str.split("2021_bunting_clips/")
+        .list[-1]
+        .str.replace_all("%2C", ",")
+        == str(video_path)
+    )
+
+    # TODO: Should really do this from a single table containing train, val, and test
+    print(f"Working on {video_path}")
+    if video_guidance.is_empty():
+        print(f"Video {video_path} not in target")
+        return
 
     # Collect annotations per frame
     frame_annotations: Dict[int, list[str]] = defaultdict(list)
@@ -82,25 +101,38 @@ def process_item(
 
                 frame_annotations[frame_num].append(yolo_line)
 
+    target_frames = video_guidance.select("target_frames").to_numpy().squeeze()
+    ls_fps = video_guidance.select("fps").item()
+
     # Open video to extract frames
     cap = cv2.VideoCapture(full_video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+
+    # Readjust the target frames back to the original video's FPS
+    target_frames = np.unique(target_frames * fps / ls_fps).astype(int).tolist()
 
     # Extract that image frame and save
-    frame_num = 0
+    frame_num = 1
     while True:
         ret, frame = cap.read()
 
         if not ret:
             break
 
+        if frame_num not in target_frames:
+            frame_num += 1
+            continue
+
         frame_file = (
-            path_to_output_frames / f"{video_filename}_frame_{frame_num:04d}.png"
+            path_to_output_frames
+            / f"{video_filename.replace('.mp4', '')}_frame_{frame_num:04d}.png"
         )
         cv2.imwrite(str(frame_file), frame)
 
         lines = frame_annotations[frame_num]
         label_file = (
-            path_to_output_labels / f"{video_filename}_frame_{frame_num:04d}.txt"
+            path_to_output_labels
+            / f"{video_filename.replace('.mp4', '')}_frame_{frame_num:04d}.txt"
         )
         with open(label_file, "w") as f:
             f.write("\n".join(lines))
@@ -114,6 +146,7 @@ def stream_annotations_to_yolo(
     path_to_videos: Path,
     path_to_annotations: Path,
     path_to_output: Path,
+    path_to_guidance: Path,
     processes: int = 4,
 ) -> None:
     """Stream a large JSON annotation file and convert it to YOLO format.
@@ -149,6 +182,7 @@ def stream_annotations_to_yolo(
                     path_to_videos=path_to_videos,
                     path_to_output_frames=path_to_output_frames,
                     path_to_output_labels=path_to_output_labels,
+                    path_to_guidance=path_to_guidance,
                 )
         else:
             # Parallel execution
@@ -157,6 +191,7 @@ def stream_annotations_to_yolo(
                 path_to_videos=path_to_videos,
                 path_to_output_frames=path_to_output_frames,
                 path_to_output_labels=path_to_output_labels,
+                path_to_guidance=path_to_guidance,
             )
 
             with Pool(processes=processes) as pool:
