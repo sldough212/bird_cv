@@ -74,16 +74,18 @@ def test_get_label_tables_creates_expected_outputs(tmp_path: Path) -> None:
 
     # Assert: video data
     videos = pl.read_ndjson(video_path)
-    assert videos.shape == (1, 4)
+    assert videos.shape == (1, 5)
     assert videos["video_id"][0] == 1
-    assert videos["video_path"][0] == "/H7,I22/08.mp4"
+    assert videos["video_path"][0] == "/data/2021_bunting_clips/H7%2CI22/08.mp4"
+    assert videos["camera_id"][0] == "H7%2CI22"
     assert videos["framesCount"][0] == 100
     assert videos["duration"][0] == 3.2
 
     # Assert: frame data
     frames = pl.read_ndjson(frame_path)
-    assert frames.shape == (1, 8)
+    assert frames.shape == (1, 5)
     assert frames["video_id"][0] == 1
     assert frames["track_id"][0] == "r1"
     assert frames["label"][0] == "bird"
-    assert frames["frame"][0] == 1
+    assert frames["frame_begin"][0] == 1
+    assert frames["frame_end"][0] == 100

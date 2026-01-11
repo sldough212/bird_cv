@@ -31,36 +31,57 @@ def get_label_tables(
         .rename({"inner_id": "video_id"})
         .select("data", "video_id", "annotations")
         .unnest("data")
-        .with_columns(
-            pl.col("video")
-            .str.split("2021_bunting_clips")
-            .list[-1]
-            .str.replace("%2C", ",")
-            .alias("video_path")
-        )
-        .drop("video")
         .explode("annotations")
         .unnest("annotations")
         .drop("id")
         .explode("result")
         .unnest("result")
         .unnest("value")
+        .rename({"video": "video_path"})
     )
 
     # Subselect video metadata
-    videos = annotations.select(
-        "video_id", "video_path", "framesCount", "duration"
-    ).unique(subset="video_id")
+    videos = (
+        annotations.select("video_id", "video_path", "framesCount", "duration")
+        .unique(subset="video_id")
+        .with_columns(camera_id=pl.col("video_path").str.split("/").list[-2])
+    )
 
     # Subselect frame metadata
     frames = (
-        annotations.select("video_id", "sequence", "labels", "id")
+        annotations.select("video_id", "sequence", "labels", "id", "framesCount")
         .with_columns(labels=pl.col("labels").list[0])
         .explode("sequence")
         .unnest("sequence")
+        .drop_nulls(subset="frame")
         .rename({"labels": "label", "id": "track_id"})
-        .select("video_id", "track_id", "label", "frame", "x", "y", "width", "height")
+        .select(
+            "video_id",
+            "track_id",
+            "label",
+            "frame",
+            "x",
+            "y",
+            "width",
+            "height",
+            "framesCount",
+        )
     )
+
+    # Groupby the track id to get the frame beginning and end
+    frames = frames.group_by("track_id").agg(
+        pl.col("video_id").first().alias("video_id"),
+        pl.col("label").first().alias("label"),
+        pl.col("frame").first().alias("frame_begin"),
+        pl.col("frame").last().alias("frame_end"),
+        pl.col("framesCount").first().alias("framesCount"),
+    )
+    frames = frames.with_columns(
+        pl.when(pl.col("frame_begin") == pl.col("frame_end"))
+        .then(pl.col("framesCount"))
+        .otherwise(pl.col("frame_end"))
+        .alias("frame_end")
+    ).drop("framesCount")
 
     # Save
     output_dir.mkdir(parents=True, exist_ok=True)
