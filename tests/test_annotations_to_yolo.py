@@ -67,6 +67,7 @@ def path_to_guidance(tmp_path: Path) -> Path:
             "added_rests": [1],
             "video_path": ["2021_bunting_clips/test_video.mp4"],
             "fps": [10],
+            "split": ["train"],
         }
     )
     path = tmp_path / "guidance.parquet"
@@ -126,18 +127,17 @@ def test_process_item(
         path_to_guidance (Path): Path to guidance Parquet fixture.
     """
     videos_dir = tmp_path / "videos"
-    frames_dir = tmp_path / "images"
-    labels_dir = tmp_path / "labels"
+    frames_dir = tmp_path / "train" / "images"
+    labels_dir = tmp_path / "train" / "labels"
 
     videos_dir.mkdir()
-    frames_dir.mkdir()
-    labels_dir.mkdir()
+    frames_dir.mkdir(parents=True)
+    labels_dir.mkdir(parents=True)
 
     process_item(
         item=sample_item,
         path_to_videos=videos_dir,
-        path_to_output_frames=frames_dir,
-        path_to_output_labels=labels_dir,
+        path_to_output=tmp_path,
         path_to_guidance=path_to_guidance,
     )
 
@@ -170,9 +170,12 @@ def test_stream_annotations_to_yolo(
         path_to_guidance (Path): Path to guidance Parquet fixture.
     """
     videos_dir = tmp_path / "videos"
-    output_dir = tmp_path / "output"
+    frames_dir = tmp_path / "train" / "images"
+    labels_dir = tmp_path / "train" / "labels"
+
     videos_dir.mkdir()
-    output_dir.mkdir()
+    frames_dir.mkdir(parents=True)
+    labels_dir.mkdir(parents=True)
 
     annotations_file = tmp_path / "annotations.json"
 
@@ -184,13 +187,10 @@ def test_stream_annotations_to_yolo(
     stream_annotations_to_yolo(
         path_to_videos=videos_dir,
         path_to_annotations=annotations_file,
-        path_to_output=output_dir,
+        path_to_output=tmp_path,
         path_to_guidance=path_to_guidance,
         processes=1,
     )
-
-    frames_dir = output_dir / "images"
-    labels_dir = output_dir / "labels"
 
     # Two frames → two images + two label files
     image_files = list(frames_dir.glob("*.png"))

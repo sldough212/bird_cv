@@ -48,11 +48,24 @@ def split_camera_data(
     split_cameras = {}
     split_cameras["train"] = cameras[train_idx].get_column("camera_id")
     split_cameras["val"] = cameras[val_idx].get_column("camera_id")
+    split_cameras["test"] = cameras[test_idx].get_column("camera_id")
+
+    split_guidance = []
 
     # Move the train and val data for yolo
     for split, cams in split_cameras.items():
         # Get relevent videos and frames for each camera
         split_videos = video_data.filter(pl.col("camera_id").is_in(cams.implode()))
+        videos = split_videos.with_columns(
+            (pl.col("framesCount") / pl.col("duration")).alias("fps")
+        )
+        videos = videos.select("video_id", "video_path", "fps")
+
+        if split == "test":
+            videos = videos.with_columns(split=pl.lit(split))
+            split_guidance.append(videos)
+            continue
+
         split_frames = frame_data.join(split_videos, on="video_id", how="inner")
 
         # Subsample the frames of each video
@@ -61,16 +74,14 @@ def split_camera_data(
         # Provide additional resting frames based on max frame count of other actions
         split_frames = sample_resting_frames(split_frames, seed=random_seed)
 
-        videos = split_videos.with_columns(
-            (pl.col("framesCount") / pl.col("duration")).alias("fps")
-        )
-        videos = videos.select("video_id", "video_path", "fps")
-
         # Get the video path
         split_frames = split_frames.join(videos, on="video_id")
+        split_frames = split_frames.with_columns(split=pl.lit(split))
+        split_guidance.append(split_frames)
 
-        # Save split frames
-        split_frames.write_parquet(output_path / f"{split}_lookup.parquet")
+    # Concat and save split frames
+    guidance = pl.concat(split_guidance, how="diagonal_relaxed")
+    guidance.write_parquet(output_path / "split_guidance.parquet")
 
 
 def subsample_frames(frame_data: pl.DataFrame) -> pl.DataFrame:
