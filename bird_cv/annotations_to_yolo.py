@@ -64,8 +64,8 @@ def process_item(
 
     # Determine the split of the video based on guidance and redefine output paths
     split = video_guidance.select("split").item()
-    path_to_output_frames = path_to_output / split / "images"
-    path_to_output_labels = path_to_output / split / "labels"
+    path_to_output_frames = path_to_output / "images" / split
+    path_to_output_labels = path_to_output / "labels" / split
 
     # Collect annotations per frame
     frame_annotations: Dict[int, list[str]] = defaultdict(list)
@@ -173,8 +173,8 @@ def stream_annotations_to_yolo(
     path_to_output.mkdir(exist_ok=True, parents=True)
     splits = ["train", "val", "test"]
     for split in splits:
-        (path_to_output / split / "images").mkdir(exist_ok=True, parents=True)
-        (path_to_output / split / "labels").mkdir(exist_ok=True, parents=True)
+        (path_to_output / "images" / split).mkdir(exist_ok=True, parents=True)
+        (path_to_output / "labels" / split).mkdir(exist_ok=True, parents=True)
 
     with open(path_to_annotations, "rb") as f:
         items = ijson.items(f, "item")  # generator over top-level items

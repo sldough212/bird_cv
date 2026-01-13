@@ -127,8 +127,8 @@ def test_process_item(
         path_to_guidance (Path): Path to guidance Parquet fixture.
     """
     videos_dir = tmp_path / "videos"
-    frames_dir = tmp_path / "train" / "images"
-    labels_dir = tmp_path / "train" / "labels"
+    frames_dir = tmp_path / "images" / "train"
+    labels_dir = tmp_path / "labels" / "train"
 
     videos_dir.mkdir()
     frames_dir.mkdir(parents=True)
@@ -170,8 +170,8 @@ def test_stream_annotations_to_yolo(
         path_to_guidance (Path): Path to guidance Parquet fixture.
     """
     videos_dir = tmp_path / "videos"
-    frames_dir = tmp_path / "train" / "images"
-    labels_dir = tmp_path / "train" / "labels"
+    frames_dir = tmp_path / "images" / "train"
+    labels_dir = tmp_path / "labels" / "train"
 
     videos_dir.mkdir()
     frames_dir.mkdir(parents=True)
