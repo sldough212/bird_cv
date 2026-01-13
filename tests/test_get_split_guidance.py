@@ -120,15 +120,13 @@ def test_split_camera_data(
         video_data_path, frame_data_path, output_path, split_ratio, random_seed=0
     )
 
-    train_file = output_path / "train_lookup.parquet"
-    val_file = output_path / "val_lookup.parquet"
+    guidance_file = output_path / "split_guidance.parquet"
 
     # Parquet files should exist
-    assert train_file.exists()
-    assert val_file.exists()
+    assert guidance_file.exists()
 
     # Load one and check columns
-    df = pl.read_parquet(train_file)
+    df = pl.read_parquet(guidance_file)
     assert "video_id" in df.columns
     assert "target_frames" in df.columns
     assert "fps" in df.columns

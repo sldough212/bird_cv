@@ -13,8 +13,7 @@ import numpy as np
 def process_item(
     item: Dict[str, Any],
     path_to_videos: Path,
-    path_to_output_frames: Path,
-    path_to_output_labels: Path,
+    path_to_output: Path,
     path_to_guidance: Path,
 ) -> None:
     """Process a single annotation item and write YOLO-format labels per frame.
@@ -58,11 +57,15 @@ def process_item(
         == str(video_path)
     )
 
-    # TODO: Should really do this from a single table containing train, val, and test
     print(f"Working on {video_path}")
     if video_guidance.is_empty():
         print(f"Video {video_path} not in target")
         return
+
+    # Determine the split of the video based on guidance and redefine output paths
+    split = video_guidance.select("split").item()
+    path_to_output_frames = path_to_output / split / "images"
+    path_to_output_labels = path_to_output / split / "labels"
 
     # Collect annotations per frame
     frame_annotations: Dict[int, list[str]] = defaultdict(list)
@@ -166,10 +169,12 @@ def stream_annotations_to_yolo(
     Returns:
         None. YOLO annotation files are written to disk as a side effect.
     """
-    path_to_output_frames = path_to_output / "images"
-    path_to_output_labels = path_to_output / "labels"
-    path_to_output_frames.mkdir(exist_ok=True, parents=True)
-    path_to_output_labels.mkdir(exist_ok=True, parents=True)
+    # Create direcotries for training
+    path_to_output.mkdir(exist_ok=True, parents=True)
+    splits = ["train", "val", "test"]
+    for split in splits:
+        (path_to_output / split / "images").mkdir(exist_ok=True, parents=True)
+        (path_to_output / split / "labels").mkdir(exist_ok=True, parents=True)
 
     with open(path_to_annotations, "rb") as f:
         items = ijson.items(f, "item")  # generator over top-level items
@@ -180,8 +185,7 @@ def stream_annotations_to_yolo(
                 process_item(
                     item=item,
                     path_to_videos=path_to_videos,
-                    path_to_output_frames=path_to_output_frames,
-                    path_to_output_labels=path_to_output_labels,
+                    path_to_output=path_to_output,
                     path_to_guidance=path_to_guidance,
                 )
         else:
@@ -189,8 +193,7 @@ def stream_annotations_to_yolo(
             worker_func = partial(
                 process_item,
                 path_to_videos=path_to_videos,
-                path_to_output_frames=path_to_output_frames,
-                path_to_output_labels=path_to_output_labels,
+                path_to_output=path_to_output,
                 path_to_guidance=path_to_guidance,
             )
 
