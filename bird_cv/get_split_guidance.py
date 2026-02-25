@@ -182,33 +182,37 @@ def sample_resting_frames(frame_target_df: pl.DataFrame, seed: int) -> pl.DataFr
             .list.set_difference("target_frames")
             .alias("candidate_frames")
         )
+    )
+
+    result = (
+        result
         .with_columns(
             pl.when(
                 pl.col("max_count")
-                > (pl.col("framesCount") - pl.sum_horizontal(label_names))
+                > (pl.col("framesCount") - pl.col("target_frames").list.len())
             )
             .then(
                 pl.col("candidate_frames")
                 .list.sample(
-                    n=pl.col("framesCount") - pl.sum_horizontal(label_names), seed=seed
+                    n=pl.col("framesCount") - pl.col("target_frames").list.len(), seed=seed
                 )
                 .alias("sampled_additional_frames"),
             )
             .otherwise(
                 pl.col("candidate_frames")
-                .list.sample(n=pl.col("max_count"), seed=seed)
+                .list.sample(n=pl.col("max_count").clip(upper_bound=pl.col("candidate_frames").list.len()), seed=seed)
                 .alias("sampled_additional_frames"),
             ),
             pl.when(
                 pl.col("max_count")
-                > (pl.col("framesCount") - pl.sum_horizontal(label_names))
+                > (pl.col("framesCount") - pl.col("target_frames").list.len())
             )
             .then(
-                (pl.col("framesCount") - pl.sum_horizontal(label_names)).alias(
+                (pl.col("framesCount") - pl.col("target_frames").list.len()).alias(
                     "added_rests"
                 )
             )
-            .otherwise(pl.col("max_count").alias("added_rests")),
+            .otherwise(pl.col("max_count").clip(upper_bound=pl.col("candidate_frames").list.len()).alias("added_rests")),
         )
     )
 
