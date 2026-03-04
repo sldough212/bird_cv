@@ -64,6 +64,9 @@ def process_item(
 
     # Determine the split of the video based on guidance and redefine output paths
     split = video_guidance.select("split").item()
+    if split == "test":
+        return
+        
     path_to_output_frames = path_to_output / split / "images"
     path_to_output_labels = path_to_output / split / "labels"
 
@@ -80,13 +83,13 @@ def process_item(
             class_id: int = 0
 
             for seq in result["value"].get("sequence", []):
-                frame_num: int = seq["frame"]
+                frame_num = int(seq["frame"])
 
                 # These are given as percentages of the entire frame
-                x: float = seq["x"]
-                y: float = seq["y"]
-                w: float = seq["width"]
-                h: float = seq["height"]
+                x = float(seq["x"])
+                y = float(seq["y"])
+                w = float(seq["width"])
+                h = float(seq["height"])
 
                 # Normalize to YOLO format
                 x_center: float = (x + w / 2) / 100
