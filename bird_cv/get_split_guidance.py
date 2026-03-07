@@ -56,15 +56,25 @@ def split_camera_data(
     for split, cams in split_cameras.items():
         # Get relevent videos and frames for each camera
         split_videos = video_data.filter(pl.col("camera_id").is_in(cams.implode()))
+
+        if split_videos.is_empty():
+            continue
+
         videos = split_videos.with_columns(
             (pl.col("framesCount") / pl.col("duration")).alias("fps")
         )
-        videos = videos.select("video_id", "video_path", "fps")
+        videos = videos.select("video_id", "video_path", "fps", "framesCount")
 
         if split == "test":
-            videos = videos.with_columns(split=pl.lit(split))
+            videos = videos.with_columns(
+                split=pl.lit(split),
+                target_frames=pl.int_ranges(start=pl.lit(1), end=pl.col("framesCount")),
+            )
+            videos = videos.drop("framesCount")
             split_guidance.append(videos)
             continue
+
+        videos = videos.drop("framesCount")
 
         split_frames = frame_data.join(split_videos, on="video_id", how="inner")
 
@@ -184,36 +194,42 @@ def sample_resting_frames(frame_target_df: pl.DataFrame, seed: int) -> pl.DataFr
         )
     )
 
-    result = (
-        result
-        .with_columns(
-            pl.when(
-                pl.col("max_count")
-                > (pl.col("framesCount") - pl.col("target_frames").list.len())
-            )
-            .then(
-                pl.col("candidate_frames")
-                .list.sample(
-                    n=pl.col("framesCount") - pl.col("target_frames").list.len(), seed=seed
-                )
-                .alias("sampled_additional_frames"),
-            )
-            .otherwise(
-                pl.col("candidate_frames")
-                .list.sample(n=pl.col("max_count").clip(upper_bound=pl.col("candidate_frames").list.len()), seed=seed)
-                .alias("sampled_additional_frames"),
-            ),
-            pl.when(
-                pl.col("max_count")
-                > (pl.col("framesCount") - pl.col("target_frames").list.len())
-            )
-            .then(
-                (pl.col("framesCount") - pl.col("target_frames").list.len()).alias(
-                    "added_rests"
-                )
-            )
-            .otherwise(pl.col("max_count").clip(upper_bound=pl.col("candidate_frames").list.len()).alias("added_rests")),
+    result = result.with_columns(
+        pl.when(
+            pl.col("max_count")
+            > (pl.col("framesCount") - pl.col("target_frames").list.len())
         )
+        .then(
+            pl.col("candidate_frames")
+            .list.sample(
+                n=pl.col("framesCount") - pl.col("target_frames").list.len(), seed=seed
+            )
+            .alias("sampled_additional_frames"),
+        )
+        .otherwise(
+            pl.col("candidate_frames")
+            .list.sample(
+                n=pl.col("max_count").clip(
+                    upper_bound=pl.col("candidate_frames").list.len()
+                ),
+                seed=seed,
+            )
+            .alias("sampled_additional_frames"),
+        ),
+        pl.when(
+            pl.col("max_count")
+            > (pl.col("framesCount") - pl.col("target_frames").list.len())
+        )
+        .then(
+            (pl.col("framesCount") - pl.col("target_frames").list.len()).alias(
+                "added_rests"
+            )
+        )
+        .otherwise(
+            pl.col("max_count")
+            .clip(upper_bound=pl.col("candidate_frames").list.len())
+            .alias("added_rests")
+        ),
     )
 
     # Finally concat all targeted frames

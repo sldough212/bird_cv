@@ -64,9 +64,7 @@ def process_item(
 
     # Determine the split of the video based on guidance and redefine output paths
     split = video_guidance.select("split").item()
-    if split == "test":
-        return
-        
+
     path_to_output_frames = path_to_output / split / "images"
     path_to_output_labels = path_to_output / split / "labels"
 
