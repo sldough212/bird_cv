@@ -15,11 +15,11 @@ def run_label_studio_to_yolo(
     """Convert deployed label annotations to yolo labels and images.
 
     Args:
-        label_paths (list[Path]): List of paths hosting annotations and interpolated 
+        label_paths (list[Path]): List of paths hosting annotations and interpolated
             annotations from each labeler
         output_path (Path): Path to output store
         videos_path (Path): Path to videos (2021_bunting_clips/)
-        video_split_ratio (dict): Dictionary containing splits (key) and proportion of 
+        video_split_ratio (dict): Dictionary containing splits (key) and proportion of
             camera data for each split (value)
         random_seed (int): Seed for random number generation to ensure reproducibility.
             Defaults to 42.
@@ -37,7 +37,6 @@ def run_label_studio_to_yolo(
     frame_store = []
 
     for ii, label_path in enumerate(label_paths):
-
         # Save tables
         get_label_tables(
             label_json_path=label_path / "annotations.json",
@@ -62,7 +61,7 @@ def run_label_studio_to_yolo(
         frame_data_path=intermediate_path / "frame_data_full.ndjson",
         split_ratio=video_split_ratio,
         output_path=intermediate_path,
-        random_seed=42
+        random_seed=random_seed,
     )
 
     # Move the labels and frames to prepare for yolo training
