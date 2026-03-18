@@ -21,6 +21,7 @@ torch = "^2.0"
 torchvision = "^0.17.0"
 ray = {extras = ["tune"], version = ">=2.1, <3.0"}
 wandb = ">=0.22, <1.0"
+motmetrics = ">=1.4, <2.0"
 
 
 [tool.poetry.group.dev.dependencies]
