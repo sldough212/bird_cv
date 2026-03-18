@@ -1,0 +1,11 @@
+# Dataset root directory relative to the yolov directory
+path: /gscratch/pdoughe1/yolo_store
+
+# Train/val/test sets: specify directories, *.txt files, or lists
+train: train/images
+val: val/images
+test: test/images
+
+# Classes
+names:
+    0: bird
