@@ -142,7 +142,7 @@ def test_process_item(
     )
 
     # Two frames → two images + two label files
-    image_files = list(frames_dir.glob("*.png"))
+    image_files = list(frames_dir.glob("*.jpg"))
     label_files = list(labels_dir.glob("*.txt"))
 
     assert len(image_files) == 2
@@ -193,7 +193,7 @@ def test_stream_annotations_to_yolo(
     )
 
     # Two frames → two images + two label files
-    image_files = list(frames_dir.glob("*.png"))
+    image_files = list(frames_dir.glob("*.jpg"))
     label_files = list(labels_dir.glob("*.txt"))
 
     assert len(image_files) == 2

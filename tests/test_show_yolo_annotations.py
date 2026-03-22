@@ -14,7 +14,7 @@ def test_pick_random_frame(tmp_path: Path) -> None:
     images_dir = tmp_path / "images"
     images_dir.mkdir()
 
-    img_path = images_dir / "frame.png"
+    img_path = images_dir / "frame.jpg"
     Image.new("RGB", (100, 100)).save(img_path)
 
     result = pick_random_frame(images_dir)
