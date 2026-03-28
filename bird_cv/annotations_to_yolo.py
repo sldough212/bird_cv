@@ -129,7 +129,7 @@ def process_item(
 
         frame_file = (
             path_to_output_frames
-            / f"{video_filename.replace('.mp4', '')}_frame_{frame_num:04d}.png"
+            / f"{video_filename.replace('.mp4', '')}_frame_{frame_num:04d}.jpg"
         )
         cv2.imwrite(str(frame_file), frame)
 

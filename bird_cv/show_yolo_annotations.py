@@ -8,21 +8,21 @@ from PIL import Image, ImageDraw, ImageFont
 def pick_random_frame(path_to_frames: Path) -> Path:
     """Randomly select a frame image from a directory.
 
-    This function searches the provided directory for PNG image files
+    This function searches the provided directory for JPG image files
     and returns one at random. It raises an error if no matching files
     are found.
 
     Args:
         path_to_frames (Path): Path to a directory containing frame images
-            saved as `.png` files.
+            saved as `.jpg` files.
 
     Returns:
         Path: Path to a randomly selected frame image.
 
     Raises:
-        RuntimeError: If no `.png` files are found in the directory.
+        RuntimeError: If no `.jpg` files are found in the directory.
     """
-    frame_files = list(path_to_frames.glob("*.png"))
+    frame_files = list(path_to_frames.glob("*.jpg"))
     if not frame_files:
         raise RuntimeError(f"No videos found in {path_to_frames}")
     return random.choice(frame_files)
@@ -110,7 +110,7 @@ def show_annotated_frame(
     The expected directory structure is:
         path_to_yolo/
             ├── images/
-            │   └── <frame_name>.png
+            │   └── <frame_name>.jpg
             └── labels/
                 └── <frame_name>.txt
 
@@ -118,7 +118,7 @@ def show_annotated_frame(
         path_to_yolo (Path): Path to the root YOLO dataset directory
             containing `images/` and `labels/` subdirectories.
         frame_name (Optional[str]): Name of the frame image file to
-            display (e.g., `"video_frame_0001.png"`). If None, a random
+            display (e.g., `"video_frame_0001.jpg"`). If None, a random
             frame is selected.
 
     Returns:
