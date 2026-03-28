@@ -2,7 +2,7 @@ from pathlib import Path
 from PIL import Image
 import matplotlib.pyplot as plt
 
-from bird_cv.show_yolo_annotations import (
+from bird_cv.preprocessing.show_yolo_annotations import (
     pick_random_frame,
     draw_yolo_annotations,
     show_annotated_frame,

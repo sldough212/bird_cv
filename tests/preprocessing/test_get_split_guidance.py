@@ -1,7 +1,7 @@
 import pytest
 import polars as pl
 from pathlib import Path
-from bird_cv.get_split_guidance import (
+from bird_cv.preprocessing.get_split_guidance import (
     split_camera_data,
     subsample_frames,
     sample_resting_frames,

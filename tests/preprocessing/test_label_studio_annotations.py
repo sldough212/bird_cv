@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from unittest.mock import patch, MagicMock
 
-import bird_cv.get_label_studio_annotations as lsa
+import bird_cv.preprocessing.get_label_studio_annotations as lsa
 
 
 def test_is_port_available_free(monkeypatch):
@@ -115,9 +115,11 @@ def test_close_server_calls_lsof(mock_run):
     mock_run.assert_any_call(["kill", "-9", "456"])
 
 
-@patch("bird_cv.get_label_studio_annotations.time.sleep", return_value=None)
-@patch("bird_cv.get_label_studio_annotations.subprocess.Popen")
-@patch("bird_cv.get_label_studio_annotations.LabelStudio")
+@patch(
+    "bird_cv.preprocessing.get_label_studio_annotations.time.sleep", return_value=None
+)
+@patch("bird_cv.preprocessing.get_label_studio_annotations.subprocess.Popen")
+@patch("bird_cv.preprocessing.get_label_studio_annotations.LabelStudio")
 def test_get_label_studio_client_success(mock_label_studio, mock_popen, mock_sleep):
     """Test that `get_label_studio_client` returns a client and verifies connection.
 
@@ -205,14 +207,22 @@ def test_export_label_studio_annotations(monkeypatch, tmp_path):
     assert content == b"chunk1chunk2"
 
 
-@patch("bird_cv.get_label_studio_annotations.close_server")
-@patch("bird_cv.get_label_studio_annotations.export_label_studio_annotations")
-@patch("bird_cv.get_label_studio_annotations.get_project_id_from_name", return_value=42)
+@patch("bird_cv.preprocessing.get_label_studio_annotations.close_server")
 @patch(
-    "bird_cv.get_label_studio_annotations.get_label_studio_client",
+    "bird_cv.preprocessing.get_label_studio_annotations.export_label_studio_annotations"
+)
+@patch(
+    "bird_cv.preprocessing.get_label_studio_annotations.get_project_id_from_name",
+    return_value=42,
+)
+@patch(
+    "bird_cv.preprocessing.get_label_studio_annotations.get_label_studio_client",
     return_value=MagicMock(),
 )
-@patch("bird_cv.get_label_studio_annotations.find_open_port", return_value=8081)
+@patch(
+    "bird_cv.preprocessing.get_label_studio_annotations.find_open_port",
+    return_value=8081,
+)
 def test_get_label_studio_annotations(
     mock_port, mock_client, mock_project_id, mock_export, mock_close
 ):

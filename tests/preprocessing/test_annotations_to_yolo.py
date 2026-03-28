@@ -6,7 +6,10 @@ from typing import Dict, Any, Tuple, Optional
 import numpy as np
 import polars as pl
 
-from bird_cv.annotations_to_yolo import process_item, stream_annotations_to_yolo
+from bird_cv.preprocessing.annotations_to_yolo import (
+    process_item,
+    stream_annotations_to_yolo,
+)
 
 
 @pytest.fixture
@@ -114,7 +117,10 @@ class MockCapture:
         pass
 
 
-@patch("bird_cv.annotations_to_yolo.cv2.VideoCapture", return_value=MockCapture())
+@patch(
+    "bird_cv.preprocessing.annotations_to_yolo.cv2.VideoCapture",
+    return_value=MockCapture(),
+)
 def test_process_item(
     mock_videocap, tmp_path: Path, sample_item: Dict[str, Any], path_to_guidance: Path
 ) -> None:
@@ -154,7 +160,10 @@ def test_process_item(
     assert len(content.split()) == 5
 
 
-@patch("bird_cv.annotations_to_yolo.cv2.VideoCapture", return_value=MockCapture())
+@patch(
+    "bird_cv.preprocessing.annotations_to_yolo.cv2.VideoCapture",
+    return_value=MockCapture(),
+)
 def test_stream_annotations_to_yolo(
     mock_videocap, tmp_path: Path, sample_item: Dict[str, Any], path_to_guidance: Path
 ) -> None:
