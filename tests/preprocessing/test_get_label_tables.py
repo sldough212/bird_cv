@@ -3,7 +3,7 @@
 import polars as pl
 from pathlib import Path
 
-from bird_cv.get_label_tables import get_label_tables
+from bird_cv.preprocessing.get_label_tables import get_label_tables
 
 
 def test_get_label_tables_creates_expected_outputs(tmp_path: Path) -> None:

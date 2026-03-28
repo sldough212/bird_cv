@@ -1,8 +1,8 @@
 from pathlib import Path
 import polars as pl
-from bird_cv.get_label_tables import get_label_tables
-from bird_cv.get_split_guidance import split_camera_data
-from bird_cv.annotations_to_yolo import stream_annotations_to_yolo
+from bird_cv.preprocessing.get_label_tables import get_label_tables
+from bird_cv.preprocessing.get_split_guidance import split_camera_data
+from bird_cv.preprocessing.annotations_to_yolo import stream_annotations_to_yolo
 
 
 def run_label_studio_to_yolo(
