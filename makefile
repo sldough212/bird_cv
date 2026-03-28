@@ -9,8 +9,11 @@ init:
 	$(PYTHON) -m venv $(VENV)
 	@echo "Virtual environment created at $(VENV)"
 	@echo "source $(VENV)/bin/activate"
+	poetry env use $(VENV)/bin/python
 	poetry install
-	pre-commit install
+	poetry run pip install -e ../sam2
+	poetry run pre-commit install
+
 
 # Remove the virtual environment
 clean:
