@@ -24,7 +24,7 @@ def pick_random_frame(path_to_frames: Path) -> Path:
     """
     frame_files = list(path_to_frames.glob("*.jpg"))
     if not frame_files:
-        raise RuntimeError(f"No videos found in {path_to_frames}")
+        raise RuntimeError(f"No frames found in {path_to_frames}")
     return random.choice(frame_files)
 
 
@@ -97,8 +97,11 @@ def draw_yolo_annotations(frame: Image, label_file: Path) -> None:
 
 
 def show_annotated_frame(
-    path_to_yolo: Path,
     frame_name: Optional[str] = None,
+    split: str = "train",
+    path_to_yolo: Optional[Path] = None,
+    path_to_frames: Optional[Path] = None,
+    path_to_labels: Optional[Path] = None,
 ) -> None:
     """Display a frame with YOLO annotations in a Jupyter notebook.
 
@@ -120,6 +123,7 @@ def show_annotated_frame(
         frame_name (Optional[str]): Name of the frame image file to
             display (e.g., `"video_frame_0001.jpg"`). If None, a random
             frame is selected.
+        split (str): Yolo model split associate with this frame
 
     Returns:
         None
@@ -127,13 +131,17 @@ def show_annotated_frame(
     Raises:
         FileNotFoundError: If the specified frame file does not exist.
     """
-    path_to_labels = path_to_yolo / "labels"
-    path_to_frames = path_to_yolo / "images"
+    if not path_to_yolo and not (path_to_frames and path_to_labels):
+        raise ValueError("Must supply either path_to_yolo or both path_to_frames/files")
 
-    # Select Frame
-    frame_path = (
-        path_to_frames / frame_name if frame_name else pick_random_frame(path_to_frames)
-    )
+    path_to_frames = path_to_frames or path_to_yolo / "images" / split
+    path_to_labels = path_to_labels or path_to_yolo / "labels" / split
+
+    if frame_name:
+        frame_path = path_to_frames / frame_name
+    else:
+        frame_path = pick_random_frame(path_to_frames)
+
     if not frame_path.exists():
         raise FileNotFoundError(f"Frame not found: {frame_path}")
     frame_stem = frame_path.stem
@@ -145,7 +153,7 @@ def show_annotated_frame(
     # Draw annotations
     draw_yolo_annotations(img, label_file)
 
-    # Convert BGR → RGB for matplotlib
+    # Show
     img = img.convert("RGB")
     plt.figure(figsize=(12, 8))
     plt.imshow(img)

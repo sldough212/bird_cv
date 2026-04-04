@@ -9,6 +9,8 @@ from typing import Any, Dict, Optional
 import polars as pl
 import numpy as np
 
+from bird_cv.utils import extract_camera_video
+
 
 def process_item(
     item: Dict[str, Any],
@@ -65,8 +67,8 @@ def process_item(
     # Determine the split of the video based on guidance and redefine output paths
     split = video_guidance.select("split").item()
 
-    path_to_output_frames = path_to_output / split / "images"
-    path_to_output_labels = path_to_output / split / "labels"
+    path_to_output_frames = path_to_output / "images" / split
+    path_to_output_labels = path_to_output / "labels" / split
 
     # Collect annotations per frame
     frame_annotations: Dict[int, list[str]] = defaultdict(list)
@@ -113,7 +115,24 @@ def process_item(
     fps = cap.get(cv2.CAP_PROP_FPS)
 
     # Readjust the target frames back to the original video's FPS
-    target_frames = np.unique(target_frames * fps / ls_fps).astype(int).tolist()
+    target_frames = np.unique(np.round(target_frames * fps / ls_fps)).tolist()
+
+    # Save for each video the fps-adjusted target frames:
+    video_path = video_guidance.select("video_path").item()
+    corrected_target_frames = pl.DataFrame(
+        {
+            "video_path": video_path,
+            "split": split,
+            "corrected_target_frames": [target_frames],
+        }
+    )
+    camera_id, video_name = extract_camera_video(video_str=video_path)
+    video_id = Path(video_name).stem
+    corrected_target_frames_path = path_to_guidance.parent / "corrected_frame_guidance"
+    corrected_target_frames_path.mkdir(exist_ok=True, parents=True)
+    corrected_target_frames.write_parquet(
+        corrected_target_frames_path / f"{camera_id}.{video_id}.parquet"
+    )
 
     # Extract that image frame and save
     frame_num = 1
@@ -129,14 +148,14 @@ def process_item(
 
         frame_file = (
             path_to_output_frames
-            / f"{video_filename.replace('.mp4', '')}_frame_{frame_num:04d}.jpg"
+            / f"{video_filename.replace('.mp4', '')}_frame_{frame_num:05d}.jpg"
         )
         cv2.imwrite(str(frame_file), frame)
 
         lines = frame_annotations[frame_num]
         label_file = (
             path_to_output_labels
-            / f"{video_filename.replace('.mp4', '')}_frame_{frame_num:04d}.txt"
+            / f"{video_filename.replace('.mp4', '')}_frame_{frame_num:05d}.txt"
         )
         with open(label_file, "w") as f:
             f.write("\n".join(lines))
@@ -174,8 +193,8 @@ def stream_annotations_to_yolo(
     path_to_output.mkdir(exist_ok=True, parents=True)
     splits = ["train", "val", "test"]
     for split in splits:
-        (path_to_output / split / "images").mkdir(exist_ok=True, parents=True)
-        (path_to_output / split / "labels").mkdir(exist_ok=True, parents=True)
+        (path_to_output / "images" / split).mkdir(exist_ok=True, parents=True)
+        (path_to_output / "labels" / split).mkdir(exist_ok=True, parents=True)
 
     with open(path_to_annotations, "rb") as f:
         items = ijson.items(f, "item")  # generator over top-level items
