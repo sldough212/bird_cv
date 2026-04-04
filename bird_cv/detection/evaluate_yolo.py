@@ -6,7 +6,7 @@ def evaluate_yolo(
     source_path: Path,
     output_root: Path,
     output_name: str,
-    tracker_config: str = "tracker.yaml",
+    tracker_config: str | Path = "tracker.yaml",
     model_path: str | Path = "yolo11n.pt",
 ) -> None:
     """Runs YOLO object detection and tracking on a given source and saves results.

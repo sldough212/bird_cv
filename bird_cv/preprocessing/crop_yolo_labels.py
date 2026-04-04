@@ -99,8 +99,8 @@ def crop_yolo(
     yolo_data_path: Path,
     yolo_output_path: Path,
     video_segments_path: Path,
-    frame: str,
-    segment_frame: str,
+    frame: int,
+    segment_frame: int,
     video_id: str,
     camera_id: str,
 ) -> None:

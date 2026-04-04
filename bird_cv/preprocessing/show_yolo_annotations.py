@@ -134,8 +134,11 @@ def show_annotated_frame(
     if not path_to_yolo and not (path_to_frames and path_to_labels):
         raise ValueError("Must supply either path_to_yolo or both path_to_frames/files")
 
-    path_to_frames = path_to_frames or path_to_yolo / "images" / split
-    path_to_labels = path_to_labels or path_to_yolo / "labels" / split
+    assert path_to_yolo is not None or (
+        path_to_frames is not None and path_to_labels is not None
+    )
+    path_to_frames = path_to_frames or path_to_yolo / "images" / split  # type: ignore[operator]
+    path_to_labels = path_to_labels or path_to_yolo / "labels" / split  # type: ignore[operator]
 
     if frame_name:
         frame_path = path_to_frames / frame_name

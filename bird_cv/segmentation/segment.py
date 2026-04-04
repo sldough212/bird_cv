@@ -127,6 +127,7 @@ def get_camera_sam_config(
         )
 
     if return_video_segments:
+        assert output_segment_path is not None
         video_segments = {}
         video_segments[ann_frame_idx] = {
             out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
@@ -137,6 +138,7 @@ def get_camera_sam_config(
         )
 
     if winner:
+        assert output_config_path is not None
         # Save json config
         output_config_path.mkdir(exist_ok=True, parents=True)
         with open(output_config_path / f"{camera_id}.json", "w") as f:

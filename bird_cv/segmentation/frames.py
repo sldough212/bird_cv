@@ -95,7 +95,7 @@ def extract_all_frames(
         if not success:
             break
 
-        if frame_count not in frames:
+        if frames is not None and frame_count not in frames:
             frame_count += 1
             continue
 

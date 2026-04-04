@@ -12,7 +12,7 @@ VIDEO_BASE_PATH = Path(
 MODEL_CHECKPOINT_PATH = Path("/Users/sdougherty/Documents/code/sam2/checkpoints")
 PREDICTION_OUTPUT_PATH = TEST_PATH / "predictions"
 
-evaluations = predict_and_evaluate(
+predict_and_evaluate(
     test_path=TEST_PATH,
     segmentation_config_path=SEGMENTATION_CONFIG_PATH,
     video_base_path=VIDEO_BASE_PATH,
