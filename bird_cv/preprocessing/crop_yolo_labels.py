@@ -142,8 +142,15 @@ def crop_yolo(
         / video_id
         / f"{segment_frame}_segmentation.json"
     )
+    if not seg_path.exists():
+        print(f"Skipping frame {frame}: segmentation file not found at {seg_path}")
+        return
     with seg_path.open("r") as f:
-        cage_masks = json.load(f)
+        try:
+            cage_masks = json.load(f)
+        except json.JSONDecodeError:
+            print(f"Skipping frame {frame}: could not parse {seg_path}")
+            return
 
     for cage_id, cage_mask in cage_masks.items():
         # If split is test, move frames into label_output_path / camera / video / camera
