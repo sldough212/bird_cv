@@ -47,7 +47,7 @@ def vizualize_segmentations(
 
 # SAM utils ###############################################################
 def show_mask(
-    mask: np.ndarray, ax: Axes, obj_id: int = None, random_color: bool = False
+    mask: np.ndarray, ax: Axes, obj_id: int | None = None, random_color: bool = False
 ) -> None:
     """Overlay a segmentation mask on a Matplotlib axis with optional coloring.
 

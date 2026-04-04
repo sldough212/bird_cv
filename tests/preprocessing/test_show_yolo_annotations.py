@@ -39,10 +39,10 @@ def test_draw_yolo_annotations(tmp_path: Path) -> None:
 def test_show_annotated_frame(tmp_path: Path, monkeypatch) -> None:
     """show_annotated_frame runs end-to-end without error."""
     yolo_dir = tmp_path
-    images_dir = yolo_dir / "images"
-    labels_dir = yolo_dir / "labels"
-    images_dir.mkdir()
-    labels_dir.mkdir()
+    images_dir = yolo_dir / "images" / "train"
+    labels_dir = yolo_dir / "labels" / "train"
+    images_dir.mkdir(parents=True)
+    labels_dir.mkdir(parents=True)
 
     img_path = images_dir / "frame_0001.png"
     Image.new("RGB", (300, 200), color="black").save(img_path)

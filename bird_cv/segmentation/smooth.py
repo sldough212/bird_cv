@@ -75,7 +75,7 @@ def smooth_masks(
             Each output mask is a smoothed boolean mask representing
             the filled polygon of the original segmentation.
     """
-    output_segments = {}
+    output_segments: dict[int, dict[int, np.ndarray]] = {}
     for frame, cages in video_segments.items():
         output_segments[frame] = {}
         for video, mask in cages.items():

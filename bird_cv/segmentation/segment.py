@@ -127,6 +127,7 @@ def get_camera_sam_config(
         )
 
     if return_video_segments:
+        assert output_segment_path is not None
         video_segments = {}
         video_segments[ann_frame_idx] = {
             out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
@@ -137,6 +138,7 @@ def get_camera_sam_config(
         )
 
     if winner:
+        assert output_config_path is not None
         # Save json config
         output_config_path.mkdir(exist_ok=True, parents=True)
         with open(output_config_path / f"{camera_id}.json", "w") as f:
@@ -212,6 +214,7 @@ def set_sam_and_predict(
 def save_video_segments(
     output_path: Path,
     video_segments: dict[int, dict[int, np.ndarray]],
+    save_off_frame: bool = False,
 ) -> None:
     """Saves video segmentation results to disk in JSON format.
 
@@ -222,10 +225,17 @@ def save_video_segments(
             containing segmentation results. The outer dictionary maps frame
             indices to inner dictionaries, which map object IDs to their
             corresponding segmentation masks (NumPy arrays).
+        save_off_frames (bool): Whether to instead save the mask of each frame separately
     """
     (output_path.parent).mkdir(exist_ok=True, parents=True)
-    with output_path.open("w") as f:
-        json.dump(video_segments, f, cls=NumpyEncoder)
+    if save_off_frame:
+        for frame_idx, frame_segments in video_segments.items():
+            frame_output = output_path.parent / f"{frame_idx}_{output_path.name}"
+            with frame_output.open("w") as f:
+                json.dump(frame_segments, f, cls=NumpyEncoder)
+    else:
+        with output_path.open("w") as f:
+            json.dump(video_segments, f, cls=NumpyEncoder)
 
 
 def segment(
@@ -269,14 +279,7 @@ def segment(
         shutil.move(temp_path / x0_frame_path.name, temp_path / "00000.jpg")
 
         # Extract the frames from the desired video into the same directory
-        # Oh you probably actually aren't doing anything here
-        # In evaluation we can just do
         shutil.copytree(y_video_path, temp_path, dirs_exist_ok=True)
-
-        # extract_all_frames(
-        #     video_path=y_video_path,
-        #     output_path=temp_path,
-        # )
 
         # Set segmentation model and predict
         video_segments = set_sam_and_predict(
@@ -300,6 +303,7 @@ def segment(
         save_video_segments(
             output_path=output_path,
             video_segments=video_segments,
+            save_off_frame=True,
         )
 
         # Visualize segmentations
