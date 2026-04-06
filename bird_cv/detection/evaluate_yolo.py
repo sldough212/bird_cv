@@ -22,7 +22,7 @@ def evaluate_yolo(
             Defaults to the bundled ``tracker.yaml``.
     """
     model = YOLO(model_path)
-    model.track(
+    for _ in model.track(
         source=str(source_path),
         tracker=str(tracker_config),
         save_txt=True,
@@ -32,7 +32,8 @@ def evaluate_yolo(
         exist_ok=True,
         stream=True,
         max_det=1,
-    )
+    ):
+        pass
 
 
 def run_tracking_on_test(
