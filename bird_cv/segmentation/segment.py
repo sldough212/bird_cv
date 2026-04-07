@@ -17,8 +17,8 @@ from bird_cv.segmentation.visualize import (
     show_mask,
     vizualize_segmentations,
 )
-from bird_cv.segmentation.evaluate import calculate_iou
 from bird_cv.segmentation.smooth import smooth_masks
+from bird_cv.segmentation.utils import calculate_iou
 from bird_cv.utils import NumpyEncoder
 
 

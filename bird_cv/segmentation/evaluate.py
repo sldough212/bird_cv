@@ -4,6 +4,7 @@ import numpy as np
 import json
 
 from bird_cv.segmentation.segment import segment
+from bird_cv.segmentation.utils import calculate_iou
 
 
 def predict_and_evaluate(
@@ -82,24 +83,6 @@ def predict_and_evaluate(
     output = pl.concat(evaluations, how="diagonal_relaxed")
     output_path.parent.mkdir(exist_ok=True, parents=True)
     output.write_parquet(output_path)
-
-
-def calculate_iou(pred_mask: np.ndarray, gt_mask: np.ndarray) -> float:
-    """Calculate the Intersection over Union (IoU) metric for two binary masks.
-
-    Args:
-        pred_mask (np.ndarray): Binary mask representing the predicted segmentation.
-            Should contain boolean values or 0/1.
-        gt_mask (np.ndarray): Binary mask representing the ground-truth segmentation.
-            Should have the same shape as `pred_mask`.
-
-    Returns:
-        float: The IoU score between 0.0 and 1.0, where 1.0 indicates perfect overlap
-        and 0.0 indicates no overlap.
-    """
-    intersection = np.logical_and(pred_mask, gt_mask).sum()
-    union = np.logical_or(pred_mask, gt_mask).sum()
-    return intersection / union
 
 
 def evaluate_segmentation(
