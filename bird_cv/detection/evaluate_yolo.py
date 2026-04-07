@@ -1,63 +1,72 @@
-from ultralytics import YOLO
 from pathlib import Path
+
+from ultralytics import YOLO
+
+TRACKER_CONFIG = Path(__file__).parent / "tracker.yaml"
 
 
 def evaluate_yolo(
     source_path: Path,
-    output_root: Path,
-    output_name: str,
-    tracker_config: str | Path = "tracker.yaml",
+    output_path: Path,
     model_path: str | Path = "yolo11n.pt",
+    tracker_config: str | Path = TRACKER_CONFIG,
 ) -> None:
-    """Runs YOLO object detection and tracking on a given source and saves results.
-
-    This function loads a YOLO model and performs object tracking on the input
-    data (e.g., video or image sequence). Tracking results, including bounding
-    boxes and confidence scores, are saved as text files in the specified
-    output directory.
+    """Run YOLO tracking on a single image directory and save per-frame txt results.
 
     Args:
-        source_path (Path): Path to the input source (e.g., video file, image
-            directory, or stream).
-        output_root (Path): Root directory where output results will be stored.
-        output_name (str): Name of the output subdirectory within the project
-            folder.
-        tracker_config (str, optional): Path to the tracker configuration file.
-            Defaults to "tracker.yaml".
-        model_path (str | Path, optional): Path to the YOLO model weights file.
-            Defaults to "yolo11n.pt".
-
-    Returns:
-        None: This function does not return a value. Results are written to disk.
-
-    Notes:
-        - Tracking is performed with persistence enabled across frames.
-        - Bounding box coordinates and confidence scores are saved as text files.
-        - Visualization images are not saved (`save=False`) and not displayed
-          (`show=False`).
+        source_path: Directory of images to run tracking on.
+        output_path: Directory where tracking results will be saved. Per-frame
+            txt files are written to ``output_path/labels/``.
+        model_path: Path to the YOLO model weights file. Defaults to "yolo11n.pt".
+        tracker_config: Path to the BoT-SORT/ByteTrack tracker config yaml.
+            Defaults to the bundled ``tracker.yaml``.
     """
     model = YOLO(model_path)
-
-    model.track(
-        source=source_path,
-        tracker=tracker_config,
-        persist=True,
-        save=False,  # Saves the plots
+    for _ in model.track(
+        source=str(source_path),
+        tracker=str(tracker_config),
         save_txt=True,
         save_conf=True,
-        project=output_root,
-        name=output_name,
-        show=False,
-    )
+        project=str(output_path.parent),
+        name=output_path.name,
+        exist_ok=True,
+        stream=True,
+        max_det=1,
+    ):
+        pass
 
 
-if __name__ == "__main__":
-    evaluate_yolo(
-        source_path=Path(
-            "/gscratch/pdoughe1/label_test/20260307_122739/yolo_store/test/images"
-        ),
-        output_root=Path("/gscratch/pdoughe1/yolo_train"),
-        output_name="tracker_test",
-        model_path=Path("/gscratch/pdoughe1/yolo_train/bird_test/weights/best.pt"),
-        tracker_config=Path("bird_cv/detection/tracker.yaml"),
-    )
+def run_tracking_on_test(
+    yolo_crop_path: Path,
+    output_root: Path,
+    model_path: str | Path = "yolo11n.pt",
+    tracker_config: str | Path = TRACKER_CONFIG,
+) -> None:
+    """Run YOLO tracking on every camera/video/cage in the test split.
+
+    Iterates over ``yolo_crop_path/images/test/{camera_id}/{video_id}/{cage_id}``
+    and runs tracking on each cage directory, saving results to
+    ``output_root/{camera_id}/{video_id}/{cage_id}/``.
+
+    Args:
+        yolo_crop_path: Root of the cropped YOLO dataset (contains
+            ``images/`` and ``labels/`` subdirectories).
+        output_root: Root directory where per-cage tracking results are saved.
+        model_path: Path to the YOLO model weights file.
+        tracker_config: Path to the tracker config yaml.
+    """
+    test_images_path = yolo_crop_path / "images" / "test"
+
+    for camera_dir in sorted(test_images_path.iterdir()):
+        camera_id = camera_dir.name
+        for video_dir in sorted(camera_dir.iterdir()):
+            video_id = video_dir.name
+            for cage_dir in sorted(video_dir.iterdir()):
+                cage_id = cage_dir.name
+                print(f"Tracking {camera_id}/{video_id}/{cage_id}")
+                evaluate_yolo(
+                    source_path=cage_dir,
+                    output_path=output_root / camera_id / video_id / cage_id,
+                    model_path=model_path,
+                    tracker_config=tracker_config,
+                )
