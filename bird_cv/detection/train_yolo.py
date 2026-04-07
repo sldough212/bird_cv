@@ -54,7 +54,7 @@ def train_yolo(
 
 if __name__ == "__main__":
     train_yolo(
-        output_root=Path("/gscratch/pdoughe1/yolo_train"),
+        output_root=Path("/gscratch/pdoughe1/20260331_194037/training"),
         output_name="bird_test",
         model_config="bird_cv/detection/detect_birds.yaml",
         model_path="yolo11n.pt",
