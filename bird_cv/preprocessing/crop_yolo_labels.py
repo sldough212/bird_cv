@@ -103,7 +103,7 @@ def crop_yolo(
     segment_frame: int,
     video_id: str,
     camera_id: str,
-) -> None:
+) -> list[str]:
     # Create new yolo data store
     base_label_output_path = yolo_output_path / "labels" / split
     base_label_output_path.mkdir(exist_ok=True, parents=True)
@@ -144,14 +144,15 @@ def crop_yolo(
     )
     if not seg_path.exists():
         print(f"Skipping frame {frame}: segmentation file not found at {seg_path}")
-        return
+        return []
     with seg_path.open("r") as f:
         try:
             cage_masks = json.load(f)
         except json.JSONDecodeError:
             print(f"Skipping frame {frame}: could not parse {seg_path}")
-            return
+            return []
 
+    cage_ids_processed = []
     for cage_id, cage_mask in cage_masks.items():
         # If split is test, move frames into label_output_path / camera / video / camera
         if split == "test":
@@ -192,13 +193,40 @@ def crop_yolo(
             for label in labels_crop:
                 f.write(" ".join(map(str, label)) + "\n")
 
+        cage_ids_processed.append(cage_id)
+
+    return cage_ids_processed
+
 
 def run_crop_yolo(
     corrected_targets_path: Path,
     yolo_data_path: Path,
     yolo_output_path: Path,
     video_segments_path: Path,
+    behavior_clips_path: Path | None = None,
+    behavior_output_path: Path | None = None,
 ) -> None:
+    """Crop YOLO labels and images per cage, and optionally assign behavior clips to cages.
+
+    Args:
+        corrected_targets_path: Path to the corrected frame guidance parquet directory.
+        yolo_data_path: Root of the full-frame YOLO dataset.
+        yolo_output_path: Root of the per-cage cropped YOLO output dataset.
+        video_segments_path: Path to the segmentation JSON files.
+        behavior_clips_path: Optional path to the parquet output of
+            :func:`build_clip_index`. If provided, each processed frame/cage will
+            be matched against behavior clips and saved to ``behavior_output_path``.
+        behavior_output_path: Path to write the behavior clip index with cage_id
+            assigned. Required if ``behavior_clips_path`` is provided.
+    """
+    behavior_clips = None
+    if behavior_clips_path is not None:
+        assert behavior_output_path is not None, (
+            "behavior_output_path must be provided when behavior_clips_path is set"
+        )
+        behavior_clips = pl.read_parquet(behavior_clips_path)
+        behavior_records: list[dict] = []
+
     # Load in corrected labeling guidance
     corrected_targets = pl.read_parquet(corrected_targets_path)
     for row in corrected_targets.iter_rows(named=True):
@@ -211,10 +239,15 @@ def run_crop_yolo(
         video_id = Path(video_name).stem
         split = row["split"]
 
+        # Pre-filter behavior clips for this camera/video
+        if behavior_clips is not None:
+            video_behaviors = behavior_clips.filter(
+                (pl.col("camera_id") == camera_id) & (pl.col("video_id") == video_id)
+            )
+
         for frame in target_frames:
             segment_frame = seg_target_map[frame]
-
-            crop_yolo(
+            cage_ids = crop_yolo(
                 split=split,
                 yolo_data_path=yolo_data_path,
                 yolo_output_path=yolo_output_path,
@@ -224,3 +257,26 @@ def run_crop_yolo(
                 camera_id=camera_id,
                 video_id=video_id,
             )
+
+            if behavior_clips is not None and cage_ids:
+                for behavior in video_behaviors.iter_rows(named=True):
+                    if behavior["frame_begin"] <= frame <= behavior["frame_end"]:
+                        for cage_id in cage_ids:
+                            behavior_records.append(
+                                {
+                                    "track_id": behavior["track_id"],
+                                    "camera_id": camera_id,
+                                    "video_id": video_id,
+                                    "cage_id": cage_id,
+                                    "label": behavior["label"],
+                                    "frame_begin": behavior["frame_begin"],
+                                    "frame_end": behavior["frame_end"],
+                                    "split": split,
+                                }
+                            )
+
+    if behavior_clips is not None:
+        assert behavior_output_path is not None
+        result = pl.DataFrame(behavior_records).unique(subset=["track_id", "cage_id"])
+        behavior_output_path.parent.mkdir(exist_ok=True, parents=True)
+        result.write_parquet(behavior_output_path)

@@ -124,6 +124,8 @@ def process_item(
             "video_path": video_path,
             "split": split,
             "corrected_target_frames": [target_frames],
+            "fps": fps,
+            "ls_fps": ls_fps,
         }
     )
     camera_id, video_name = extract_camera_video(video_str=video_path)
