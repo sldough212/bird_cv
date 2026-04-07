@@ -58,4 +58,5 @@ if __name__ == "__main__":
         output_name="bird_test",
         model_config="bird_cv/detection/detect_birds.yaml",
         model_path="yolo11n.pt",
+        frozen_parameters={"epochs": 30},
     )
