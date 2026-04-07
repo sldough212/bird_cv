@@ -1,0 +1,77 @@
+"""Build a behavior clip index by joining frame labels, video metadata, and FPS guidance."""
+
+from pathlib import Path
+
+import polars as pl
+
+
+def build_clip_index(
+    frame_data_path: Path,
+    video_data_path: Path,
+    split_guidance_path: Path,
+) -> pl.DataFrame:
+    """Join behavior labels with video metadata and FPS-correct frame boundaries.
+
+    Joins ``frame_data_full.ndjson`` (per-track behavior labels) with
+    ``video_data_full.ndjson`` (video metadata including camera_id) and
+    ``split_guidance.parquet`` (actual video FPS and train/val/test split).
+    Frame boundaries from Label Studio are rescaled from Label Studio FPS to
+    the actual video FPS.
+
+    Args:
+        frame_data_path: Path to ``frame_data_full.ndjson`` containing columns
+            ``track_id``, ``video_id``, ``label``, ``frame_begin``, ``frame_end``.
+        video_data_path: Path to ``video_data_full.ndjson`` containing columns
+            ``video_id``, ``video_path``, ``camera_id``, ``duration``.
+        split_guidance_path: Path to ``corrected_frame_guidance`` parquet containing
+            columns ``video_path``, ``fps`` (actual video FPS), ``ls_fps`` (Label
+            Studio annotation FPS), and ``split``.
+
+    Returns:
+        Polars DataFrame with one row per behavior instance and columns:
+            - ``track_id``
+            - ``camera_id``
+            - ``video_id``
+            - ``label``
+            - ``frame_begin``: FPS-corrected start frame (actual video frame number)
+            - ``frame_end``: FPS-corrected end frame (actual video frame number)
+            - ``split``
+    """
+    frame_data = pl.read_ndjson(frame_data_path).select(
+        "track_id", "video_id", "label", "frame_begin", "frame_end"
+    )
+    video_data = pl.read_ndjson(video_data_path).select(
+        "video_id", "video_path", "camera_id"
+    )
+    split_guidance = (
+        pl.scan_parquet(split_guidance_path)
+        .select("video_path", "split", "fps", "ls_fps")
+        .collect()
+    )
+
+    joined = frame_data.join(video_data, on="video_id", how="inner").join(
+        split_guidance, on="video_path", how="inner"
+    )
+
+    # Rescale Label Studio frame numbers to actual video frame numbers.
+    # fps = actual video FPS (from OpenCV), ls_fps = Label Studio annotation FPS.
+    corrected = joined.with_columns(
+        (pl.col("frame_begin") * pl.col("fps") / pl.col("ls_fps"))
+        .round()
+        .cast(pl.Int64)
+        .alias("frame_begin"),
+        (pl.col("frame_end") * pl.col("fps") / pl.col("ls_fps"))
+        .round()
+        .cast(pl.Int64)
+        .alias("frame_end"),
+    )
+
+    return corrected.select(
+        "track_id",
+        "camera_id",
+        "video_id",
+        "label",
+        "frame_begin",
+        "frame_end",
+        "split",
+    )
