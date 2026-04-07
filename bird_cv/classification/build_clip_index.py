@@ -9,7 +9,8 @@ def build_clip_index(
     frame_data_path: Path,
     video_data_path: Path,
     split_guidance_path: Path,
-) -> pl.DataFrame:
+    output_path: Path,
+) -> None:
     """Join behavior labels with video metadata and FPS-correct frame boundaries.
 
     Joins ``frame_data_full.ndjson`` (per-track behavior labels) with
@@ -26,22 +27,19 @@ def build_clip_index(
         split_guidance_path: Path to ``corrected_frame_guidance`` parquet containing
             columns ``video_path``, ``fps`` (actual video FPS), ``ls_fps`` (Label
             Studio annotation FPS), and ``split``.
-
-    Returns:
-        Polars DataFrame with one row per behavior instance and columns:
-            - ``track_id``
-            - ``camera_id``
-            - ``video_id``
-            - ``label``
-            - ``frame_begin``: FPS-corrected start frame (actual video frame number)
-            - ``frame_end``: FPS-corrected end frame (actual video frame number)
-            - ``split``
+        output_path: Path to output parquet
     """
     frame_data = pl.read_ndjson(frame_data_path).select(
-        "track_id", "video_id", "label", "frame_begin", "frame_end"
+        "track_id",
+        "video_id",
+        "camera_idlabel",
+        "frame_begin",
+        "frame_end",
     )
     video_data = pl.read_ndjson(video_data_path).select(
-        "video_id", "video_path", "camera_id"
+        "video_id",
+        "camera_id",
+        "video_path",
     )
     split_guidance = (
         pl.scan_parquet(split_guidance_path)
@@ -49,9 +47,9 @@ def build_clip_index(
         .collect()
     )
 
-    joined = frame_data.join(video_data, on="video_id", how="inner").join(
-        split_guidance, on="video_path", how="inner"
-    )
+    joined = frame_data.join(
+        video_data, on=["video_id", "camera_id"], how="inner"
+    ).join(split_guidance, on="video_path", how="inner")
 
     # Rescale Label Studio frame numbers to actual video frame numbers.
     # fps = actual video FPS (from OpenCV), ls_fps = Label Studio annotation FPS.
@@ -64,9 +62,10 @@ def build_clip_index(
         .round()
         .cast(pl.Int64)
         .alias("frame_end"),
+        pl.col("camera_id").str.replace_all("%2C", ","),
     )
 
-    return corrected.select(
+    corrected = corrected.select(
         "track_id",
         "camera_id",
         "video_id",
@@ -75,3 +74,6 @@ def build_clip_index(
         "frame_end",
         "split",
     )
+
+    output_path.parent.mkdir(exist_ok=True, parents=True)
+    corrected.write_parquet(output_path)

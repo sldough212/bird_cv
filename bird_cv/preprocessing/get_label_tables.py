@@ -28,8 +28,8 @@ def get_label_tables(
     annotations = pl.read_json(label_json_path)
     annotations = (
         annotations.filter(pl.col("total_annotations") > 0)
-        .rename({"inner_id": "video_id"})
-        .select("data", "video_id", "annotations")
+        .rename({"inner_id": "video_idx"})
+        .select("data", "video_idx", "annotations")
         .unnest("data")
         .explode("annotations")
         .unnest("annotations")
@@ -42,21 +42,31 @@ def get_label_tables(
 
     # Subselect video metadata
     videos = (
-        annotations.select("video_id", "video_path", "framesCount", "duration")
-        .unique(subset="video_id")
-        .with_columns(camera_id=pl.col("video_path").str.split("/").list[-2])
+        annotations.select("video_idx", "video_path", "framesCount", "duration")
+        .unique(subset="video_idx")
+        .with_columns(
+            camera_id=pl.col("video_path")
+            .str.split("/")
+            .list[-2]
+            .str.replace_all("%2C", ","),
+            video_id=pl.col("video_path")
+            .str.split("/")
+            .list[-1]
+            .str.splitn(".", 2)
+            .struct.field("field_0"),
+        )
     )
 
     # Subselect frame metadata
     frames = (
-        annotations.select("video_id", "sequence", "labels", "id", "framesCount")
+        annotations.select("video_idx", "sequence", "labels", "id", "framesCount")
         .with_columns(labels=pl.col("labels").list[0])
         .explode("sequence")
         .unnest("sequence")
         .drop_nulls(subset="frame")
         .rename({"labels": "label", "id": "track_id"})
         .select(
-            "video_id",
+            "video_idx",
             "track_id",
             "label",
             "frame",
@@ -70,7 +80,7 @@ def get_label_tables(
 
     # Groupby the track id to get the frame beginning and end
     frames = frames.group_by("track_id").agg(
-        pl.col("video_id").first().alias("video_id"),
+        pl.col("video_idx").first().alias("video_idx"),
         pl.col("label").first().alias("label"),
         pl.col("frame").first().alias("frame_begin"),
         pl.col("frame").last().alias("frame_end"),
@@ -82,6 +92,15 @@ def get_label_tables(
         .otherwise(pl.col("frame_end"))
         .alias("frame_end")
     ).drop("framesCount")
+
+    # Join back on video_id to get the camera_id and video_id onto frames
+    frames = frames.join(
+        videos.select("video_idx", "video_id", "camera_id"),
+        on=["video_idx"],
+        how="left",
+    ).drop("video_idx")
+
+    videos = videos.drop("video_idx")
 
     # Save
     output_dir.mkdir(parents=True, exist_ok=True)
