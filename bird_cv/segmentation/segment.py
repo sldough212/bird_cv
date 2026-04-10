@@ -18,6 +18,7 @@ from bird_cv.segmentation.visualize import (
     vizualize_segmentations,
 )
 from bird_cv.segmentation.smooth import smooth_masks
+from bird_cv.segmentation.utils import calculate_iou
 from bird_cv.utils import NumpyEncoder
 
 
@@ -145,6 +146,87 @@ def get_camera_sam_config(
             json.dump(guess_prompts, f, cls=NumpyEncoder)
 
 
+def find_segment_boundaries(
+    video_segments: dict[int, dict[int, np.ndarray]],
+    iou_threshold: float = 0.90,
+) -> list[int]:
+    """Find frame indices where a new stable segment begins.
+
+    Computes per-cage IoU between consecutive frames. When the minimum
+    IoU across all cages drops below ``iou_threshold``, a disruption is
+    detected and a new segment starts at that frame.
+
+    Args:
+        video_segments: Nested dict mapping frame_idx → {obj_id → mask array}.
+        iou_threshold: Minimum IoU below which a disruption is declared.
+            Defaults to 0.90.
+
+    Returns:
+        Sorted list of frame indices that begin a new segment. Always
+        includes frame 0.
+    """
+    frames = sorted(video_segments.keys())
+    if not frames:
+        return []
+
+    boundaries = [frames[0]]
+    for i in range(1, len(frames)):
+        prev, curr = frames[i - 1], frames[i]
+        ious = [
+            calculate_iou(
+                video_segments[prev][obj_id].squeeze(),
+                video_segments[curr][obj_id].squeeze(),
+            )
+            for obj_id in video_segments[prev]
+            if obj_id in video_segments[curr]
+        ]
+        if not ious or min(ious) < iou_threshold:
+            boundaries.append(curr)
+
+    return boundaries
+
+
+def save_keyframe_segments(
+    output_path: Path,
+    video_segments: dict[int, dict[int, np.ndarray]],
+    boundaries: list[int],
+) -> None:
+    """Save one keyframe mask per stable segment and a segment index file.
+
+    For each segment, saves the mask from the boundary frame (first frame
+    after a disruption) as ``{segment_idx}_segmentation.json``. Also writes
+    a ``segment_index.json`` mapping each segment index to its ``start`` and
+    ``end`` frame numbers, so downstream code can look up the correct mask
+    for any given frame.
+
+    Args:
+        output_path: Path to the output JSON file (parent directory and naming
+            convention are derived from this).
+        video_segments: Nested dict mapping frame_idx → {obj_id → mask array}.
+        boundaries: Segment boundary frame indices as returned by
+            :func:`find_segment_boundaries`.
+    """
+    frames = sorted(video_segments.keys())
+    output_path.parent.mkdir(exist_ok=True, parents=True)
+
+    # Build and save the segment index
+    segment_index = {}
+    for seg_idx, start_frame in enumerate(boundaries):
+        end_frame = (
+            boundaries[seg_idx + 1] - 1 if seg_idx + 1 < len(boundaries) else frames[-1]
+        )
+        segment_index[str(seg_idx)] = {"start": start_frame, "end": end_frame}
+
+    with (output_path.parent / "segment_index.json").open("w") as f:
+        json.dump(segment_index, f)
+
+    # Save the keyframe mask for each segment
+    for seg_idx, start_frame in enumerate(boundaries):
+        frame_output = output_path.parent / f"{seg_idx}_{output_path.name}"
+        with frame_output.open("w") as f:
+            json.dump(video_segments[start_frame], f, cls=NumpyEncoder)
+
+
 def set_sam_and_predict(
     model_checkpoint_path: Path,
     data_path: Path,
@@ -247,8 +329,15 @@ def segment(
     device: str = "cpu",
     visualize: bool = False,
     vis_frame_stride: int = 100,
+    iou_threshold: float = 0.85,
 ) -> None:
     """Runs an end-to-end video segmentation pipeline using SAM2.
+
+    Propagates SAM2 masks across all frames, detects disruptions (occlusions,
+    camera artifacts) via per-cage IoU between consecutive frames, and saves
+    one keyframe mask per stable segment rather than every frame. A
+    ``segment_index.json`` is written alongside the masks mapping each segment
+    index to its start/end frame range.
 
     Args:
         config_path (Path): Path to a JSON configuration file containing
@@ -260,12 +349,14 @@ def segment(
         model_checkpoint_path (Path): Path to the directory containing the SAM2
             model checkpoint.
         output_path (Path): Path where the segmentation results will be saved
-            (JSON format).
+            (JSON format, one file per keyframe segment).
         device (str, optional): Device to run inference on (e.g., "cpu", "cuda").
             Defaults to "cpu".
         visualize (bool): Whether to display the predicted segmentations.
         vis_frame_stride (int): If displaying the predicted segmentations, this
             parameter controls the stride between visualized frames.
+        iou_threshold (float): Minimum IoU between consecutive frames before a
+            new segment is declared. Defaults to 0.85.
     """
 
     # Get a directory to temporarily store the frames
@@ -299,11 +390,15 @@ def segment(
         # Move keys up
         video_segments = {ii: value for ii, value in enumerate(video_segments.values())}
 
-        # Save the video segments
-        save_video_segments(
+        # Find disruption boundaries and save one keyframe mask per segment
+        boundaries = find_segment_boundaries(
+            video_segments=video_segments,
+            iou_threshold=iou_threshold,
+        )
+        save_keyframe_segments(
             output_path=output_path,
             video_segments=video_segments,
-            save_off_frame=True,
+            boundaries=boundaries,
         )
 
         # Visualize segmentations

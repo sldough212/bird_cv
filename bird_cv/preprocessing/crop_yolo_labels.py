@@ -94,13 +94,21 @@ def normalize_labels_for_crop(labels, crop_coords, image_shape):
     return normalized_labels
 
 
+def _lookup_segment_idx(segment_index: dict, frame: int) -> int:
+    """Return the segment index whose [start, end] range contains ``frame``."""
+    for seg_idx, bounds in segment_index.items():
+        if bounds["start"] <= frame <= bounds["end"]:
+            return int(seg_idx)
+    # Fall back to the last segment if frame is beyond the index
+    return int(max(segment_index.keys(), key=int))
+
+
 def crop_yolo(
     split: str,
     yolo_data_path: Path,
     yolo_output_path: Path,
     video_segments_path: Path,
     frame: int,
-    segment_frame: int,
     video_id: str,
     camera_id: str,
 ) -> list[str]:
@@ -136,12 +144,19 @@ def crop_yolo(
     img = Image.open(frame_path)
 
     # Load in the segmentation
-    seg_path = (
-        video_segments_path
-        / camera_id
-        / video_id
-        / f"{segment_frame}_segmentation.json"
-    )
+    seg_dir = video_segments_path / camera_id / video_id
+    seg_index_path = seg_dir / "segment_index.json"
+    if not seg_index_path.exists():
+        print(
+            f"Skipping frame {frame}: segment_index.json not found at {seg_index_path}"
+        )
+        return []
+    with seg_index_path.open("r") as f:
+        segment_index = json.load(f)
+
+    segment_idx = _lookup_segment_idx(segment_index, frame)
+    seg_path = seg_dir / f"{segment_idx}_segmentation.json"
+
     if not seg_path.exists():
         print(f"Skipping frame {frame}: segmentation file not found at {seg_path}")
         return []
@@ -231,9 +246,6 @@ def run_crop_yolo(
     corrected_targets = pl.read_parquet(corrected_targets_path)
     for row in corrected_targets.iter_rows(named=True):
         target_frames = [int(x) for x in sorted(row["corrected_target_frames"])]
-        seg_target_map = {
-            target_frame: ii for ii, target_frame in enumerate(target_frames)
-        }
 
         camera_id, video_name = extract_camera_video(row["video_path"])
         video_id = Path(video_name).stem
@@ -246,14 +258,12 @@ def run_crop_yolo(
             )
 
         for frame in target_frames:
-            segment_frame = seg_target_map[frame]
             cage_ids = crop_yolo(
                 split=split,
                 yolo_data_path=yolo_data_path,
                 yolo_output_path=yolo_output_path,
                 video_segments_path=video_segments_path,
                 frame=frame,
-                segment_frame=segment_frame,
                 camera_id=camera_id,
                 video_id=video_id,
             )
