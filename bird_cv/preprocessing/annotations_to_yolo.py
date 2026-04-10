@@ -154,7 +154,10 @@ def process_item(
         )
         cv2.imwrite(str(frame_file), frame)
 
-        lines = frame_annotations[frame_num]
+        # Need to inverse te fps correction to frame the correct from annotation
+        frame_num_ann = int(frame_num * ls_fps / fps)
+
+        lines = frame_annotations[frame_num_ann]
         label_file = (
             path_to_output_labels
             / f"{video_filename.replace('.mp4', '')}_frame_{frame_num:05d}.txt"

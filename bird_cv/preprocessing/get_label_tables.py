@@ -82,8 +82,8 @@ def get_label_tables(
     frames = frames.group_by("track_id").agg(
         pl.col("video_idx").first().alias("video_idx"),
         pl.col("label").first().alias("label"),
-        pl.col("frame").first().alias("frame_begin"),
-        pl.col("frame").last().alias("frame_end"),
+        pl.col("frame").min().alias("frame_begin"),
+        pl.col("frame").max().alias("frame_end"),
         pl.col("framesCount").first().alias("framesCount"),
     )
     frames = frames.with_columns(
