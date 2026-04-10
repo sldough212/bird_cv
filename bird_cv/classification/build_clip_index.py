@@ -32,7 +32,8 @@ def build_clip_index(
     frame_data = pl.read_ndjson(frame_data_path).select(
         "track_id",
         "video_id",
-        "camera_idlabel",
+        "camera_id",
+        "label",
         "frame_begin",
         "frame_end",
     )
