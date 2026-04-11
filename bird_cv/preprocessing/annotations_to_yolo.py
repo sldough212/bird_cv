@@ -7,9 +7,6 @@ from functools import partial
 from collections import defaultdict
 from typing import Any, Dict, Optional
 import polars as pl
-import numpy as np
-
-from bird_cv.utils import extract_camera_video
 
 
 def process_item(
@@ -107,34 +104,12 @@ def process_item(
 
                 frame_annotations[frame_num].append(yolo_line)
 
-    target_frames = video_guidance.select("target_frames").to_numpy().squeeze()
+    target_frames = video_guidance.select("target_frames").to_numpy().squeeze().tolist()
     ls_fps = video_guidance.select("fps").item()
 
     # Open video to extract frames
     cap = cv2.VideoCapture(full_video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
-
-    # Readjust the target frames back to the original video's FPS
-    target_frames = np.unique(np.round(target_frames * fps / ls_fps)).tolist()
-
-    # Save for each video the fps-adjusted target frames:
-    video_path = video_guidance.select("video_path").item()
-    corrected_target_frames = pl.DataFrame(
-        {
-            "video_path": video_path,
-            "split": split,
-            "corrected_target_frames": [target_frames],
-            "fps": fps,
-            "ls_fps": ls_fps,
-        }
-    )
-    camera_id, video_name = extract_camera_video(video_str=video_path)
-    video_id = Path(video_name).stem
-    corrected_target_frames_path = path_to_guidance.parent / "corrected_frame_guidance"
-    corrected_target_frames_path.mkdir(exist_ok=True, parents=True)
-    corrected_target_frames.write_parquet(
-        corrected_target_frames_path / f"{camera_id}.{video_id}.parquet"
-    )
 
     # Extract that image frame and save
     frame_num = 1

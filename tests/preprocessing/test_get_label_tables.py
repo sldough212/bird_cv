@@ -1,5 +1,6 @@
 """Test for converstion of label studio tables to frame-level ndjson format."""
 
+from unittest.mock import MagicMock, patch
 import polars as pl
 from pathlib import Path
 
@@ -64,26 +65,36 @@ def test_get_label_tables_creates_expected_outputs(tmp_path: Path) -> None:
     )
 
     output_dir = tmp_path / "output"
+    videos_path = tmp_path / "videos"
+
+    # Mock cv2.VideoCapture to return ls_fps (100/3.2=31.25) so correction ratio = 1.0
+    mock_cap = MagicMock()
+    mock_cap.get.return_value = 31.25
 
     # Act
-    get_label_tables(label_json_path=label_json, output_dir=output_dir)
+    with patch(
+        "bird_cv.preprocessing.get_label_tables.cv2.VideoCapture", return_value=mock_cap
+    ):
+        get_label_tables(
+            label_json_path=label_json, videos_path=videos_path, output_dir=output_dir
+        )
 
     # Assert: output files exist
     video_path = output_dir / "video_data.ndjson"
     frame_path = output_dir / "frame_data.ndjson"
 
-    # Assert: video data
+    # Assert: video data (columns: video_path, framesCount, duration, camera_id, video_id, video_ext, true_fps)
     videos = pl.read_ndjson(video_path)
-    assert videos.shape == (1, 5)
+    assert videos.shape == (1, 7)
     assert videos["video_id"][0] == "08"
     assert videos["video_path"][0] == "/data/2021_bunting_clips/H7%2CI22/08.mp4"
     assert videos["camera_id"][0] == "H7,I22"
     assert videos["framesCount"][0] == 100
     assert videos["duration"][0] == 3.2
 
-    # Assert: frame data
+    # Assert: frame data (columns: track_id, label, frame_begin, frame_end, video_id, camera_id, true_fps)
     frames = pl.read_ndjson(frame_path)
-    assert frames.shape == (1, 6)
+    assert frames.shape == (1, 7)
     assert frames["video_id"][0] == "08"
     assert frames["track_id"][0] == "r1"
     assert frames["label"][0] == "bird"

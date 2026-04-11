@@ -8,6 +8,7 @@ def split_camera_data(
     frame_data_path: Path,
     output_path: Path,
     split_ratio: dict[str, float],
+    num_frames: int = 16,
     random_seed: int = 42,
 ) -> None:
     """Splits video and frame data by camera into train, validation, and test sets and saves to disk.
@@ -22,6 +23,8 @@ def split_camera_data(
         output_path (Path): Directory where the split lookup parquet files will be saved.
         split_ratio (dict[str, float]): Dictionary specifying the train/val/test split ratios.
             Keys must include "train", "val", and "test".
+        num_frames (int): Number of frames used in video classification training.
+            Behaviors with less than num_frames will be buffered evenly.
         random_seed (int, optional): Seed for random number generation to ensure reproducibility.
             Defaults to 42.
 
@@ -38,7 +41,7 @@ def split_camera_data(
     frame_data = pl.read_ndjson(frame_data_path)
 
     # Randomly split the cameras into train / validation / test
-    cameras = video_data.select("camera_id").unique()
+    cameras = video_data.select("camera_id").unique().sort("camera_id")
     n_cameras = cameras.height
     indices = np.random.permutation(n_cameras)
     n_train = round(split_ratio["train"] * n_cameras)
@@ -138,7 +141,7 @@ def subsample_frames(frame_data: pl.DataFrame) -> pl.DataFrame:
         .pivot(values="count", index="video_id", on="label")
         .fill_null(0)
         .with_columns(
-            [pl.struct([c for c in df["label"].unique()]).alias("label_counts")]
+            [pl.struct([c for c in sorted(df["label"].unique())]).alias("label_counts")]
         )
         .select(["video_id", "label_counts"])
     )

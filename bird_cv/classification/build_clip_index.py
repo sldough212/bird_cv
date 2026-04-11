@@ -43,30 +43,14 @@ def build_clip_index(
         "video_path",
     )
     split_guidance = (
-        pl.scan_parquet(split_guidance_path)
-        .select("video_path", "split", "fps", "ls_fps")
-        .collect()
+        pl.scan_parquet(split_guidance_path).select("video_path", "split").collect()
     )
 
     joined = frame_data.join(
         video_data, on=["video_id", "camera_id"], how="inner"
     ).join(split_guidance, on="video_path", how="inner")
 
-    # Rescale Label Studio frame numbers to actual video frame numbers.
-    # fps = actual video FPS (from OpenCV), ls_fps = Label Studio annotation FPS.
-    corrected = joined.with_columns(
-        (pl.col("frame_begin") * pl.col("fps") / pl.col("ls_fps"))
-        .round()
-        .cast(pl.Int64)
-        .alias("frame_begin"),
-        (pl.col("frame_end") * pl.col("fps") / pl.col("ls_fps"))
-        .round()
-        .cast(pl.Int64)
-        .alias("frame_end"),
-        pl.col("camera_id").str.replace_all("%2C", ","),
-    )
-
-    corrected = corrected.select(
+    joined = joined.select(
         "track_id",
         "camera_id",
         "video_id",
@@ -77,4 +61,4 @@ def build_clip_index(
     )
 
     output_path.parent.mkdir(exist_ok=True, parents=True)
-    corrected.write_parquet(output_path)
+    joined.write_parquet(output_path)

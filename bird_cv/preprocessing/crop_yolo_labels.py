@@ -196,13 +196,13 @@ def crop_yolo(
         # Save cropped image
         cropped_img.save(
             image_output_path
-            / f"{yolo_camera_id}.{video_id}_frame_{frame}_cage_{cage_id}.jpg"
+            / f"{yolo_camera_id}.{video_id}_frame_{frame:05d}_cage_{cage_id}.jpg"
         )
 
         # Save YOLO txt
         with open(
             label_output_path
-            / f"{yolo_camera_id}.{video_id}_frame_{frame}_cage_{cage_id}.txt",
+            / f"{yolo_camera_id}.{video_id}_frame_{frame:05d}_cage_{cage_id}.txt",
             "w",
         ) as f:
             for label in labels_crop:
@@ -214,7 +214,7 @@ def crop_yolo(
 
 
 def run_crop_yolo(
-    corrected_targets_path: Path,
+    split_guidance_path: Path,
     yolo_data_path: Path,
     yolo_output_path: Path,
     video_segments_path: Path,
@@ -224,7 +224,7 @@ def run_crop_yolo(
     """Crop YOLO labels and images per cage, and optionally assign behavior clips to cages.
 
     Args:
-        corrected_targets_path: Path to the corrected frame guidance parquet directory.
+        split_guidance_path: Path to the split guidance.
         yolo_data_path: Root of the full-frame YOLO dataset.
         yolo_output_path: Root of the per-cage cropped YOLO output dataset.
         video_segments_path: Path to the segmentation JSON files.
@@ -242,10 +242,10 @@ def run_crop_yolo(
         behavior_clips = pl.read_parquet(behavior_clips_path)
         behavior_records: list[dict] = []
 
-    # Load in corrected labeling guidance
-    corrected_targets = pl.read_parquet(corrected_targets_path)
-    for row in corrected_targets.iter_rows(named=True):
-        target_frames = [int(x) for x in sorted(row["corrected_target_frames"])]
+    # Load in labeling guidance
+    split_guidance = pl.read_parquet(split_guidance_path)
+    for row in split_guidance.iter_rows(named=True):
+        target_frames = [int(x) for x in sorted(row["target_frames"])]
 
         camera_id, video_name = extract_camera_video(row["video_path"])
         video_id = Path(video_name).stem

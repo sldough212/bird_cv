@@ -7,21 +7,21 @@ from bird_cv.utils import extract_camera_video
 
 
 def predict_and_store_segments(
-    path_to_corrected_targets: Path,
+    split_guidance_path: Path,
     video_path: Path,
     prediction_output_path: Path,
     segmentation_config_path: Path,
     model_checkpoint_path: Path,
 ) -> None:
     # Load in split guidance with fps corrected target frames
-    split_guidance = pl.read_parquet(path_to_corrected_targets)
+    split_guidance = pl.read_parquet(split_guidance_path)
 
     # In a temporary directory, move the targeted frames
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
 
         for video_str, target_frames in split_guidance.select(
-            "video_path", "corrected_target_frames"
+            "video_path", "target_frames"
         ).to_numpy():
             camera_id, video_name = extract_camera_video(video_str=video_str)
             video_id = Path(video_name).stem
@@ -69,11 +69,11 @@ def predict_and_store_segments(
 
 if __name__ == "__main__":
     predict_and_store_segments(
-        path_to_corrected_targets=Path(
-            "/gscratch/pdoughe1/20260331_194037/intermediate/corrected_frame_guidance"
+        split_guidance_path=Path(
+            "/gscratch/pdoughe1/20260411_161837/intermediate/split_guidance.parquet"
         ),
         video_path=Path("/gscratch/pdoughe1/videos/2021_bunting_clips"),
-        prediction_output_path=Path("/gscratch/pdoughe1/20260331_194037/segmentations"),
+        prediction_output_path=Path("/gscratch/pdoughe1/20260411_161837/segmentations"),
         segmentation_config_path=Path(
             "/gscratch/pdoughe1/segmentation_configs/configs"
         ),

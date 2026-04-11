@@ -1,12 +1,38 @@
 """Module for getting label tables."""
 
+import cv2
 import polars as pl
 from pathlib import Path
 
 
+def buffer_frame_data(frame_data, num_frames):
+    """Buffer frame data by camera."""
+    frame_data = frame_data.with_columns(
+        behavior_length=pl.col("frame_end") - pl.col("frame_begin"),
+    )
+
+    # Determine buffer size
+    frame_data = frame_data.with_columns(
+        pl.when(pl.col("behavior_length") < num_frames)
+        .then(((num_frames - pl.col("behavior_length")) / 2).cast(pl.Int64))
+        .otherwise(pl.lit(0))
+        .alias("buffer")
+    )
+
+    # Adjust behavior starts and ends
+    frame_data = frame_data.with_columns(
+        frame_begin=pl.col("frame_begin") - pl.col("buffer"),
+        frame_end=pl.col("frame_end") + pl.col("buffer"),
+    ).drop("buffer", "behavior_length")
+
+    return frame_data
+
+
 def get_label_tables(
     label_json_path: Path,
+    videos_path: Path,
     output_dir: Path,
+    num_frames: int = 16,
 ) -> None:
     """Process a Label Studio JSON export and generate separate video and frame tables.
 
@@ -20,6 +46,8 @@ def get_label_tables(
         output_dir (Path): Directory where the resulting NDJSON files will be saved.
             If the directory does not exist, it will be created along with any
             necessary parent directories.
+        num_frames (int): Number of frames used in video classification training.
+            Behaviors with less than num_frames will be buffered evenly.
 
     Returns:
         None: The function writes two files to disk and does not return anything.
@@ -54,7 +82,23 @@ def get_label_tables(
             .list[-1]
             .str.splitn(".", 2)
             .struct.field("field_0"),
+            video_ext=pl.col("video_path").str.split(".").list[-1],
         )
+    )
+
+    # Grab the true fps from the video
+    all_fps = []
+    for row in videos.iter_rows(named=True):
+        full_video_path = (
+            videos_path / row["camera_id"] / f"{row['video_id']}.{row['video_ext']}"
+        )
+        cap = cv2.VideoCapture(full_video_path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        all_fps.append(fps)
+        cap.release()
+
+    videos = videos.with_columns(
+        ls_fps=pl.col("framesCount") / pl.col("duration"), true_fps=pl.Series(all_fps)
     )
 
     # Subselect frame metadata
@@ -95,12 +139,31 @@ def get_label_tables(
 
     # Join back on video_id to get the camera_id and video_id onto frames
     frames = frames.join(
-        videos.select("video_idx", "video_id", "camera_id"),
+        videos.select("video_idx", "video_id", "camera_id", "ls_fps", "true_fps"),
         on=["video_idx"],
         how="left",
     ).drop("video_idx")
 
     videos = videos.drop("video_idx")
+
+    # Correct frame numbers
+    videos = videos.with_columns(
+        framesCount=(
+            pl.col("framesCount") * (pl.col("true_fps") / pl.col("ls_fps"))
+        ).cast(pl.Int64)
+    ).drop("ls_fps")
+
+    frames = frames.with_columns(
+        frame_begin=(
+            pl.col("frame_begin") * (pl.col("true_fps") / pl.col("ls_fps"))
+        ).cast(pl.Int64),
+        frame_end=(pl.col("frame_end") * (pl.col("true_fps") / pl.col("ls_fps"))).cast(
+            pl.Int64
+        ),
+    ).drop("ls_fps")
+
+    # Buffer the frame_data behavior if not at least num_frames long
+    frames = buffer_frame_data(frame_data=frames, num_frames=num_frames)
 
     # Save
     output_dir.mkdir(parents=True, exist_ok=True)
