@@ -11,23 +11,22 @@ def build_clip_index(
     split_guidance_path: Path,
     output_path: Path,
 ) -> None:
-    """Join behavior labels with video metadata and FPS-correct frame boundaries.
+    """Join behavior labels with video metadata to produce a behavior clip index.
 
     Joins ``frame_data_full.ndjson`` (per-track behavior labels) with
-    ``video_data_full.ndjson`` (video metadata including camera_id) and
-    ``split_guidance.parquet`` (actual video FPS and train/val/test split).
-    Frame boundaries from Label Studio are rescaled from Label Studio FPS to
-    the actual video FPS.
+    ``video_data_full.ndjson`` (video metadata) and ``split_guidance.parquet``
+    (train/val/test split assignment). Frame numbers are already FPS-corrected
+    upstream in ``get_label_tables`` so no rescaling is performed here.
 
     Args:
         frame_data_path: Path to ``frame_data_full.ndjson`` containing columns
-            ``track_id``, ``video_id``, ``label``, ``frame_begin``, ``frame_end``.
+            ``track_id``, ``video_id``, ``camera_id``, ``label``, ``frame_begin``,
+            ``frame_end``.
         video_data_path: Path to ``video_data_full.ndjson`` containing columns
-            ``video_id``, ``video_path``, ``camera_id``, ``duration``.
-        split_guidance_path: Path to ``corrected_frame_guidance`` parquet containing
-            columns ``video_path``, ``fps`` (actual video FPS), ``ls_fps`` (Label
-            Studio annotation FPS), and ``split``.
-        output_path: Path to output parquet
+            ``video_id``, ``camera_id``, ``video_path``.
+        split_guidance_path: Path to ``split_guidance.parquet`` containing columns
+            ``video_path`` and ``split``.
+        output_path: Path where the output parquet will be written.
     """
     frame_data = pl.read_ndjson(frame_data_path).select(
         "track_id",

@@ -5,8 +5,27 @@ import polars as pl
 from pathlib import Path
 
 
-def buffer_frame_data(frame_data, num_frames):
-    """Buffer frame data by camera."""
+def buffer_frame_data(
+    frame_data: pl.DataFrame, video_data: pl.DataFrame, num_frames: int
+) -> pl.DataFrame:
+    """Extend short behavior clips symmetrically to a minimum length of ``num_frames``.
+
+    For each behavior whose frame span is shorter than ``num_frames``, adds an equal
+    buffer to both ``frame_begin`` and ``frame_end``. If the buffer pushes a boundary
+    beyond the video extent, the excess is redistributed to the opposite end, and the
+    result is clamped to ``[1, framesCount]``.
+
+    Args:
+        frame_data: DataFrame containing per-behavior frame annotations. Must include
+            columns ``video_id``, ``camera_id``, ``frame_begin``, and ``frame_end``.
+        video_data: DataFrame containing video metadata. Must include columns
+            ``video_id``, ``camera_id``, and ``framesCount``.
+        num_frames: Minimum number of frames each behavior clip should span.
+
+    Returns:
+        DataFrame with ``frame_begin`` and ``frame_end`` adjusted so each behavior
+        spans at least ``num_frames`` frames, clamped to valid video boundaries.
+    """
     frame_data = frame_data.with_columns(
         behavior_length=pl.col("frame_end") - pl.col("frame_begin"),
     )
@@ -25,7 +44,36 @@ def buffer_frame_data(frame_data, num_frames):
         frame_end=pl.col("frame_end") + pl.col("buffer"),
     ).drop("buffer", "behavior_length")
 
-    return frame_data
+    # Adjust cases where buffer exceeds video start or finish
+    frame_data_with_counts = frame_data.join(
+        video_data.select("video_id", "camera_id", "framesCount"),
+        on=["video_id", "camera_id"],
+        how="left",
+    )
+
+    # If frame_begin is negative add to column to add to frame_end
+    # If frame_end exceeds the framesCount, subract from frame_begin
+    frame_data_with_counts = frame_data_with_counts.with_columns(
+        pl.when(pl.col("frame_begin") < 0)
+        .then(pl.col("frame_begin").abs() + 1)
+        .otherwise(pl.lit(0))
+        .alias("add_to_end"),
+        pl.when(pl.col("frame_end") > pl.col("framesCount"))
+        .then(pl.col("frame_end") - pl.col("framesCount"))
+        .otherwise(pl.lit(0))
+        .alias("subtract_from_begin"),
+    )
+
+    frame_data_with_counts = frame_data_with_counts.with_columns(
+        (pl.col("frame_begin") - pl.col("subtract_from_begin"))
+        .clip(lower_bound=1)
+        .alias("frame_begin"),
+        (pl.col("frame_end") + pl.col("add_to_end"))
+        .clip(upper_bound=pl.col("framesCount"))
+        .alias("frame_end"),
+    ).drop("add_to_end", "subtract_from_begin")
+
+    return frame_data_with_counts
 
 
 def get_label_tables(
@@ -36,18 +84,23 @@ def get_label_tables(
 ) -> None:
     """Process a Label Studio JSON export and generate separate video and frame tables.
 
-    This function reads a Label Studio JSON export, processes the nested annotations,
-    and creates two NDJSON files:
-    1. `video_data.ndjson` – contains video-level metadata
-    2. `frame_data.ndjson` – contains frame-level annotations with bounding boxes and labels
+    Reads a Label Studio JSON export, reads true FPS from each video file via cv2,
+    FPS-corrects all frame numbers, and buffers short behavior clips to ``num_frames``.
+    Writes two NDJSON files:
+
+    1. ``video_data.ndjson`` — video-level metadata including true FPS and frame count
+    2. ``frame_data.ndjson`` — per-behavior frame annotations with FPS-corrected and
+       buffered ``frame_begin`` / ``frame_end``
 
     Args:
         label_json_path (Path): Path to the Label Studio JSON export file.
+        videos_path (Path): Base directory containing the original video files,
+            organized as ``videos_path / camera_id / video_file``. Used to read
+            true FPS via cv2.
         output_dir (Path): Directory where the resulting NDJSON files will be saved.
-            If the directory does not exist, it will be created along with any
-            necessary parent directories.
-        num_frames (int): Number of frames used in video classification training.
-            Behaviors with less than num_frames will be buffered evenly.
+            Created along with any necessary parent directories if it does not exist.
+        num_frames (int): Minimum number of frames each behavior clip should span.
+            Clips shorter than this are buffered symmetrically. Defaults to 16.
 
     Returns:
         None: The function writes two files to disk and does not return anything.
@@ -163,7 +216,9 @@ def get_label_tables(
     ).drop("ls_fps")
 
     # Buffer the frame_data behavior if not at least num_frames long
-    frames = buffer_frame_data(frame_data=frames, num_frames=num_frames)
+    frames = buffer_frame_data(
+        frame_data=frames, video_data=videos, num_frames=num_frames
+    )
 
     # Save
     output_dir.mkdir(parents=True, exist_ok=True)

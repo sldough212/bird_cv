@@ -11,26 +11,25 @@ def split_camera_data(
     num_frames: int = 16,
     random_seed: int = 42,
 ) -> None:
-    """Splits video and frame data by camera into train, validation, and test sets and saves to disk.
+    """Split video and frame data by camera into train, validation, and test sets.
 
-    This function reads video and frame metadata, randomly splits cameras into train/val/test
-    based on the specified ratios, subsamples frames, optionally adds resting frames, and
-    writes the resulting lookup tables to parquet files.
+    Reads video and frame metadata, randomly assigns cameras to splits based on
+    ``split_ratio``, subsamples target frames for train/val, adds resting frames
+    for balance, and writes a single ``split_guidance.parquet`` to ``output_path``.
 
     Args:
         video_data_path (Path): Path to the NDJSON file containing video-level metadata.
         frame_data_path (Path): Path to the NDJSON file containing frame-level metadata.
-        output_path (Path): Directory where the split lookup parquet files will be saved.
-        split_ratio (dict[str, float]): Dictionary specifying the train/val/test split ratios.
-            Keys must include "train", "val", and "test".
-        num_frames (int): Number of frames used in video classification training.
-            Behaviors with less than num_frames will be buffered evenly.
-        random_seed (int, optional): Seed for random number generation to ensure reproducibility.
-            Defaults to 42.
+        output_path (Path): Directory where ``split_guidance.parquet`` will be saved.
+        split_ratio (dict[str, float]): Train/val/test split ratios by camera.
+            Keys must include ``"train"``, ``"val"``, and ``"test"``.
+        num_frames (int): Minimum frames per behavior clip — passed through for
+            consistency but buffering is now handled upstream in ``get_label_tables``.
+            Defaults to 16.
+        random_seed (int): Seed for reproducible camera shuffling. Defaults to 42.
 
     Returns:
-        None. Parquet files for each split ("train_lookup.parquet", "val_lookup.parquet",
-        "test_lookup.parquet") are written to `output_path`.
+        None: Writes ``split_guidance.parquet`` to ``output_path``.
     """
 
     # Set random seed

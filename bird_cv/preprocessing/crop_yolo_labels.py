@@ -112,6 +112,28 @@ def crop_yolo(
     video_id: str,
     camera_id: str,
 ) -> list[str]:
+    """Crop and save a single frame's image and labels per cage using SAM2 segmentation masks.
+
+    For a given video frame, loads the full-frame YOLO image and labels, looks up
+    the appropriate SAM2 segmentation mask via the segment index, and for each cage
+    crops the image to the cage region and renormalizes the bounding box labels.
+    Saves cropped images and YOLO txt files to ``yolo_output_path``.
+
+    Args:
+        split: Dataset split — ``"train"``, ``"val"``, or ``"test"``. Controls output
+            directory structure (test frames are nested by camera/video/cage).
+        yolo_data_path: Root of the full-frame YOLO dataset containing ``images/``
+            and ``labels/`` subdirectories.
+        yolo_output_path: Root of the per-cage cropped YOLO output dataset.
+        video_segments_path: Path to the directory containing SAM2 segmentation JSONs
+            organized as ``camera_id / video_id / segment_index.json``.
+        frame: Frame number to process.
+        video_id: Video identifier.
+        camera_id: Camera identifier (decoded, e.g. ``"H7,I22"``).
+
+    Returns:
+        List of cage IDs that were successfully processed for this frame.
+    """
     # Create new yolo data store
     base_label_output_path = yolo_output_path / "labels" / split
     base_label_output_path.mkdir(exist_ok=True, parents=True)
