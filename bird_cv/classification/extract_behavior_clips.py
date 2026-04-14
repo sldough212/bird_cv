@@ -85,12 +85,18 @@ def extract_behavior_clips(
                 "Check that behavior buffering in get_label_tables is configured correctly."
             )
 
+        # Sanitize label for use as a directory name
+        label_dir = label.replace("/", "_").replace(" ", "_").lower()
+
         # Slide a window of num_frames; drop any trailing window that would be short
         starts = range(0, len(candidates) - num_frames + 1, stride)
         for clip_idx, start in enumerate(starts):
             window = candidates[start : start + num_frames]
             clip_dir = (
-                output_path / split / label / f"{track_id}_{cage_id}_clip{clip_idx:03d}"
+                output_path
+                / split
+                / label_dir
+                / f"{track_id}_{cage_id}_clip{clip_idx:03d}"
             )
             clip_dir.mkdir(parents=True, exist_ok=True)
             for out_idx, src in enumerate(window):

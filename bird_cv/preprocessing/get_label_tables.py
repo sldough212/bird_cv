@@ -27,13 +27,13 @@ def buffer_frame_data(
         spans at least ``num_frames`` frames, clamped to valid video boundaries.
     """
     frame_data = frame_data.with_columns(
-        behavior_length=pl.col("frame_end") - pl.col("frame_begin"),
+        behavior_length=pl.col("frame_end") - pl.col("frame_begin") + 1,
     )
 
     # Determine buffer size
     frame_data = frame_data.with_columns(
         pl.when(pl.col("behavior_length") < num_frames)
-        .then(((num_frames - pl.col("behavior_length")) / 2).cast(pl.Int64))
+        .then(((num_frames - pl.col("behavior_length") + 1) // 2).cast(pl.Int64))
         .otherwise(pl.lit(0))
         .alias("buffer")
     )
@@ -139,19 +139,22 @@ def get_label_tables(
         )
     )
 
-    # Grab the true fps from the video
+    # Grab the true fps and frame count from the video
     all_fps = []
+    all_frame_counts = []
     for row in videos.iter_rows(named=True):
         full_video_path = (
             videos_path / row["camera_id"] / f"{row['video_id']}.{row['video_ext']}"
         )
         cap = cv2.VideoCapture(full_video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        all_fps.append(fps)
+        all_fps.append(cap.get(cv2.CAP_PROP_FPS))
+        all_frame_counts.append(int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
         cap.release()
 
     videos = videos.with_columns(
-        ls_fps=pl.col("framesCount") / pl.col("duration"), true_fps=pl.Series(all_fps)
+        ls_fps=pl.col("framesCount") / pl.col("duration"),
+        true_fps=pl.Series(all_fps),
+        true_frame_count=pl.Series(all_frame_counts),
     )
 
     # Subselect frame metadata
@@ -175,13 +178,26 @@ def get_label_tables(
         )
     )
 
+    # Convert labels to yolo
+    frames = frames.with_columns(
+        ((pl.col("x") + pl.col("width") / 2) / 100).alias("x"),
+        (pl.col("width") / 100).alias("width"),
+        ((pl.col("y") + pl.col("height") / 2) / 100).alias("y"),
+        (pl.col("height") / 100).alias("height"),
+    )
+
     # Groupby the track id to get the frame beginning and end
+    # Also determine the coordinate centroid to be used in assigning cage_ids to tracks
     frames = frames.group_by("track_id").agg(
         pl.col("video_idx").first().alias("video_idx"),
         pl.col("label").first().alias("label"),
-        pl.col("frame").min().alias("frame_begin"),
-        pl.col("frame").max().alias("frame_end"),
+        (pl.col("frame").min() + 1).alias("frame_begin"),
+        (pl.col("frame").max() + 1).alias("frame_end"),
         pl.col("framesCount").first().alias("framesCount"),
+        pl.col("x").mean().alias("mean_x"),
+        pl.col("y").mean().alias("mean_y"),
+        pl.col("width").mean().alias("mean_width"),
+        pl.col("height").mean().alias("mean_height"),
     )
     frames = frames.with_columns(
         pl.when(pl.col("frame_begin") == pl.col("frame_end"))
@@ -199,12 +215,10 @@ def get_label_tables(
 
     videos = videos.drop("video_idx")
 
-    # Correct frame numbers
-    videos = videos.with_columns(
-        framesCount=(
-            pl.col("framesCount") * (pl.col("true_fps") / pl.col("ls_fps"))
-        ).cast(pl.Int64)
-    ).drop("ls_fps")
+    # Use OpenCV frame count directly — avoids rounding errors from duration-based computation
+    videos = videos.with_columns(framesCount=pl.col("true_frame_count")).drop(
+        "ls_fps", "true_frame_count"
+    )
 
     frames = frames.with_columns(
         frame_begin=(
@@ -214,6 +228,14 @@ def get_label_tables(
             pl.Int64
         ),
     ).drop("ls_fps")
+
+    # Truncate resting tracks to num_frames so they contribute one clip each
+    frames = frames.with_columns(
+        pl.when(pl.col("label") == "Resting")
+        .then(pl.col("frame_begin") + num_frames - 1)
+        .otherwise(pl.col("frame_end"))
+        .alias("frame_end")
+    )
 
     # Buffer the frame_data behavior if not at least num_frames long
     frames = buffer_frame_data(

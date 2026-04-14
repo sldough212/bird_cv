@@ -92,9 +92,9 @@ def test_get_label_tables_creates_expected_outputs(tmp_path: Path) -> None:
     assert videos["framesCount"][0] == 100
     assert videos["duration"][0] == 3.2
 
-    # Assert: frame data (columns: track_id, label, frame_begin, frame_end, video_id, camera_id, true_fps)
+    # Assert: frame data (columns: track_id, label, frame_begin, frame_end, video_id, camera_id, true_fps, framesCount)
     frames = pl.read_ndjson(frame_path)
-    assert frames.shape == (1, 7)
+    assert frames.shape == (1, 8)
     assert frames["video_id"][0] == "08"
     assert frames["track_id"][0] == "r1"
     assert frames["label"][0] == "bird"

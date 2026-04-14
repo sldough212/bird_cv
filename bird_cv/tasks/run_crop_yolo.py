@@ -14,10 +14,9 @@ build_clip_index(
 )
 
 run_crop_yolo(
-    split_guidance_path=base_path / "intermediate/split_guidance.parquet",
     yolo_data_path=base_path / "yolo_store",
     yolo_output_path=base_path / "yolo_crop",
     video_segments_path=base_path / "segmentations",
-    behavior_clips_path=base_path / "intermediate/clip_index.parquet",
-    behavior_output_path=base_path / "intermediate/behavior_index.parquet",
+    clip_index_path=base_path / "intermediate/clip_index.parquet",
+    clip_output_path=base_path / "intermediate/behavior_index.parquet",
 )

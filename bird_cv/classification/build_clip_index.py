@@ -35,6 +35,10 @@ def build_clip_index(
         "label",
         "frame_begin",
         "frame_end",
+        "mean_x",
+        "mean_y",
+        "mean_width",
+        "mean_height",
     )
     video_data = pl.read_ndjson(video_data_path).select(
         "video_id",
@@ -57,6 +61,10 @@ def build_clip_index(
         "frame_begin",
         "frame_end",
         "split",
+        "mean_x",
+        "mean_y",
+        "mean_width",
+        "mean_height",
     )
 
     output_path.parent.mkdir(exist_ok=True, parents=True)
