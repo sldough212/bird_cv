@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import torch
-import numpy as np
 from sklearn.metrics import (
     classification_report,
     confusion_matrix,
@@ -69,11 +68,8 @@ def evaluate_video_model(
             labels = batch["labels"].to(dev)
             outputs = model(pixel_values=pixel_values)
             preds = outputs.logits.argmax(dim=-1)
-            all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
-
-    all_preds = np.array(all_preds)
-    all_labels = np.array(all_labels)
+            all_preds.extend(preds.cpu().tolist())
+            all_labels.extend(labels.cpu().tolist())
 
     report = classification_report(
         all_labels, all_preds, target_names=label_names, output_dict=True

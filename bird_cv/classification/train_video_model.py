@@ -208,7 +208,7 @@ def train_video_model(
             f"Epoch {epoch + 1}/{epochs}  loss={avg_loss:.4f}  val_acc={val_acc:.4f}{marker}"
         )
 
-        if val_acc > best_val_acc:
+        if val_acc >= best_val_acc:
             best_val_acc = val_acc
             model.save_pretrained(output_dir / "best")
             processor.save_pretrained(output_dir / "best")
