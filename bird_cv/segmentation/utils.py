@@ -1,6 +1,22 @@
 import numpy as np
 
 
+def lookup_segment_idx(segment_index: dict, frame: int) -> int:
+    """Return the segment index whose [start, end] range contains ``frame``.
+
+    Args:
+        segment_index (dict): Mapping of segment index to ``{"start": int, "end": int}``.
+        frame (int): Frame number to look up.
+
+    Returns:
+        int: The matching segment index, or the last segment if frame is beyond all ranges.
+    """
+    for seg_idx, bounds in segment_index.items():
+        if bounds["start"] <= frame <= bounds["end"]:
+            return int(seg_idx)
+    return int(max(segment_index.keys(), key=int))
+
+
 def calculate_iou(pred_mask: np.ndarray, gt_mask: np.ndarray) -> float:
     """Calculate the Intersection over Union (IoU) metric for two binary masks.
 

@@ -8,26 +8,31 @@ def split_camera_data(
     frame_data_path: Path,
     output_path: Path,
     split_ratio: dict[str, float],
+    num_frames: int = 16,
     random_seed: int = 42,
+    sample_rests: bool = False,
 ) -> None:
-    """Splits video and frame data by camera into train, validation, and test sets and saves to disk.
+    """Split video and frame data by camera into train, validation, and test sets.
 
-    This function reads video and frame metadata, randomly splits cameras into train/val/test
-    based on the specified ratios, subsamples frames, optionally adds resting frames, and
-    writes the resulting lookup tables to parquet files.
+    Reads video and frame metadata, randomly assigns cameras to splits based on
+    ``split_ratio``, subsamples target frames for train/val, and writes a single
+    ``split_guidance.parquet`` to ``output_path``.
 
     Args:
         video_data_path (Path): Path to the NDJSON file containing video-level metadata.
         frame_data_path (Path): Path to the NDJSON file containing frame-level metadata.
-        output_path (Path): Directory where the split lookup parquet files will be saved.
-        split_ratio (dict[str, float]): Dictionary specifying the train/val/test split ratios.
-            Keys must include "train", "val", and "test".
-        random_seed (int, optional): Seed for random number generation to ensure reproducibility.
-            Defaults to 42.
+        output_path (Path): Directory where ``split_guidance.parquet`` will be saved.
+        split_ratio (dict[str, float]): Train/val/test split ratios by camera.
+            Keys must include ``"train"``, ``"val"``, and ``"test"``.
+        num_frames (int): Minimum frames per behavior clip — passed through for
+            consistency but buffering is now handled upstream in ``get_label_tables``.
+            Defaults to 16.
+        random_seed (int): Seed for reproducible camera shuffling. Defaults to 42.
+        sample_rests (bool): Whether to sample additional resting frames to balance
+            class counts. Defaults to False.
 
     Returns:
-        None. Parquet files for each split ("train_lookup.parquet", "val_lookup.parquet",
-        "test_lookup.parquet") are written to `output_path`.
+        None: Writes ``split_guidance.parquet`` to ``output_path``.
     """
 
     # Set random seed
@@ -38,7 +43,7 @@ def split_camera_data(
     frame_data = pl.read_ndjson(frame_data_path)
 
     # Randomly split the cameras into train / validation / test
-    cameras = video_data.select("camera_id").unique()
+    cameras = video_data.select("camera_id").unique().sort("camera_id")
     n_cameras = cameras.height
     indices = np.random.permutation(n_cameras)
     n_train = round(split_ratio["train"] * n_cameras)
@@ -68,7 +73,9 @@ def split_camera_data(
         if split == "test":
             videos = videos.with_columns(
                 split=pl.lit(split),
-                target_frames=pl.int_ranges(start=pl.lit(1), end=pl.col("framesCount")),
+                target_frames=pl.int_ranges(
+                    start=pl.lit(1), end=pl.col("framesCount") + 1
+                ),
             )
             videos = videos.drop("framesCount")
             split_guidance.append(videos)
@@ -82,7 +89,8 @@ def split_camera_data(
         split_frames = subsample_frames(split_frames)
 
         # Provide additional resting frames based on max frame count of other actions
-        split_frames = sample_resting_frames(split_frames, seed=random_seed)
+        if sample_rests:
+            split_frames = sample_resting_frames(split_frames, seed=random_seed)
 
         # Get the video path
         split_frames = split_frames.join(videos, on="video_id")
@@ -95,12 +103,11 @@ def split_camera_data(
 
 
 def subsample_frames(frame_data: pl.DataFrame) -> pl.DataFrame:
-    """Subsamples non-resting frames and computes target frames and label counts per video.
+    """Compute target frames and label counts per video from all behavior tracks.
 
-    This function extracts all frames corresponding to non-resting labels, generates a
-    list of target frames per video, and calculates counts for each label. It returns a
-    Polars DataFrame with target frames and label counts, merged with the total frame
-    count per video.
+    Generates a list of target frames per video from all labeled behaviors (including
+    resting), and calculates per-label frame counts. Resting tracks are expected to
+    have already been truncated to ``num_frames`` length in ``get_label_tables``.
 
     Args:
         frame_data (pl.DataFrame): Polars DataFrame containing frame-level annotations. Must
@@ -109,18 +116,16 @@ def subsample_frames(frame_data: pl.DataFrame) -> pl.DataFrame:
     Returns:
         pl.DataFrame: DataFrame with the following columns:
             - video_id: Unique identifier for each video.
-            - target_frames: List of frame numbers corresponding to non-resting labels.
+            - target_frames: List of frame numbers for all behavior tracks.
             - label_counts: Struct containing counts of each label per video.
             - framesCount: Total number of frames in the video.
     """
 
     # For each video, I want a list of all relevant frames as well as count of each behavior
-    non_resting_frames = frame_data.filter(pl.col("label") != "Resting")
-
     # Group by video_id, create ranges, and compute unique sorted values per group
     # Create row-wise ranges
-    df = non_resting_frames.with_columns(
-        pl.int_ranges(pl.col("frame_begin"), pl.col("frame_end"), 1).alias("range")
+    df = frame_data.with_columns(
+        pl.int_ranges(pl.col("frame_begin"), pl.col("frame_end") + 1, 1).alias("range")
     )
 
     # Explode ranges
@@ -138,7 +143,7 @@ def subsample_frames(frame_data: pl.DataFrame) -> pl.DataFrame:
         .pivot(values="count", index="video_id", on="label")
         .fill_null(0)
         .with_columns(
-            [pl.struct([c for c in df["label"].unique()]).alias("label_counts")]
+            [pl.struct([c for c in sorted(df["label"].unique())]).alias("label_counts")]
         )
         .select(["video_id", "label_counts"])
     )
@@ -148,7 +153,7 @@ def subsample_frames(frame_data: pl.DataFrame) -> pl.DataFrame:
 
     # Sample a portion of random frames that have resting (or no label)
     result = result.join(
-        non_resting_frames.select("video_id", "framesCount").unique(),
+        frame_data.select("video_id", "framesCount").unique(),
         on="video_id",
         how="left",
     )
