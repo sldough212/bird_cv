@@ -1,20 +1,12 @@
 # Makefile for your project
 
-VENV := .venv
-PYTHON := python3
-
-.PHONY: init
+.PHONY: init clean
 
 init:
-	$(PYTHON) -m venv $(VENV)
-	@echo "Virtual environment created at $(VENV)"
-	@echo "source $(VENV)/bin/activate"
-	poetry env use $(VENV)/bin/python
-	poetry install
-	poetry run pip install -e ../sam2
-	poetry run pre-commit install
-
+	uv sync --group dev
+	uv pip install -e ../sam2
+	uv run pre-commit install
 
 # Remove the virtual environment
 clean:
-	rm -rf $(VENV)
+	rm -rf .venv
