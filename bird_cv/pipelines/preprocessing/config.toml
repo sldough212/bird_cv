@@ -1,0 +1,25 @@
+[run]
+base_path = "/gscratch/pdoughe1"
+run_id = ""  # leave empty to auto-generate from timestamp
+
+[paths]
+videos_path = "/gscratch/pdoughe1/videos/2021_bunting_clips"
+segmentation_configs_path = "/gscratch/pdoughe1/segmentation_configs/configs"
+sam2_checkpoint_path = "/home/pdoughe1/sam2/checkpoints"
+
+# Paths to each labeler's annotation directory (containing annotations.json
+# and annotations_interpolated.json)
+label_paths = [
+    "/gscratch/pdoughe1/labels/labeler_0",
+    "/gscratch/pdoughe1/labels/labeler_1",
+]
+
+[preprocessing]
+num_frames = 16
+stride = 8
+random_seed = 42
+
+[split_ratio]
+train = 0.7
+val = 0.15
+test = 0.15

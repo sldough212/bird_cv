@@ -1,0 +1,16 @@
+[run]
+base_path = "/gscratch/pdoughe1"
+run_id = ""  # leave empty to auto-generate from timestamp
+
+[paths]
+video_crop_path = "/gscratch/pdoughe1/20260415_163412/video_crop"
+model_checkpoint = "MCG-NJU/videomae-base"
+
+[training]
+num_frames = 16
+epochs = 10
+batch_size = 8
+lr = 1e-4
+device = "cuda"
+freeze_encoder = true
+run_name = "videomae_behavior"
