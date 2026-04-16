@@ -2,10 +2,12 @@
 
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
+from PIL import Image
 from torch.utils.data import DataLoader, Dataset
-from torchvision.io import read_image
+from tqdm import tqdm
 from transformers import (
     AutoImageProcessor,
     VideoMAEForVideoClassification,
@@ -57,10 +59,7 @@ class BehaviorClipDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         clip_dir, label_idx = self.clips[idx]
         frame_paths = sorted(clip_dir.glob("*.jpg"))[: self.num_frames]
-        frames = [read_image(str(p)) for p in frame_paths]  # (C, H, W) uint8
-
-        # processor expects list of PIL or numpy HWC — convert from CHW uint8
-        frames_np = [f.permute(1, 2, 0).numpy() for f in frames]
+        frames_np = [np.array(Image.open(p)) for p in frame_paths]  # HWC uint8
         inputs = self.processor(frames_np, return_tensors="pt")
 
         return {
@@ -109,17 +108,26 @@ def train_video_model(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     dev = torch.device(device if torch.cuda.is_available() else "cpu")
+    print(f"Device: {dev}")
+    if dev.type == "cuda":
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
 
+    print(f"\nLoading model: {model_checkpoint}")
     processor = AutoImageProcessor.from_pretrained(
         model_checkpoint, num_frames=num_frames
     )
 
+    print("Building datasets...")
     train_ds = BehaviorClipDataset(clips_root / "train", processor, num_frames)
     val_ds = BehaviorClipDataset(clips_root / "val", processor, num_frames)
 
     label_to_idx = train_ds.label_to_idx
     id2label = {v: k for k, v in label_to_idx.items()}
     num_classes = len(label_to_idx)
+
+    print(f"  Labels ({num_classes}): {list(label_to_idx.keys())}")
+    print(f"  Train clips: {len(train_ds)}")
+    print(f"  Val clips:   {len(val_ds)}")
 
     model = VideoMAEForVideoClassification.from_pretrained(
         model_checkpoint,
@@ -133,6 +141,11 @@ def train_video_model(
         for name, param in model.named_parameters():
             if "classifier" not in name:
                 param.requires_grad = False
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"  Encoder frozen — trainable params: {trainable:,}")
+    else:
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"  Full fine-tune — trainable params: {trainable:,}")
 
     model = model.to(dev)
 
@@ -146,12 +159,19 @@ def train_video_model(
     )
     criterion = nn.CrossEntropyLoss()
 
+    print(f"\nTraining for {epochs} epochs (lr={lr}, batch_size={batch_size})\n")
     best_val_acc = 0.0
     for epoch in range(epochs):
         # Train
         model.train()
         train_loss = 0.0
-        for batch in train_loader:
+        train_bar = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch + 1}/{epochs} [train]",
+            unit="batch",
+            leave=False,
+        )
+        for batch in train_bar:
             pixel_values = batch["pixel_values"].to(dev)
             labels = batch["labels"].to(dev)
 
@@ -162,26 +182,35 @@ def train_video_model(
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
+            train_bar.set_postfix(loss=f"{loss.item():.4f}")
+
+        avg_loss = train_loss / len(train_loader)
 
         # Validate
         model.eval()
         correct = 0
+        val_bar = tqdm(
+            val_loader,
+            desc=f"Epoch {epoch + 1}/{epochs} [val]  ",
+            unit="batch",
+            leave=False,
+        )
         with torch.no_grad():
-            for batch in val_loader:
+            for batch in val_bar:
                 pixel_values = batch["pixel_values"].to(dev)
                 labels = batch["labels"].to(dev)
                 outputs = model(pixel_values=pixel_values)
                 correct += (outputs.logits.argmax(dim=-1) == labels).sum().item()
 
         val_acc = correct / len(val_ds)
+        marker = " *" if val_acc > best_val_acc else ""
         print(
-            f"Epoch {epoch + 1}/{epochs} "
-            f"loss={train_loss / len(train_loader):.4f} "
-            f"val_acc={val_acc:.4f}"
+            f"Epoch {epoch + 1}/{epochs}  loss={avg_loss:.4f}  val_acc={val_acc:.4f}{marker}"
         )
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             model.save_pretrained(output_dir / "best")
             processor.save_pretrained(output_dir / "best")
-            print(f"  Saved best model (val_acc={best_val_acc:.4f})")
+
+    print(f"\nDone. Best val_acc={best_val_acc:.4f} — saved to {output_dir / 'best'}")
