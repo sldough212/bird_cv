@@ -1,0 +1,17 @@
+[run]
+base_path = "/gscratch/pdoughe1"
+run_id = ""  # leave empty to auto-generate from timestamp
+
+[paths]
+yolo_crop_path = "/gscratch/pdoughe1/20260415_163412/yolo_crop"
+video_crop_path = "/gscratch/pdoughe1/20260415_163412/video_crop"
+yolo_model_path = "/gscratch/pdoughe1/20260415_163412/training/bird_yolo/weights/best.pt"
+videomae_model_path = "/gscratch/pdoughe1/20260415_163412/training/videomae_behavior/best"
+
+[detection]
+num_frames = 16
+
+[classification]
+num_frames = 16
+batch_size = 8
+device = "cuda"
