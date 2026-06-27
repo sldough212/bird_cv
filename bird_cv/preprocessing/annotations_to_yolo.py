@@ -86,11 +86,18 @@ def process_item(
             and annotation data under `item["annotations"]`.
         path_to_videos: Root directory containing all video files referenced
             in the annotation JSON.
-        path_to_output: Directory where YOLO `.txt` annotation files will be
-            written. One file is created per video frame.
+        path_to_output: Directory where output files will be written. In YOLO
+            mode, one image and label file is created per frame. In crop mode,
+            one cropped JPEG is saved per annotated frame.
+        path_to_guidance: Path to the split guidance parquet used to filter
+            videos and determine train/val/test split assignment.
+        crop_size: If provided, saves a square crop of this side length (in
+            pixels) centered on each bird bbox instead of the full frame and
+            YOLO label. Bbox centers are smoothed across frames to reduce
+            YOLO jitter before cropping.
 
     Returns:
-        None. Annotation files are written to disk as a side effect.
+        None. Files are written to disk as a side effect.
     """
     # Get video path and clean it
     video_path = (
@@ -138,11 +145,15 @@ def process_item(
     # Determine the split of the video based on guidance and redefine output paths
     if crop_size:
         split = "train"
+        cage = full_video_path.stem
+        path_to_output_frames = (
+            path_to_output / "images" / split / camera_id / video_id / cage
+        )
+        path_to_output_frames.mkdir(exist_ok=True, parents=True)
     else:
         split = video_guidance.select("split").item()
-
-    path_to_output_frames = path_to_output / "images" / split
-    path_to_output_labels = path_to_output / "labels" / split
+        path_to_output_frames = path_to_output / "images" / split
+        path_to_output_labels = path_to_output / "labels" / split
 
     # Collect annotations per frame
     frame_annotations: Dict[int, list[str]] = defaultdict(list)
@@ -223,14 +234,12 @@ def process_item(
             frame_num += 1
             continue
 
-        stem = f"{video_filename.replace('.mp4', '')}_frame_{frame_num:05d}"
-        frame_file = path_to_output_frames / f"{stem}.jpg"
-
         # Need to inverse the fps correction to get the correct annotation frame
         frame_num_ann = int(frame_num * ls_fps / fps)
         lines = frame_annotations[frame_num_ann]
 
         if crop_size:
+            frame_file = path_to_output_frames / f"{frame_num:05d}.jpg"
             center = smoothed_centers.get(frame_num)
             _save_cropped_bird_frame(
                 frame,
@@ -241,6 +250,8 @@ def process_item(
                 cy_norm=center[1] if center else None,
             )
         else:
+            stem = f"{video_filename.replace('.mp4', '')}_frame_{frame_num:05d}"
+            frame_file = path_to_output_frames / f"{stem}.jpg"
             cv2.imwrite(str(frame_file), frame)
             label_file = path_to_output_labels / f"{stem}.txt"
             with open(label_file, "w") as f:
