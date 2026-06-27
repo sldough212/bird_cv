@@ -12,10 +12,7 @@ from bird_cv.preprocessing.annotations_to_yolo import stream_annotations_to_yolo
 from bird_cv.preprocessing.crop_yolo_labels import run_crop_yolo
 from bird_cv.preprocessing.get_label_tables import get_label_tables
 from bird_cv.preprocessing.get_split_guidance import split_camera_data
-from bird_cv.segmentation.frames import extract_all_frames
-from bird_cv.segmentation.segment import segment
-from bird_cv.utils import extract_camera_video
-import tempfile
+from bird_cv.segmentation.segment import run_segment
 
 
 class SplitRatio(msgspec.Struct):
@@ -121,51 +118,14 @@ def run_preprocessing_pipeline(config_path: Path) -> None:
         )
 
     # Step 4: Run SAM2 segmentation
-    print("\n=== Step 4: Running SAM2 segmentation ===")
-    segmentation_configs_path = Path(cfg.paths.segmentation_configs_path)
-    model_checkpoint_path = Path(cfg.paths.sam2_checkpoint_path)
-    split_guidance = pl.read_parquet(intermediate_path / "split_guidance.parquet")
     segmentations_path = run_dir / "segmentations"
-
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
-        for video_str, target_frames in split_guidance.select(
-            "video_path", "target_frames"
-        ).to_numpy():
-            camera_id, video_name = extract_camera_video(video_str=video_str)
-            video_id = Path(video_name).stem
-            print(f"  Segmenting {camera_id}/{video_id}")
-
-            frame_store_path = temp_path / camera_id / video_id
-            frame_store_path.mkdir(exist_ok=True, parents=True)
-            extract_all_frames(
-                video_path=videos_path / camera_id / video_name,
-                output_path=frame_store_path,
-                frames=target_frames,
-            )
-
-            cam_pred_path = (
-                segmentations_path / camera_id / video_id / "segmentation.json"
-            )
-            if not cam_pred_path.exists():
-                train_video_id = next(
-                    iter((segmentation_configs_path / "frames" / camera_id).glob("*/"))
-                ).name
-                segment(
-                    config_path=segmentation_configs_path
-                    / "configs"
-                    / f"{camera_id}.json",
-                    x0_frame_path=segmentation_configs_path
-                    / "frames"
-                    / camera_id
-                    / train_video_id
-                    / "00001.jpg",
-                    y_video_path=frame_store_path,
-                    model_checkpoint_path=model_checkpoint_path,
-                    output_path=cam_pred_path,
-                    device="cuda",
-                    visualize=False,
-                )
+    run_segment(
+        segmentation_configs_path=Path(cfg.paths.segmentation_configs_path),
+        model_checkpoint_path=Path(cfg.paths.sam2_checkpoint_path),
+        split_guidance_path=intermediate_path / "split_guidance.parquet",
+        segmentations_path=segmentations_path,
+        videos_path=videos_path,
+    )
 
     # Step 5: Build clip index and crop YOLO per cage
     print("\n=== Step 5: Cropping YOLO images per cage ===")

@@ -3,6 +3,7 @@ import os
 import json
 import shutil
 import tempfile
+import polars as pl
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -19,7 +20,8 @@ from bird_cv.segmentation.visualize import (
 )
 from bird_cv.segmentation.smooth import smooth_masks
 from bird_cv.segmentation.utils import calculate_iou
-from bird_cv.utils import NumpyEncoder
+from bird_cv.utils import NumpyEncoder, extract_camera_video
+from bird_cv.segmentation.frames import extract_all_frames
 
 
 def get_camera_sam_config(
@@ -408,3 +410,71 @@ def segment(
                 video_segments=video_segments,
                 vis_frame_stride=vis_frame_stride,
             )
+
+
+def run_segment(
+    segmentation_configs_path: Path,
+    model_checkpoint_path: Path,
+    split_guidance_path: Path,
+    segmentations_path: Path,
+    videos_path: Path,
+) -> None:
+    """Run SAM2 cage segmentation for every video in the split guidance.
+
+    For each video, extracts target frames to a temporary directory and runs
+    ``segment`` to produce a ``segmentation.json`` under
+    ``segmentations_path/{camera_id}/{video_id}/``. Skips videos whose
+    segmentation output already exists.
+
+    Args:
+        segmentation_configs_path: Root directory of per-camera SAM2 config
+            files and reference frames, structured as
+            ``configs/{camera_id}.json`` and ``frames/{camera_id}/{video_id}/``.
+        model_checkpoint_path: Path to the SAM2 model checkpoint directory.
+        split_guidance_path: Path to the split guidance parquet supplying
+            ``video_path`` and ``target_frames`` columns.
+        segmentations_path: Root directory where segmentation outputs will be
+            written, structured as ``{camera_id}/{video_id}/segmentation.json``.
+        videos_path: Root directory containing the source video files.
+    """
+    split_guidance = pl.read_parquet(split_guidance_path)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        for video_str, target_frames in split_guidance.select(
+            "video_path", "target_frames"
+        ).to_numpy():
+            camera_id, video_name = extract_camera_video(video_str=video_str)
+            video_id = Path(video_name).stem
+            print(f"  Segmenting {camera_id}/{video_id}")
+
+            frame_store_path = temp_path / camera_id / video_id
+            frame_store_path.mkdir(exist_ok=True, parents=True)
+            extract_all_frames(
+                video_path=videos_path / camera_id / video_name,
+                output_path=frame_store_path,
+                frames=target_frames,
+            )
+
+            cam_pred_path = (
+                segmentations_path / camera_id / video_id / "segmentation.json"
+            )
+            if not cam_pred_path.exists():
+                train_video_id = next(
+                    iter((segmentation_configs_path / "frames" / camera_id).glob("*/"))
+                ).name
+                segment(
+                    config_path=segmentation_configs_path
+                    / "configs"
+                    / f"{camera_id}.json",
+                    x0_frame_path=segmentation_configs_path
+                    / "frames"
+                    / camera_id
+                    / train_video_id
+                    / "00001.jpg",
+                    y_video_path=frame_store_path,
+                    model_checkpoint_path=model_checkpoint_path,
+                    output_path=cam_pred_path,
+                    device="cuda",
+                    visualize=False,
+                )
