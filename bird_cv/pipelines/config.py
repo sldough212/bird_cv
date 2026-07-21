@@ -36,4 +36,5 @@ def resolve_run_dir(base_path: Path, run_id: str | None) -> Path:
         run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = base_path / run_id
     print(f"Run directory: {run_dir}")
+    run_dir.mkdir(exist_ok=True, parents=True)
     return run_dir

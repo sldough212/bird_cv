@@ -9,7 +9,7 @@ from bird_cv.classification.build_clip_index import build_clip_index
 from bird_cv.classification.extract_behavior_clips import extract_behavior_clips
 from bird_cv.pipelines.config import load_config, resolve_run_dir
 from bird_cv.preprocessing.annotations_to_yolo import stream_annotations_to_yolo
-from bird_cv.preprocessing.crop_yolo_labels import run_crop_yolo
+from bird_cv.preprocessing.crop import run_crop_yolo
 from bird_cv.preprocessing.get_label_tables import get_label_tables
 from bird_cv.preprocessing.get_split_guidance import split_camera_data
 from bird_cv.segmentation.segment import run_segment

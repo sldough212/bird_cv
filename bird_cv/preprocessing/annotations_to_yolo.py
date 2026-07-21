@@ -105,9 +105,6 @@ def process_item(
     )
     full_video_path = path_to_videos / video_path
 
-    # Get a unique identifier for each video
-    video_filename = video_path.replace("/", ".").replace(",", "%2C")
-
     # Where the annotation filenames are based
     video_path_base = path_to_videos.stem
 
@@ -116,6 +113,7 @@ def process_item(
     dirs_names = dirs.split("/")
     camera_id = dirs_names[1]
     video_id = dirs_names[2]
+    cage = full_video_path.stem
     # Remove optional extension from the video_id
     if not (path_to_videos / camera_id / video_id).is_dir():
         video_id = str(Path(video_id).stem)
@@ -145,7 +143,6 @@ def process_item(
     # Determine the split of the video based on guidance and redefine output paths
     if crop_size:
         split = "train"
-        cage = full_video_path.stem
         path_to_output_frames = (
             path_to_output / "images" / split / camera_id / video_id / cage
         )
@@ -216,8 +213,13 @@ def process_item(
             cy_seq = np.array(
                 [float(frame_annotations[af][0].split()[2]) for _, af in annotated]
             )
-            cx_smooth = np.convolve(cx_seq, kernel, mode="same")
-            cy_smooth = np.convolve(cy_seq, kernel, mode="same")
+            pad = k // 2
+            cx_smooth = np.convolve(
+                np.pad(cx_seq, pad, mode="edge"), kernel, mode="valid"
+            )
+            cy_smooth = np.convolve(
+                np.pad(cy_seq, pad, mode="edge"), kernel, mode="valid"
+            )
             smoothed_centers = {
                 vf: (cx_smooth[i], cy_smooth[i]) for i, (vf, _) in enumerate(annotated)
             }
@@ -250,7 +252,7 @@ def process_item(
                 cy_norm=center[1] if center else None,
             )
         else:
-            stem = f"{video_filename.replace('.mp4', '')}_frame_{frame_num:05d}"
+            stem = f"{camera_id}_{video_id}_{cage}_{frame_num:05d}"
             frame_file = path_to_output_frames / f"{stem}.jpg"
             cv2.imwrite(str(frame_file), frame)
             label_file = path_to_output_labels / f"{stem}.txt"

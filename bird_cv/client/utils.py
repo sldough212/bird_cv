@@ -1,15 +1,16 @@
 """Utilities for managing a Label Studio server and exporting annotations."""
 
-from datetime import datetime
 import logging
 import socket
 import subprocess
 import time
 from pathlib import Path
 
+from urllib.parse import unquote
+
+import cv2
 
 from label_studio_sdk import LabelStudio
-from label_studio_sdk.errors import BadRequestError
 
 
 logger = logging.getLogger(__name__)
@@ -142,68 +143,6 @@ def get_label_studio_client(
     return client
 
 
-def export_label_studio_annotations(
-    client: LabelStudio,
-    project_id: int,
-    output_path: Path,
-    interpolate_frames: bool = True,
-    snapshot_title: str | None = None,
-) -> None:
-    """Export annotations for a Label Studio project to a JSON file.
-
-    This function creates an export snapshot, verifies that the export has
-    completed, and downloads the resulting JSON file to disk.
-
-    Args:
-        client (LabelStudio): Authenticated Label Studio client.
-        project_id (int): ID of the project to export.
-        output_path (Path): File path path where the exported JSON will be saved.
-        interpolate_frames (bool): Whether to interpolate frames in the exported JSON.
-        snapshot_title (st | None): Name assigned to exported snapshot.
-
-    Raises:
-        BadRequestError: If the export snapshot is not completed or is not ready.
-    """
-    logger.info("Creating export snapshot for project %d", project_id)
-
-    if not snapshot_title:
-        # Get current date and time
-        now = datetime.now()
-
-        # Format suitable for filename: "YYYY-MM-DD_HH-MM-SS"
-        snapshot_title = now.strftime("%Y-%m-%d_%H-%M-%S")
-
-    export = client.projects.exports.create(
-        id=project_id,
-        title=snapshot_title,
-        serialization_options={"interpolate_key_frames": interpolate_frames},
-        task_filter_options={"only_with_annotations": True},
-    )
-    export_id = export.id
-
-    job = client.projects.exports.get(id=project_id, export_pk=export_id)
-    if job.status != "completed":
-        logger.error("Export snapshot not ready (status=%s)", job.status)
-        raise BadRequestError(
-            status_code=409,
-            body=f"Export not ready: {job.status}",
-        )
-
-    logger.info("Downloading annotations to %s", output_path)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "wb") as f:
-        for chunk in client.projects.exports.download(
-            id=project_id,
-            export_pk=export_id,
-            export_type="JSON",
-            request_options={"chunk_size": 1024},
-        ):
-            f.write(chunk)
-
-    logger.info("Annotations saved to %s", output_path)
-
-
 def get_project_id_from_name(client: LabelStudio, project_name: str) -> int:
     """Retrieve a Label Studio project ID by its project name.
 
@@ -233,53 +172,57 @@ def get_project_id_from_name(client: LabelStudio, project_name: str) -> int:
     raise ValueError(f"Project '{project_name}' not found")
 
 
-def get_label_studio_annotations(
-    host: str,
-    port: int,
-    api_key: str,
-    project_name: str,
-    output_path: Path,
-    interpolate_frames: bool = True,
-    snapshot_title: str | None = None,
-) -> None:
-    """Export Label Studio annotations for a project by name.
-
-    This function finds an open port, launches a Label Studio server,
-    resolves a project ID from its name, exports annotations to disk,
-    and shuts down the server.
+def get_local_path(video_url: str) -> Path:
+    """Resolve a Label Studio local-files video URL to an absolute filesystem path.
 
     Args:
-        host (str): Hostname or IP address for Label Studio.
-        port (int): Starting port number to try.
-        api_key (str): API key for Label Studio authentication.
-        project_name (str): Name (title) of the project to export.
-        output_path (Path): Destination file path for exported annotations.
-        interpolate_frames (bool): Whether to interpolate frames in the exported JSON.
-        snapshot_title (str | None): Name assigned to exported snapshot.
+        video_url (str): Label Studio video URL in the
+            `/data/local-files/?d=<url-encoded-path>` format.
+
+    Returns:
+        Path: Absolute local filesystem path to the video file.
     """
-    logger.info("Starting annotation export for project '%s'", project_name)
+    local_url = video_url.split("?d=")[-1]
+    return Path("/" + unquote(local_url))
 
-    open_port = find_open_port(port=port, host=host)
 
-    client = get_label_studio_client(
-        host=host,
-        port=open_port,
-        api_key=api_key,
-    )
+def get_video_info(path: Path | str) -> tuple[int, float]:
+    """Get the frame count and duration of a video file.
 
-    project_id = get_project_id_from_name(
-        client=client,
-        project_name=project_name,
-    )
+    Args:
+        path (Path | str): Path to the video file.
 
-    export_label_studio_annotations(
-        client=client,
-        project_id=project_id,
-        output_path=output_path,
-        interpolate_frames=interpolate_frames,
-        snapshot_title=snapshot_title,
-    )
+    Returns:
+        tuple[int, float]: The total frame count and duration in seconds.
+    """
+    cap = cv2.VideoCapture(str(path))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frames_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    return frames_count, frames_count / fps
 
-    close_server(port=open_port)
 
-    logger.info("Annotation export completed successfully")
+def process_lifespans(sequence: list[dict]) -> list[dict]:
+    """Disable trailing keyframes at gaps in a videorectangle track.
+
+    Given a `sequence` of per-frame region dicts sorted by increasing
+    `frame`, marks a keyframe as `enabled: False` whenever the next keyframe
+    isn't on the immediately following frame (i.e. tracking was lost), and
+    always disables the final keyframe. This keeps Label Studio from
+    interpolating a track across a gap or past its last confirmed frame.
+
+    Args:
+        sequence (list[dict]): Per-frame region dicts, each containing at
+            least `frame` and `enabled` keys, sorted by increasing frame
+            number.
+
+    Returns:
+        list[dict]: The same sequence, mutated in place, with `enabled`
+            flags updated.
+    """
+    for i in range(1, len(sequence)):
+        if sequence[i]["frame"] - sequence[i - 1]["frame"] > 1:
+            sequence[i - 1]["enabled"] = False
+    if sequence:
+        sequence[-1]["enabled"] = False
+    return sequence
