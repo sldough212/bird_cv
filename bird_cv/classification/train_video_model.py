@@ -2,7 +2,9 @@
 
 from pathlib import Path
 
+import msgspec
 import numpy as np
+import tomli_w
 import torch
 import torch.nn as nn
 from PIL import Image
@@ -12,6 +14,13 @@ from transformers import (
     AutoImageProcessor,
     VideoMAEForVideoClassification,
 )
+
+from bird_cv.pipelines.classification.pipeline import (
+    ClassificationConfig,
+    Paths,
+    Training,
+)
+from bird_cv.pipelines.config import resolve_run_dir
 
 
 class BehaviorClipDataset(Dataset):
@@ -214,3 +223,81 @@ def train_video_model(
             processor.save_pretrained(output_dir / "best")
 
     print(f"\nDone. Best val_acc={best_val_acc:.4f} — saved to {output_dir / 'best'}")
+
+
+def update_train_video_model(
+    base_path: Path,
+    video_crop_path: Path,
+    model_checkpoint: str = "MCG-NJU/videomae-base",
+    num_frames: int = 16,
+    epochs: int = 10,
+    batch_size: int = 8,
+    lr: float = 1e-4,
+    device: str = "cuda",
+    freeze_encoder: bool = True,
+    run_name: str = "videomae_behavior",
+) -> None:
+    """Fine-tune VideoMAE into a fresh run directory and save the resolved config.
+
+    Builds a :class:`ClassificationConfig` from the given arguments, resolves
+    a new timestamped run directory under ``base_path``, trains into it, then
+    writes the resolved config — including the path to the best checkpoint —
+    to ``run_config.toml`` in the run directory, so each run records exactly
+    what produced it.
+
+    Args:
+        base_path: Root directory under which a new timestamped run
+            directory is created.
+        video_crop_path: Root directory containing ``train/`` and ``val/``
+            clip splits, as produced by
+            :func:`bird_cv.classification.extract_behavior_clips.extract_behavior_clips`.
+        model_checkpoint: HuggingFace model ID or local path to load
+            VideoMAE weights from. Defaults to ``"MCG-NJU/videomae-base"``.
+        num_frames: Frames per clip. Defaults to 16.
+        epochs: Number of training epochs. Defaults to 10.
+        batch_size: Dataloader batch size. Defaults to 8.
+        lr: Learning rate. Defaults to 1e-4.
+        device: Device string passed to ``torch.device``. Defaults to
+            ``"cuda"``.
+        freeze_encoder: If ``True``, freeze the VideoMAE encoder and only
+            train the classification head. Defaults to ``True``.
+        run_name: Name of the run — a subdirectory with this name is
+            created under the run directory. Defaults to
+            ``"videomae_behavior"``.
+    """
+    paths = Paths(
+        base_path=str(base_path),
+        video_crop_path=str(video_crop_path),
+        model_checkpoint=model_checkpoint,
+    )
+    training = Training(
+        num_frames=num_frames,
+        epochs=epochs,
+        batch_size=batch_size,
+        lr=lr,
+        device=device,
+        freeze_encoder=freeze_encoder,
+        run_name=run_name,
+    )
+    cfg = ClassificationConfig(paths=paths, training=training)
+    run_dir = resolve_run_dir(Path(base_path), None)
+
+    cfg.paths.output_root = str(run_dir)
+    cfg.paths.best_checkpoint = str(run_dir / cfg.training.run_name / "best")
+
+    # Save the config in run_dir
+    with open(run_dir / "run_config.toml", "wb") as f:
+        tomli_w.dump(msgspec.to_builtins(cfg), f)
+
+    train_video_model(
+        clips_root=Path(cfg.paths.video_crop_path),
+        output_root=run_dir,
+        output_name=cfg.training.run_name,
+        model_checkpoint=cfg.paths.model_checkpoint,
+        num_frames=cfg.training.num_frames,
+        epochs=cfg.training.epochs,
+        batch_size=cfg.training.batch_size,
+        lr=cfg.training.lr,
+        device=cfg.training.device,
+        freeze_encoder=cfg.training.freeze_encoder,
+    )

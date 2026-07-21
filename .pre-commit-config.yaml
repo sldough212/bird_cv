@@ -15,3 +15,4 @@ repos:
   hooks:
     - id: mypy
       types_or: [ python, pyi ]
+      additional_dependencies: [ types-PyYAML ]
