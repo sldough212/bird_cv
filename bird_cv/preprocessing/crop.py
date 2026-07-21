@@ -1,6 +1,7 @@
-"""Per-cage YOLO image and label cropping pipeline."""
+"""Per-cage image and YOLO label cropping utilities."""
 
 import json
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -11,7 +12,9 @@ from bird_cv.preprocessing.image_utils import (
     crop_and_mask_image,
     normalize_labels_for_crop,
 )
+from bird_cv.segmentation.frames import extract_all_frames
 from bird_cv.segmentation.utils import lookup_segment_idx
+from bird_cv.utils import extract_camera_video
 
 
 def _load_cage_masks(seg_dir: Path, segment_index: dict, frame: int) -> dict | None:
@@ -246,3 +249,68 @@ def run_crop_yolo(
                 cage_id=cage_id,
                 cage_mask=frame_cage_masks[cage_id],
             )
+
+
+def crop_cages(
+    split_guidance_path: Path,
+    video_segments_path: Path,
+    clip_output_path: Path,
+    videos_path: Path,
+) -> None:
+    """Crop each cage region from every target frame and save as individual JPEGs.
+
+    For each video in the split guidance, extracts all frames to a temporary
+    directory, loads the corresponding SAM2 cage masks, and saves a cropped
+    JPEG per cage per frame under ``clip_output_path/{camera_id}/{video_id}/{cage_id}/``.
+    Frames with missing segmentation masks are skipped.
+
+    Args:
+        split_guidance_path: Path to the split guidance parquet produced by
+            ``simulate_split_guidance`` or the preprocessing pipeline.
+        video_segments_path: Root directory of SAM2 segmentation JSON outputs,
+            structured as ``{camera_id}/{video_id}/``.
+        clip_output_path: Root directory where cropped cage images will be saved.
+        videos_path: Root directory containing the source video files.
+    """
+    split_guidance = pl.read_parquet(split_guidance_path)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        for video_str, target_frames in split_guidance.select(
+            "video_path", "target_frames"
+        ).to_numpy():
+            camera_id, video_name = extract_camera_video(video_str=video_str)
+            video_id = Path(video_name).stem
+            image_output_path = clip_output_path / camera_id / video_id
+            print(f"  Cropping {camera_id}/{video_id}")
+
+            frame_store_path = temp_path / camera_id / video_id
+            frame_store_path.mkdir(exist_ok=True, parents=True)
+            extract_all_frames(
+                video_path=videos_path / camera_id / video_name,
+                output_path=frame_store_path,
+            )
+
+            # Extract segmentation info
+            seg_dir = video_segments_path / camera_id / video_id
+            seg_index_path = seg_dir / "segment_index.json"
+            with seg_index_path.open("r") as f:
+                segment_index = json.load(f)
+
+            # Crop each cage in camera / video
+            for frame in sorted(target_frames):
+                frame_cage_masks = _load_cage_masks(seg_dir, segment_index, frame)
+                if frame_cage_masks is None:
+                    continue
+
+                img = Image.open(frame_store_path / f"{frame:05d}.jpg")
+
+                for cage_id, cage_mask in frame_cage_masks.items():
+                    cropped_img, _ = crop_and_mask_image(
+                        img, cage_mask, black_out=True, padding=5
+                    )
+
+                    crop_output = image_output_path / cage_id
+                    crop_output.mkdir(exist_ok=True, parents=True)
+
+                    cropped_img.save(crop_output / f"{frame:05d}.jpg")
