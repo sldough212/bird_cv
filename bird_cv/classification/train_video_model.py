@@ -15,12 +15,30 @@ from transformers import (
     VideoMAEForVideoClassification,
 )
 
-from bird_cv.pipelines.classification.pipeline import (
-    ClassificationConfig,
-    Paths,
-    Training,
-)
 from bird_cv.pipelines.config import resolve_run_dir
+
+
+class Paths(msgspec.Struct):
+    base_path: Path
+    video_crop_path: Path
+    model_checkpoint: Path
+    output_root: str = ""
+    best_checkpoint: str = ""
+
+
+class Training(msgspec.Struct):
+    num_frames: int = 16
+    epochs: int = 10
+    batch_size: int = 8
+    lr: float = 1e-4
+    device: str = "cuda"
+    freeze_encoder: bool = True
+    run_name: str = "videomae_behavior"
+
+
+class ClassificationConfig(msgspec.Struct):
+    paths: Paths
+    training: Training
 
 
 class BehaviorClipDataset(Dataset):
@@ -80,8 +98,8 @@ class BehaviorClipDataset(Dataset):
 def train_video_model(
     clips_root: Path,
     output_root: Path,
-    output_name: str,
-    model_checkpoint: str = "MCG-NJU/videomae-base",
+    model_checkpoint: Path,
+    output_name: str = "videomae_behavior",
     num_frames: int = 16,
     epochs: int = 10,
     batch_size: int = 8,
@@ -101,8 +119,7 @@ def train_video_model(
         output_root: Directory where run outputs will be saved.
         output_name: Name of the run — a subdirectory with this name is
             created under ``output_root``.
-        model_checkpoint: HuggingFace model ID or local path to load
-            VideoMAE weights from. Defaults to ``"MCG-NJU/videomae-base"``.
+        model_checkpoint: Local path to load VideoMAE weights from.
         num_frames: Frames per clip — must match what was used in
             :func:`extract_behavior_clips`. Defaults to 16.
         epochs: Number of training epochs. Defaults to 10.
@@ -123,7 +140,7 @@ def train_video_model(
 
     print(f"\nLoading model: {model_checkpoint}")
     processor = AutoImageProcessor.from_pretrained(
-        model_checkpoint, num_frames=num_frames
+        str(model_checkpoint), num_frames=num_frames
     )
 
     print("Building datasets...")

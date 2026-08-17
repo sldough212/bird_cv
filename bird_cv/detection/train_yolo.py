@@ -6,12 +6,28 @@ import yaml
 import tomli_w
 import msgspec
 
-from bird_cv.pipelines.detection.pipeline import (
-    Paths,
-    Training,
-    DetectionConfig,
-)
 from bird_cv.pipelines.config import resolve_run_dir
+
+
+class Paths(msgspec.Struct):
+    base_path: str
+    model_config: str
+    pretrained_checkpoint: str
+    output_root: str = ""
+    new_checkpoint: str = ""
+
+
+class Training(msgspec.Struct):
+    epochs: int = 30
+    device: int = 0
+    tune: bool = False
+    tune_iterations: int = 30
+    run_name: str = "bird_yolo"
+
+
+class DetectionConfig(msgspec.Struct):
+    paths: Paths
+    training: Training
 
 
 def train_yolo(

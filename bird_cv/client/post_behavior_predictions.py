@@ -2,6 +2,7 @@
 
 import logging
 from pathlib import Path
+from datetime import datetime
 
 from label_studio_ml.response import ModelResponse
 from label_studio_sdk.label_interface.objects import PredictionValue
@@ -79,7 +80,7 @@ def post_behavior_predictions(
     api_key: str,
     project_name: str,
     model_path: Path | str,
-    model_version: str,
+    model_version: str | None = None,
     predict_labeled: bool = False,
 ) -> None:
     """Generate VideoMAE behavior predictions for a project and post them to Label Studio.
@@ -102,10 +103,10 @@ def post_behavior_predictions(
         predict_labeled (bool): If True, generate predictions for all tasks,
             including ones that already have annotations. If False (default),
             only unlabeled tasks are predicted on.
-
-    Returns:
-        None
     """
+    if not model_version:
+        model_version = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     logger.info("Starting annotation export for project '%s'", project_name)
 
     open_port = find_open_port(port=port, host=host)
