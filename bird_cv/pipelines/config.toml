@@ -1,0 +1,19 @@
+path_to_base_output = "/path/to/output"
+path_to_raw_videos = "/path/to/videos"
+path_to_segmentation_configs = "/path/to/seg/configs"
+path_to_sam = "/path/to/sam"
+api_key = "your-api-key"
+detect_project_name = "bird_detect"
+classify_project_name = "bird_classify"
+
+[detect]
+path_to_yolo = "/path/to/yolo"
+path_to_yolo_config = "/path/to/yolo/config.yaml"
+path_to_tracker_config = "/path/to/tracker.yaml"
+epochs = 30
+device = 0
+
+[classify]
+path_to_mae = "/path/to/mae"
+epochs = 10
+batch_size = 8

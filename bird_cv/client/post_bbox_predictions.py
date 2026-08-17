@@ -3,6 +3,7 @@
 import logging
 from collections import defaultdict
 from pathlib import Path
+from datetime import datetime
 
 from label_studio_ml.response import ModelResponse
 from label_studio_sdk.label_interface.objects import PredictionValue
@@ -121,7 +122,7 @@ def post_bbox_predictions(
     project_name: str,
     model_path: Path,
     tracker_path: Path,
-    model_version: str,
+    model_version: str | None = None,
     predict_labeled: bool = False,
 ) -> None:
     """Generate YOLO bbox predictions for a project and post them to Label Studio.
@@ -149,6 +150,8 @@ def post_bbox_predictions(
     Returns:
         None
     """
+    if not model_version:
+        model_version = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     logger.info("Starting annotation export for project '%s'", project_name)
 
