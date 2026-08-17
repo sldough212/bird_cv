@@ -35,6 +35,12 @@ wheels = [
 ]
 
 [[package]]
+name = "antlr4-python3-runtime"
+version = "4.9.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3e/38/7859ff46355f76f8d19459005ca000b6e7012f2f1ca597746cbcd1fbfe5e/antlr4-python3-runtime-4.9.3.tar.gz", hash = "sha256:f224469b4168294902bb1efa80a8bf7855f24c99aef99cbefc1bcd3cce77881b", size = 117034, upload-time = "2021-11-06T17:52:23.524Z" }
+
+[[package]]
 name = "anyio"
 version = "4.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -153,6 +159,7 @@ dependencies = [
     { name = "pandas" },
     { name = "polars" },
     { name = "ray", extra = ["tune"] },
+    { name = "sam-2" },
     { name = "scikit-learn" },
     { name = "seaborn" },
     { name = "tomli-w" },
@@ -191,6 +198,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.2.2" },
     { name = "polars", specifier = ">=1.30.0" },
     { name = "ray", extras = ["tune"], specifier = ">=2.1,<3.0" },
+    { name = "sam-2", git = "https://github.com/facebookresearch/sam2.git" },
     { name = "scikit-learn", specifier = ">=1.8.0,<2.0" },
     { name = "seaborn", specifier = ">=0.13.0" },
     { name = "tomli-w", specifier = ">=1.0,<1.3" },
@@ -1250,6 +1258,20 @@ wheels = [
 ]
 
 [[package]]
+name = "hydra-core"
+version = "1.3.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "antlr4-python3-runtime" },
+    { name = "omegaconf" },
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3e/e4/69a522676faf88994d93d8a5e69e0666c61cae7f73d1bbcc483222023e74/hydra_core-1.3.5.tar.gz", hash = "sha256:71c441eabbde086062045e4d3fce9e26015244f1a4ac721cf3e444c7edf10633", size = 3264337, upload-time = "2026-08-05T18:33:21.394Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9c/97/f9d463a6f3c7d0955753eca5cbbf35b596ac471dd13fe357211a53fd37be/hydra_core-1.3.5-py3-none-any.whl", hash = "sha256:a3ff35b4ea6794e4c83d993016f4bde4ac35797ebe7a08f30e83ed9341880331", size = 155768, upload-time = "2026-08-05T18:33:19.834Z" },
+]
+
+[[package]]
 name = "identify"
 version = "2.6.18"
 source = { registry = "https://pypi.org/simple" }
@@ -1348,6 +1370,17 @@ sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
 ]
+
+[[package]]
+name = "iopath"
+version = "0.1.10"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "portalocker" },
+    { name = "tqdm" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/72/73/b3d451dfc523756cf177d3ebb0af76dc7751b341c60e2a21871be400ae29/iopath-0.1.10.tar.gz", hash = "sha256:3311c16a4d9137223e20f141655759933e1eda24f8bff166af834af3c645ef01", size = 42226, upload-time = "2022-07-09T19:00:50.866Z" }
 
 [[package]]
 name = "ipykernel"
@@ -2324,6 +2357,19 @@ wheels = [
 ]
 
 [[package]]
+name = "omegaconf"
+version = "2.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "antlr4-python3-runtime" },
+    { name = "pyyaml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ce/3d/e4b57b8d9008c6ebe0d5eff901f91d5700cf7bdb8c8863df817463a7fd5e/omegaconf-2.3.1.tar.gz", hash = "sha256:e5e7de64aeebeddaf8e6d3f7a783b32ac2a01c0fbd9c878012caecb891a1f42a", size = 3298472, upload-time = "2026-06-11T05:05:12.885Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a4/0e/152509871bf30df6fc38569f52a2db9b55dd41aae957adae50a053ac7778/omegaconf-2.3.1-py3-none-any.whl", hash = "sha256:3d701d14e9a8828f1edd28bb70b725908b34277cdd72cf7d6a83f94dadc6b6a0", size = 79502, upload-time = "2026-06-11T05:05:09.954Z" },
+]
+
+[[package]]
 name = "openai"
 version = "1.109.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2540,6 +2586,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/7a/3e/c86433c3b5ec0315bdfc7640d0c15d41f1216c0103a0eab9a9b5147d6c4c/polars_runtime_32-1.39.3-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:7c206bdcc7bc62ea038d6adea8e44b02f0e675e0191a54c810703b4895208ea4", size = 46485933, upload-time = "2026-03-20T11:14:51.155Z" },
     { url = "https://files.pythonhosted.org/packages/54/ce/200b310cf91f98e652eb6ea09fdb3a9718aa0293ebf113dce325797c8572/polars_runtime_32-1.39.3-cp310-abi3-win_amd64.whl", hash = "sha256:d66ca522517554a883446957539c40dc7b75eb0c2220357fb28bc8940d305339", size = 46995458, upload-time = "2026-03-20T11:14:56.074Z" },
     { url = "https://files.pythonhosted.org/packages/da/76/2d48927e0aa2abbdde08cbf4a2536883b73277d47fbeca95e952de86df34/polars_runtime_32-1.39.3-cp310-abi3-win_arm64.whl", hash = "sha256:f49f51461de63f13e5dd4eb080421c8f23f856945f3f8bd5b2b1f59da52c2860", size = 41857648, upload-time = "2026-03-20T11:15:01.142Z" },
+]
+
+[[package]]
+name = "portalocker"
+version = "4.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/45/f7/24b2821a077e0d85197a8c4093a4f71f78713d0a6f216c3f7cc90f7a5cc4/portalocker-4.1.0.tar.gz", hash = "sha256:91d0ff02d6f5f9a2dbf1ef1367ddb05b83136b2676707a1b2c8746f1f0dcd992", size = 97751, upload-time = "2026-08-02T15:05:25.159Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/61/91/288c883303be067c1648f1e63ea38e5f8eb5ab7123fd3a9a7366148e58b7/portalocker-4.1.0-py3-none-any.whl", hash = "sha256:d985a430d265adf31adf12bc0bf3501aea59efc495e9104c057e5dfb7394c226", size = 65914, upload-time = "2026-08-02T15:05:23.525Z" },
 ]
 
 [[package]]
@@ -3283,6 +3338,22 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/4a/d8/0c8a7dc9b41dcac53c4cbf9df2b9c83e0e0097203de8b37a712b345c0be5/safetensors-0.7.0-cp38-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:b0f6d66c1c538d5a94a73aa9ddca8ccc4227e6c9ff555322ea40bdd142391dd4", size = 677368, upload-time = "2025-11-19T15:18:41.627Z" },
     { url = "https://files.pythonhosted.org/packages/05/e5/cb4b713c8a93469e3c5be7c3f8d77d307e65fe89673e731f5c2bfd0a9237/safetensors-0.7.0-cp38-abi3-win32.whl", hash = "sha256:c74af94bf3ac15ac4d0f2a7c7b4663a15f8c2ab15ed0fc7531ca61d0835eccba", size = 326423, upload-time = "2025-11-19T15:18:45.74Z" },
     { url = "https://files.pythonhosted.org/packages/5d/e6/ec8471c8072382cb91233ba7267fd931219753bb43814cbc71757bfd4dab/safetensors-0.7.0-cp38-abi3-win_amd64.whl", hash = "sha256:d1239932053f56f3456f32eb9625590cc7582e905021f94636202a864d470755", size = 341380, upload-time = "2025-11-19T15:18:44.427Z" },
+]
+
+[[package]]
+name = "sam-2"
+version = "1.0"
+source = { git = "https://github.com/facebookresearch/sam2.git#2b90b9f5ceec907a1c18123530e92e794ad901a4" }
+dependencies = [
+    { name = "hydra-core" },
+    { name = "iopath" },
+    { name = "numpy" },
+    { name = "pillow" },
+    { name = "torch", version = "2.6.0+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "sys_platform == 'linux'" },
+    { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "torchvision", version = "0.21.0+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "sys_platform == 'linux'" },
+    { name = "torchvision", version = "0.26.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "tqdm" },
 ]
 
 [[package]]

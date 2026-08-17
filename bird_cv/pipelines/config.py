@@ -52,7 +52,9 @@ class BirdCVConfig:
     path_to_base_output: Path
     path_to_raw_videos: Path
     path_to_segmentation_configs: Path
-    path_to_sam: Path
+    # Hugging Face Hub model id for the SAM2 checkpoint (e.g.
+    # "facebook/sam2.1-hiera-large"), downloaded automatically on first use.
+    sam_model_id: str
     # Label Studio
     api_key: str
     detect_project_name: str

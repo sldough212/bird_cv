@@ -11,7 +11,7 @@ def predict_and_evaluate(
     test_path: Path,
     segmentation_config_path: Path,
     video_base_path: Path,
-    model_checkpoint_path: Path,
+    sam_model_id: str,
     prediction_output_path: Path,
     output_path: Path,
 ) -> None:
@@ -26,7 +26,9 @@ def predict_and_evaluate(
             configuration JSON files.
         video_base_path (Path): Path to the base directory containing training videos organized
             by camera.
-        model_checkpoint_path (Path): Path to the trained model checkpoint used for prediction.
+        sam_model_id (str): Hugging Face Hub model id for the SAM2 checkpoint used
+            for prediction (e.g. "facebook/sam2.1-hiera-large"), downloaded and
+            cached automatically on first use.
         prediction_output_path (Path): Path to the directory where prediction JSON files should
             be stored.
         output_path (Path): Path to the output file where the consolidated evaluation results
@@ -61,7 +63,7 @@ def predict_and_evaluate(
                     / train_video_id
                     / "00001.jpg",
                     y_video_path=test_path / "frames" / camera_id / video_id,
-                    model_checkpoint_path=model_checkpoint_path,
+                    sam_model_id=sam_model_id,
                     output_path=prediction_output_path
                     / camera_id
                     / video_id

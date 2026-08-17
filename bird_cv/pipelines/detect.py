@@ -18,7 +18,7 @@ def run_detect(cfg: BirdCVConfig) -> None:
 
     run_segment(
         segmentation_configs_path=cfg.path_to_segmentation_configs,
-        model_checkpoint_path=cfg.path_to_sam,
+        sam_model_id=cfg.sam_model_id,
         split_guidance_path=cfg.path_to_guidance,
         segmentations_path=cfg.path_to_segmentation_output,
         videos_path=cfg.path_to_raw_videos,

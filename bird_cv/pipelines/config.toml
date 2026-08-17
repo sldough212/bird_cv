@@ -1,7 +1,7 @@
 path_to_base_output = "/path/to/output"
 path_to_raw_videos = "/path/to/videos"
 path_to_segmentation_configs = "/path/to/seg/configs"
-path_to_sam = "/path/to/sam"
+sam_model_id = "facebook/sam2.1-hiera-large"
 api_key = "your-api-key"
 detect_project_name = "bird_detect"
 classify_project_name = "bird_classify"

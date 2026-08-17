@@ -14,7 +14,9 @@
 path_to_base_output = "/gscratch/pdoughe1/full_pipeline/20260817"
 path_to_raw_videos = "/gscratch/pdoughe1/videos/2021_bunting_clips_standardized"
 path_to_segmentation_configs = "/gscratch/pdoughe1/segmentation_configs"
-path_to_sam = "/home/pdoughe1/sam2/checkpoints/sam2.1_hiera_large.pt"
+# Hugging Face Hub model id — SAM2 (installed via `uv sync`) downloads and
+# caches the checkpoint automatically on first use, no manual download needed.
+sam_model_id = "facebook/sam2.1-hiera-large"
 
 # ---- Label Studio (required) ----
 api_key = "FILL"
