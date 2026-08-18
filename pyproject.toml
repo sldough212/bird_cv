@@ -8,10 +8,9 @@ readme = "README.md"
 requires-python = ">=3.12, <3.14"
 
 dependencies = [
-    "numpy>1.21.0,<2",
+    "numpy>=2.2,<3",
     "pandas>=2.2.2",
     "polars>=1.30.0",
-    "label-studio>=1.20.0",
     "matplotlib>=3.10.0",
     "seaborn>=0.13.0",
     "ipykernel>=7.0",
@@ -33,6 +32,7 @@ dependencies = [
     "tomli_w>=1.0, <1.3",
     "tzdata>=2026,<2027",
     "sam-2",
+    "label-studio-ml",
 ]
 
 [dependency-groups]
@@ -56,6 +56,7 @@ torchvision = [
     { index = "pytorch-cuda", marker = "sys_platform == 'linux'" },
 ]
 sam-2 = { git = "https://github.com/facebookresearch/sam2.git" }
+label-studio-ml = { git = "https://github.com/HumanSignal/label-studio-ml-backend.git" }
 
 [tool.mypy]
 python_version = "3.12"
