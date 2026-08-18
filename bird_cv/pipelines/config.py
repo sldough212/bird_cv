@@ -1,6 +1,6 @@
 """Shared config loading utilities for all pipelines."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from datetime import datetime
 import msgspec
@@ -23,9 +23,11 @@ class DetectConfig:
     tune: bool = False
     tune_iterations: int = 30
     run_name: str = "bird_yolo"
-    # Paths auto-resolved by BirdCVConfig (not in TOML)
-    path_to_training_data: Path = field(init=False)
-    path_to_output: Path = field(init=False)
+    # Paths auto-resolved by BirdCVConfig.__post_init__ (not in TOML). These
+    # need a placeholder default, not just init=False, so msgspec.convert
+    # doesn't treat them as required TOML fields.
+    path_to_training_data: Path = field(init=False, default=Path())
+    path_to_output: Path = field(init=False, default=Path())
 
 
 @dataclass
@@ -41,9 +43,11 @@ class ClassifyConfig:
     lr: float = 1e-4
     device: str = "cuda"
     freeze_encoder: bool = True
-    # Paths auto-resolved by BirdCVConfig (not in TOML)
-    path_to_training_data: Path = field(init=False)
-    path_to_output: Path = field(init=False)
+    # Paths auto-resolved by BirdCVConfig.__post_init__ (not in TOML). These
+    # need a placeholder default, not just init=False, so msgspec.convert
+    # doesn't treat them as required TOML fields.
+    path_to_training_data: Path = field(init=False, default=Path())
+    path_to_output: Path = field(init=False, default=Path())
 
 
 @dataclass
@@ -148,6 +152,10 @@ def load_config(config_path: Path, config_type: type = BirdCVConfig):
     classify_cfg = msgspec.convert(
         classify_data, type=ClassifyConfig, dec_hook=str_to_path
     )
+    top_level_types = {f.name: f.type for f in fields(config_type)}
+    raw = {
+        key: str_to_path(top_level_types.get(key), value) for key, value in raw.items()
+    }
 
     return config_type(**raw, detect=detect_cfg, classify=classify_cfg)
 
