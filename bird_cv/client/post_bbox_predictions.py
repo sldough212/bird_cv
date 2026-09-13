@@ -62,6 +62,7 @@ def get_yolo_predictions(
             stream=True,
             conf=0.05,
             iou=0.70,
+            max_det=1,
             tracker=tracker_path,
         )
 

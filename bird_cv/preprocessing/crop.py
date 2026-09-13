@@ -306,6 +306,11 @@ def crop_cages(
                 img = Image.open(frame_store_path / f"{frame:05d}.jpg")
 
                 for cage_id, cage_mask in frame_cage_masks.items():
+                    # If there is no detecged mask (camera starting up or significantly obstructed)
+                    # Then do not crop
+                    if not any(item for sublist in cage_mask for item in sublist):
+                        continue
+
                     cropped_img, _ = crop_and_mask_image(
                         img, cage_mask, black_out=True, padding=5
                     )
