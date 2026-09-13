@@ -114,6 +114,19 @@ def get_label_studio_client(
 
     base_url = f"http://{host}:{port}"
 
+    # subprocess.Popen(
+    #     [
+    #         "label-studio",
+    #         "start",
+    #         "--port",
+    #         str(port),
+    #         "--host",
+    #         host,
+    #     ],
+    #     stderr=subprocess.DEVNULL,
+    #     stdout=subprocess.DEVNULL,
+    # )
+
     subprocess.Popen(
         [
             "label-studio",
@@ -121,21 +134,25 @@ def get_label_studio_client(
             "--port",
             str(port),
             "--host",
-            host,
-        ],
-        stderr=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
+            "0.0.0.0",
+            "--no-browser",
+        ]
     )
 
-    for attempt in range(30):
+    max_attempts = 60
+    delay_seconds = 3  # 60 * 3 = 3 minutes total, adjust as needed
+
+    for attempt in range(max_attempts):
         client = LabelStudio(base_url=base_url, api_key=api_key)
         try:
             client.users.whoami()
             logger.info("Label Studio connection verified")
             break
         except Exception:
-            logger.debug("Label Studio not ready yet (attempt %d/30)", attempt + 1)
-            time.sleep(1)
+            logger.debug(
+                "Label Studio not ready yet (attempt %d/%d)", attempt + 1, max_attempts
+            )
+            time.sleep(delay_seconds)
     else:
         logger.error("Failed to connect to Label Studio at %s", base_url)
         raise RuntimeError(f"Could not connect to label studio at {base_url}")

@@ -2,9 +2,7 @@
 # Shebang indicating this is a bash script.
 # Do NOT put a comment after the shebang, this will cause an error.
 #SBATCH --account=passerinagenome          # Use #SBATCH to define Slurm related values.
-#SBATCH --time=12:00:00                      # Must define an account and wall-time.
-#SBATCH --partition=mb-l40s                  # and if you require a GPU.
-#SBATCH --gres=gpu:1
+#SBATCH --time=24:00:00                      # Must define an account and wall-time.
 #SBATCH --mem=64G
 
 echo "SLURM_JOB_ID:" $SLURM_JOB_ID        # Can access Slurm related Environment variables.
@@ -21,10 +19,7 @@ export PYTHONUNBUFFERED=1
 
 NODE_IP=$(hostname -I | awk '{print $1}')
 
-python3 bird_cv/pipelines/detect.py bird_cv/pipelines/configs/config.toml $NODE_IP
+python3 bird_cv/pipelines/upload_for_detect.py bird_cv/pipelines/configs/config.toml $NODE_IP
 sleep 1m
 end=$(date +'%D %T')
 echo "End:" $end
-
-# sbatch run.sh
-# squeue --user pdoughe1 

@@ -101,7 +101,7 @@ def process_item(
     """
     # Get video path and clean it
     video_path = (
-        item["data"]["video"].split("2021_bunting_clips/")[-1].replace("%2C", ",")
+        item["data"]["video"].split(f"{path_to_videos.name}/")[-1].replace("%2C", ",")
     )
     full_video_path = path_to_videos / video_path
 

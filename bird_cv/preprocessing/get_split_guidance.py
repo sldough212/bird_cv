@@ -296,6 +296,7 @@ def simulate_split_guidance(videos_path: Path, output_path: Path) -> None:
         }
     )
 
+    output_path.parent.mkdir(exist_ok=True, parents=True)
     split_guidance.write_parquet(output_path)
 
 

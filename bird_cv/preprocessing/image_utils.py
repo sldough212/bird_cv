@@ -127,12 +127,19 @@ def images_to_video(image_dir: Path, output_path: Path, fps: float = 30) -> None
     if not frames:
         raise FileNotFoundError(f"No JPGs found in {image_dir}")
 
-    first = cv2.imread(str(frames[0]))
-    h, w = first.shape[:2]
+    # Compute max dimensions across all frames, not just the first,
+    # so every frame only ever needs padding (never resizing/distortion)
+    max_h, max_w = 0, 0
+    for frame_path in frames:
+        frame = cv2.imread(str(frame_path))
+        if frame is None:
+            raise ValueError(f"Failed to read frame: {frame_path}")
+        fh, fw = frame.shape[:2]
+        max_h, max_w = max(max_h, fh), max(max_w, fw)
 
     # Round dimensions up to the nearest even number
-    new_w = w + (w % 2)
-    new_h = h + (h % 2)
+    new_w = max_w + (max_w % 2)
+    new_h = max_h + (max_h % 2)
 
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
@@ -164,24 +171,25 @@ def images_to_video(image_dir: Path, output_path: Path, fps: float = 30) -> None
 
     for frame_path in frames:
         frame = cv2.imread(str(frame_path))
-        # Pad bottom/right by 1px if needed, to match new_w/new_h
-        if frame.shape[1] != new_w or frame.shape[0] != new_h:
+        if frame is None:
+            raise ValueError(f"Failed to read frame: {frame_path}")
+
+        fh, fw = frame.shape[:2]
+        if fh != new_h or fw != new_w:
             frame = cv2.copyMakeBorder(
                 frame,
                 top=0,
-                bottom=new_h - frame.shape[0],
+                bottom=new_h - fh,
                 left=0,
-                right=new_w - frame.shape[1],
+                right=new_w - fw,
                 borderType=cv2.BORDER_CONSTANT,
                 value=(0, 0, 0),
             )
+
         proc.stdin.write(frame.tobytes())
 
     proc.stdin.close()
     proc.wait()
-
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed with return code {proc.returncode}")
 
 
 def run_images_to_video(

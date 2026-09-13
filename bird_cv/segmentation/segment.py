@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 
 # External / project-specific dependencies
-from sam2.build_sam import build_sam2_video_predictor
+from sam2.build_sam import build_sam2_video_predictor_hf
 
 # Local utilities (adjust module paths as needed)
 from bird_cv.segmentation.visualize import (
@@ -25,7 +25,7 @@ from bird_cv.segmentation.frames import extract_all_frames
 
 
 def get_camera_sam_config(
-    model_checkpoint_path: Path,
+    sam_model_id: str,
     video_base_path: Path,
     camera_id: str,
     video_id: str,
@@ -47,8 +47,9 @@ def get_camera_sam_config(
     saves them as a JSON configuration file for future use.
 
     Args:
-        model_checkpoint_path (Path): Path to the directory containing the SAM2
-            model checkpoint file.
+        sam_model_id (str): Hugging Face Hub model id for the SAM2 checkpoint
+            (e.g. "facebook/sam2.1-hiera-large"), downloaded and cached
+            automatically on first use.
         video_base_path (Path): Base directory containing video frame folders
             organized by camera and video IDs.
         camera_id (str): Identifier for the camera (used to locate the video
@@ -86,12 +87,8 @@ def get_camera_sam_config(
             "output_segment_path must be provided if wanting to return the segmentation masks"
         )
 
-    # Load in model (always large for now)
-    sam2_checkpoint = model_checkpoint_path / "sam2.1_hiera_large.pt"
-    model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
-
     # We only need a cpu to load segment the very first frame
-    predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device="cpu")
+    predictor = build_sam2_video_predictor_hf(sam_model_id, device="cpu")
 
     # Load in data
     video_path = video_base_path / camera_id / video_id
@@ -230,7 +227,7 @@ def save_keyframe_segments(
 
 
 def set_sam_and_predict(
-    model_checkpoint_path: Path,
+    sam_model_id: str,
     data_path: Path,
     config_path: Path,
     device: str = "cpu",
@@ -239,8 +236,9 @@ def set_sam_and_predict(
     generates mask predictions for objects in a video.
 
     Args:
-        model_checkpoint_path (Path): Path to the directory containing the SAM2
-            model checkpoint file (e.g., "sam2.1_hiera_large.pt").
+        sam_model_id (str): Hugging Face Hub model id for the SAM2 checkpoint
+            (e.g. "facebook/sam2.1-hiera-large"), downloaded and cached
+            automatically on first use.
         data_path (Path): Path to the input video or directory of frames to be
             processed by the predictor.
         config_path (Path): Path to a JSON file containing segmentation prompts.
@@ -257,9 +255,7 @@ def set_sam_and_predict(
             which map object IDs to their corresponding mask arrays (as NumPy arrays).
     """
     # Load the frames into the sam2 model
-    sam2_checkpoint = model_checkpoint_path / "sam2.1_hiera_large.pt"
-    model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
-    predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device=device)
+    predictor = build_sam2_video_predictor_hf(sam_model_id, device=device)
     inference_state = predictor.init_state(video_path=str(data_path))
 
     # Load in the config
@@ -326,7 +322,7 @@ def segment(
     config_path: Path,
     x0_frame_path: Path,
     y_video_path: Path,
-    model_checkpoint_path: Path,
+    sam_model_id: str,
     output_path: Path,
     device: str = "cpu",
     visualize: bool = False,
@@ -348,8 +344,9 @@ def segment(
             segmentation (will be renamed to "00000.jpg").
         y_video_path (Path): Path to the input video from which frames will be
             extracted and segmented.
-        model_checkpoint_path (Path): Path to the directory containing the SAM2
-            model checkpoint.
+        sam_model_id (str): Hugging Face Hub model id for the SAM2 checkpoint
+            (e.g. "facebook/sam2.1-hiera-large"), downloaded and cached
+            automatically on first use.
         output_path (Path): Path where the segmentation results will be saved
             (JSON format, one file per keyframe segment).
         device (str, optional): Device to run inference on (e.g., "cpu", "cuda").
@@ -376,7 +373,7 @@ def segment(
 
         # Set segmentation model and predict
         video_segments = set_sam_and_predict(
-            model_checkpoint_path=model_checkpoint_path,
+            sam_model_id=sam_model_id,
             data_path=temp_path,
             config_path=config_path,
             device=device,
@@ -414,7 +411,7 @@ def segment(
 
 def run_segment(
     segmentation_configs_path: Path,
-    model_checkpoint_path: Path,
+    sam_model_id: str,
     split_guidance_path: Path,
     segmentations_path: Path,
     videos_path: Path,
@@ -430,7 +427,9 @@ def run_segment(
         segmentation_configs_path: Root directory of per-camera SAM2 config
             files and reference frames, structured as
             ``configs/{camera_id}.json`` and ``frames/{camera_id}/{video_id}/``.
-        model_checkpoint_path: Path to the SAM2 model checkpoint directory.
+        sam_model_id: Hugging Face Hub model id for the SAM2 checkpoint (e.g.
+            "facebook/sam2.1-hiera-large"), downloaded and cached
+            automatically on first use.
         split_guidance_path: Path to the split guidance parquet supplying
             ``video_path`` and ``target_frames`` columns.
         segmentations_path: Root directory where segmentation outputs will be
@@ -473,7 +472,7 @@ def run_segment(
                     / train_video_id
                     / "00001.jpg",
                     y_video_path=frame_store_path,
-                    model_checkpoint_path=model_checkpoint_path,
+                    sam_model_id=sam_model_id,
                     output_path=cam_pred_path,
                     device="cuda",
                     visualize=False,
