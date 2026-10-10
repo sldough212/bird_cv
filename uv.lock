@@ -148,7 +148,7 @@ requires-dist = [
     { name = "label-studio-ml", git = "https://github.com/HumanSignal/label-studio-ml-backend.git" },
     { name = "lap", specifier = ">=0.5.13" },
     { name = "matplotlib", specifier = ">=3.10.0" },
-    { name = "motmetrics", specifier = ">=1.4,<2.0" },
+    { name = "motmetrics", git = "https://github.com/cheind/py-motmetrics.git?rev=c199b3e853d589af4b6a7d88f5bcc8b8802fc434" },
     { name = "msgspec", specifier = ">=0.21.1" },
     { name = "numpy", specifier = ">=2.2,<3" },
     { name = "opencv-python", specifier = ">=4.0" },
@@ -1319,15 +1319,12 @@ wheels = [
 [[package]]
 name = "motmetrics"
 version = "1.4.0"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/cheind/py-motmetrics.git?rev=c199b3e853d589af4b6a7d88f5bcc8b8802fc434#c199b3e853d589af4b6a7d88f5bcc8b8802fc434" }
 dependencies = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "scipy" },
     { name = "xmltodict" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/2f/d9/7b77e1e2db80b6f8133065ffbccdaa3c911df5f95a7af30829fcaa10a3d7/motmetrics-1.4.0-py3-none-any.whl", hash = "sha256:cd4d691bd787360f1cd0a2127fe8a14d0646fb2912b344a9498719e132b25738", size = 161542, upload-time = "2022-12-26T09:14:59.218Z" },
 ]
 
 [[package]]

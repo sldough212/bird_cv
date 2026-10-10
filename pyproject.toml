@@ -22,7 +22,7 @@ dependencies = [
     "torchmetrics>=1.5.0,<2.0",
     "ray[tune]>=2.1,<3.0",
     "wandb>=0.22,<1.0",
-    "motmetrics>=1.4,<2.0",
+    "motmetrics",
     "scikit-learn>=1.8.0,<2.0",
     "tqdm>=4.67.3,<5.0",
     "msgspec>=0.21.1",
@@ -57,6 +57,9 @@ torchvision = [
 ]
 sam-2 = { git = "https://github.com/facebookresearch/sam2.git" }
 label-studio-ml = { git = "https://github.com/HumanSignal/label-studio-ml-backend.git" }
+# PyPI's 1.4.0 release predates the numpy 2 fix (np.asfarray was removed);
+# pin to the commit that fixes it until a new release ships it.
+motmetrics = { git = "https://github.com/cheind/py-motmetrics.git", rev = "c199b3e853d589af4b6a7d88f5bcc8b8802fc434" }
 
 [tool.mypy]
 python_version = "3.12"
