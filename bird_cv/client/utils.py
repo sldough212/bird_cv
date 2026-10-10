@@ -77,7 +77,7 @@ def close_server(port: int) -> None:
     logger.info("Shutting down server on port %d", port)
 
     result = subprocess.run(
-        ["lsof", "-ti", f":{port}"],
+        ["lsof", "-ti", f":{port}", "-sTCP:LISTEN"],
         capture_output=True,
         text=True,
     )
