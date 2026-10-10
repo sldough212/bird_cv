@@ -1,4 +1,4 @@
-"""MOT-format conversion and metric computation for per-cage YOLO tracking evaluation."""
+"""MOT-format conversion and metric computation for per-cage tracking evaluation."""
 
 import re
 from pathlib import Path
@@ -245,3 +245,50 @@ def evaluate_tracking(
     output_path.parent.mkdir(exist_ok=True, parents=True)
     results.write_parquet(output_path)
     return results
+
+
+def ls_regions_to_mot(regions: list[dict]) -> np.ndarray:
+    """Convert Label Studio videorectangle regions to an in-memory MOT array.
+
+    Each region becomes its own track, numbered by its position in
+    `regions`. Coordinates are left in Label Studio's native 0-100
+    percentage space rather than denormalized to pixels: IoU matching
+    (used by :func:`compute_mot_metrics`) is scale invariant, so no video
+    resolution lookup is needed here.
+
+    Args:
+        regions: `result` list from a Label Studio annotation or
+            prediction, e.g. ``task["annotations"][i]["result"]`` or
+            ``task["predictions"][i]["result"]``. Each region is expected
+            to have a ``value.sequence`` of per-frame boxes, as produced
+            by Label Studio's own keyframe interpolation (for annotations,
+            see :func:`export_label_studio_annotations`'s
+            ``interpolate_frames``) or by this codebase's own tracking
+            predictions (:func:`get_yolo_predictions`).
+
+    Returns:
+        An ``(N, 10)`` float array in MOTChallenge format::
+
+            frame_id  track_id  left  top  width  height  conf  -1  -1  -1
+    """
+    rows: list[list[float]] = []
+    for track_id, region in enumerate(regions, start=1):
+        for seq in region.get("value", {}).get("sequence", []):
+            rows.append(
+                [
+                    seq["frame"],
+                    track_id,
+                    seq["x"],
+                    seq["y"],
+                    seq["width"],
+                    seq["height"],
+                    seq.get("score", 1.0),
+                    -1,
+                    -1,
+                    -1,
+                ]
+            )
+
+    if not rows:
+        return np.empty((0, 10), dtype=float)
+    return np.array(rows, dtype=float)
