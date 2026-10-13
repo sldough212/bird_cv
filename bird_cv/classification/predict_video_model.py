@@ -78,6 +78,60 @@ def load_videomae_model(
     return model, processor, dev, id_to_label
 
 
+def _predict_frame_votes(
+    video_path: Path,
+    model: VideoMAEForVideoClassification,
+    processor: AutoImageProcessor,
+    dev: torch.device,
+    num_frames: int = 16,
+    stride: int = 8,
+    batch_size: int = 4,
+) -> list[list[int]]:
+    """Run windowed VideoMAE inference and collect per-frame class-id votes.
+
+    Slides a ``num_frames``-frame window across the video and classifies
+    each window. Shared by :func:`predict_video_segments` (which collapses
+    the result to majority-voted segments) and :func:`predict_video_frames`
+    (which keeps one row per frame).
+
+    Args:
+        video_path: Path to the video file.
+        model: Loaded VideoMAE classification model, already on ``dev``.
+        processor: HuggingFace image processor for the VideoMAE model.
+        dev: Device the model is loaded on.
+        num_frames: Frames per window. Must match the model's input size.
+            Defaults to 16.
+        stride: Step size between consecutive windows in frames. Defaults to 8.
+        batch_size: Dataloader batch size for windowed inference. Defaults to 4.
+
+    Returns:
+        List with one entry per video frame, each a list of the class ids
+        voted for that frame by every window covering it (empty if no
+        window covers that frame).
+    """
+    ds = VideoWindowDataset(video_path, processor, num_frames, stride)
+    loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0)
+
+    # Collect per-window predictions alongside their start frames
+    window_preds: list[tuple[int, int]] = []
+    with torch.no_grad():
+        for batch in loader:
+            pixel_values = batch["pixel_values"].to(dev)
+            outputs = model(pixel_values=pixel_values)
+            pred_ids = outputs.logits.argmax(dim=-1).cpu().tolist()
+            start_frames = batch["start_frame"].tolist()
+            window_preds.extend(zip(start_frames, pred_ids))
+
+    # Majority vote across all windows that cover each frame
+    total_frames = len(ds.frames)
+    frame_votes: list[list[int]] = [[] for _ in range(total_frames)]
+    for start, pred_id in window_preds:
+        for f in range(start, min(start + num_frames, total_frames)):
+            frame_votes[f].append(pred_id)
+
+    return frame_votes
+
+
 def predict_video_segments(
     video_path: Path,
     model: VideoMAEForVideoClassification,
@@ -110,26 +164,9 @@ def predict_video_segments(
         contiguous run of frames sharing the majority-voted label, in frame
         order.
     """
-    ds = VideoWindowDataset(video_path, processor, num_frames, stride)
-    loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0)
-
-    # Collect per-window predictions alongside their start frames
-    window_preds: list[tuple[int, int]] = []
-    with torch.no_grad():
-        for batch in loader:
-            pixel_values = batch["pixel_values"].to(dev)
-            outputs = model(pixel_values=pixel_values)
-            pred_ids = outputs.logits.argmax(dim=-1).cpu().tolist()
-            start_frames = batch["start_frame"].tolist()
-            window_preds.extend(zip(start_frames, pred_ids))
-
-    # Majority vote across all windows that cover each frame
-    total_frames = len(ds.frames)
-    frame_votes: list[list[int]] = [[] for _ in range(total_frames)]
-    for start, pred_id in window_preds:
-        for f in range(start, min(start + num_frames, total_frames)):
-            frame_votes[f].append(pred_id)
-
+    frame_votes = _predict_frame_votes(
+        video_path, model, processor, dev, num_frames, stride, batch_size
+    )
     frame_labels = [
         Counter(votes).most_common(1)[0][0] if votes else None for votes in frame_votes
     ]
@@ -149,3 +186,55 @@ def predict_video_segments(
             segments.append((id_to_label[current], seg_start, len(frame_labels) - 1))
 
     return segments
+
+
+def predict_video_frames(
+    video_path: Path,
+    model: VideoMAEForVideoClassification,
+    processor: AutoImageProcessor,
+    dev: torch.device,
+    id_to_label: dict,
+    num_frames: int = 16,
+    stride: int = 8,
+    batch_size: int = 4,
+) -> list[tuple[int, str | None, int]]:
+    """Run windowed VideoMAE inference and return one prediction per frame.
+
+    Unlike :func:`predict_video_segments`, which collapses the majority
+    vote into contiguous runs, this keeps one row per video frame -- the
+    shape needed for frame-aligned output (e.g. merging with frames that
+    have no detection at all) and for frame-level evaluation against
+    ground truth.
+
+    Args:
+        video_path: Path to the video file.
+        model: Loaded VideoMAE classification model, already on ``dev``.
+        processor: HuggingFace image processor for the VideoMAE model.
+        dev: Device the model is loaded on.
+        id_to_label: Mapping from predicted class id to label name.
+        num_frames: Frames per window. Must match the model's input size.
+            Defaults to 16.
+        stride: Step size between consecutive windows in frames. Defaults to 8.
+        batch_size: Dataloader batch size for windowed inference. Defaults to 4.
+
+    Returns:
+        List of ``(frame, label, vote_count)`` tuples, one per video frame
+        in order. ``label`` is ``None`` for frames no window covers (the
+        first/last few frames when the video is shorter than one window
+        past the last stride step); ``vote_count`` is the number of
+        windows that voted for the majority label at that frame (0 when
+        ``label`` is ``None``).
+    """
+    frame_votes = _predict_frame_votes(
+        video_path, model, processor, dev, num_frames, stride, batch_size
+    )
+
+    rows: list[tuple[int, str | None, int]] = []
+    for frame, votes in enumerate(frame_votes):
+        if not votes:
+            rows.append((frame, None, 0))
+            continue
+        pred_id, count = Counter(votes).most_common(1)[0]
+        rows.append((frame, id_to_label[pred_id], count))
+
+    return rows
