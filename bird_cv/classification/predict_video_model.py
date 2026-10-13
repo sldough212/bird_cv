@@ -1,12 +1,15 @@
 """Windowed VideoMAE inference: load a model and predict behavior segments for a video."""
 
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
 import cv2
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoImageProcessor, VideoMAEForVideoClassification
+
+from bird_cv.classification.types import FramePrediction
 
 
 class VideoWindowDataset(Dataset):
@@ -197,7 +200,7 @@ def predict_video_frames(
     num_frames: int = 16,
     stride: int = 8,
     batch_size: int = 4,
-) -> list[tuple[int, str | None, int]]:
+) -> list[FramePrediction]:
     """Run windowed VideoMAE inference and return one prediction per frame.
 
     Unlike :func:`predict_video_segments`, which collapses the majority
@@ -218,23 +221,68 @@ def predict_video_frames(
         batch_size: Dataloader batch size for windowed inference. Defaults to 4.
 
     Returns:
-        List of ``(frame, label, vote_count)`` tuples, one per video frame
-        in order. ``label`` is ``None`` for frames no window covers (the
-        first/last few frames when the video is shorter than one window
-        past the last stride step); ``vote_count`` is the number of
-        windows that voted for the majority label at that frame (0 when
-        ``label`` is ``None``).
+        One :class:`FramePrediction` per video frame, in frame order.
+        ``label`` is ``None`` for frames no window covers (the first/last
+        few frames when the video is shorter than one window past the
+        last stride step); ``confidence`` is the majority label's vote
+        share among windows covering that frame (0.0 when ``label`` is
+        ``None``).
     """
     frame_votes = _predict_frame_votes(
         video_path, model, processor, dev, num_frames, stride, batch_size
     )
 
-    rows: list[tuple[int, str | None, int]] = []
+    predictions: list[FramePrediction] = []
     for frame, votes in enumerate(frame_votes):
         if not votes:
-            rows.append((frame, None, 0))
+            predictions.append(FramePrediction(frame=frame, label=None, confidence=0.0))
             continue
         pred_id, count = Counter(votes).most_common(1)[0]
-        rows.append((frame, id_to_label[pred_id], count))
+        predictions.append(
+            FramePrediction(
+                frame=frame,
+                label=id_to_label[pred_id],
+                confidence=count / len(votes),
+            )
+        )
 
-    return rows
+    return predictions
+
+
+@dataclass
+class VideoMAEClassifier:
+    """:class:`bird_cv.classification.types.BehaviorClassifier` backed by VideoMAE.
+
+    Wraps model loading plus :func:`predict_video_frames` so classifiers
+    are swappable: anything that implements
+    ``predict(video_path) -> list[FramePrediction]`` can stand in for this
+    in the single-video pipeline and its evaluation harness.
+
+    Attributes:
+        model_path: Path to the VideoMAE model weights.
+        num_frames: Frames per window. Must match the model's input size.
+        stride: Step size between consecutive windows in frames.
+        batch_size: Dataloader batch size for windowed inference.
+    """
+
+    model_path: str
+    num_frames: int = 16
+    stride: int = 8
+    batch_size: int = 4
+
+    def __post_init__(self) -> None:
+        self.model, self.processor, self.device, self.id_to_label = load_videomae_model(
+            self.model_path, num_frames=self.num_frames
+        )
+
+    def predict(self, video_path: Path) -> list[FramePrediction]:
+        return predict_video_frames(
+            video_path=video_path,
+            model=self.model,
+            processor=self.processor,
+            dev=self.device,
+            id_to_label=self.id_to_label,
+            num_frames=self.num_frames,
+            stride=self.stride,
+            batch_size=self.batch_size,
+        )

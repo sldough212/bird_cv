@@ -8,10 +8,12 @@ as the detection step of a single-video inference pipeline, with the raw
 per-frame boxes written out directly as an intermediate evaluation artifact.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 
-import polars as pl
 from ultralytics import YOLO
+
+from bird_cv.detection.types import Detection
 
 
 def track_video(
@@ -21,7 +23,7 @@ def track_video(
     conf: float = 0.05,
     iou: float = 0.70,
     max_det: int = 1,
-) -> pl.DataFrame:
+) -> list[Detection]:
     """Run YOLO tracking over a single video and return per-frame boxes.
 
     Args:
@@ -37,10 +39,8 @@ def track_video(
             Defaults to 1 (at most one bird per cage).
 
     Returns:
-        Polars DataFrame with one row per tracked detection and columns
-        ``frame`` (0-indexed), ``track_id``, ``left``, ``top``, ``width``,
-        ``height`` (all four normalized 0-1, top-left + size), ``conf``,
-        and ``label``. Frames with no detection contribute no rows.
+        One :class:`Detection` per tracked box per frame it appears in,
+        in frame order. Frames with no detection contribute no entries.
     """
     model = YOLO(str(model_path))
     model_names = model.names
@@ -54,7 +54,7 @@ def track_video(
         tracker=str(tracker_path),
     )
 
-    rows: list[dict] = []
+    detections: list[Detection] = []
     for frame_idx, result in enumerate(results):
         data = result.boxes
         if data is None or not data.is_track:
@@ -62,29 +62,50 @@ def track_video(
 
         for i, track_id in enumerate(data.id.tolist()):
             x, y, w, h = data.xywhn[i].tolist()
-            rows.append(
-                {
-                    "frame": frame_idx,
-                    "track_id": int(track_id),
-                    "left": x - w / 2,
-                    "top": y - h / 2,
-                    "width": w,
-                    "height": h,
-                    "conf": float(data.conf[i]),
-                    "label": model_names[int(data.cls[i])],
-                }
+            detections.append(
+                Detection(
+                    frame=frame_idx,
+                    track_id=int(track_id),
+                    left=x - w / 2,
+                    top=y - h / 2,
+                    width=w,
+                    height=h,
+                    conf=float(data.conf[i]),
+                    label=model_names[int(data.cls[i])],
+                )
             )
 
-    return pl.DataFrame(
-        rows,
-        schema={
-            "frame": pl.Int64,
-            "track_id": pl.Int64,
-            "left": pl.Float64,
-            "top": pl.Float64,
-            "width": pl.Float64,
-            "height": pl.Float64,
-            "conf": pl.Float64,
-            "label": pl.Utf8,
-        },
-    )
+    return detections
+
+
+@dataclass
+class YoloDetector:
+    """:class:`bird_cv.detection.types.Detector` backed by a YOLO checkpoint.
+
+    Wraps :func:`track_video` so detectors are swappable: anything that
+    implements ``predict(video_path) -> list[Detection]`` can stand in for
+    this in the single-video pipeline and its evaluation harness.
+
+    Attributes:
+        model_path: Path to the YOLO model weights (e.g. a ``.pt`` file).
+        tracker_path: Path to the tracker config (e.g. ``tracker.yaml``).
+        conf: Confidence threshold passed to ``model.track``.
+        iou: NMS IoU threshold passed to ``model.track``.
+        max_det: Maximum detections per frame passed to ``model.track``.
+    """
+
+    model_path: Path | str
+    tracker_path: Path | str
+    conf: float = 0.05
+    iou: float = 0.70
+    max_det: int = 1
+
+    def predict(self, video_path: Path | str) -> list[Detection]:
+        return track_video(
+            video_path=video_path,
+            model_path=self.model_path,
+            tracker_path=self.tracker_path,
+            conf=self.conf,
+            iou=self.iou,
+            max_det=self.max_det,
+        )
