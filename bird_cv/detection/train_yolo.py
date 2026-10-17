@@ -147,6 +147,7 @@ def train_select_yolo(
     select_conf: float = 0.25,
     iou_threshold: float = 0.5,
     search_space: dict[str, Any] | None = None,
+    train_options: dict[str, Any] | None = None,
     tune_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Train (or Ray-tune) YOLO from generic weights and select on val presence F1.
@@ -182,8 +183,11 @@ def train_select_yolo(
         iou_threshold: Minimum IoU for a presence hit.
         search_space: Ray Tune search space for tuning; ``None`` or empty
             uses Ultralytics' default space.
-        tune_options: Extra Ultralytics ``run_ray_tune`` arguments (e.g.
-            ``grace_period``).
+        train_options: Ultralytics training arguments for every run, tuned
+            or not (e.g. ``imgsz``, ``batch``); ``hyperparameters`` override
+            them.
+        tune_options: Extra Ultralytics ``run_ray_tune`` arguments, used
+            only when tuning (e.g. ``grace_period``).
 
     Returns:
         ``best_checkpoint``, ``candidate`` (run directory name),
@@ -211,7 +215,9 @@ def train_select_yolo(
         device=device,
         tune=tune,
         iterations=iterations,
-        frozen_parameters={"epochs": epochs} | (hyperparameters or {}),
+        frozen_parameters={"epochs": epochs}
+        | (train_options or {})
+        | (hyperparameters or {}),
         tune_kwargs={"gpu_per_trial": 1, "space": search_space or {}}
         | (tune_options or {}),
     )

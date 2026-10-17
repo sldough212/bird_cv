@@ -3,8 +3,8 @@
 #
 #   bash slurm_scripts/submit.sh [--smoke]
 #
-# Trains every [train] role (detector, classifier) with the model its config
-# table names, then scores each role's model on val/test.
+# Trains every [train] role (ROLES, printed by `train.py CONFIG paths`) with
+# the model its config table names, then scores each role's model on val/test.
 # --smoke (or SMOKE=1) runs 2 tuning trials and 2 epochs per role, for a
 # first cluster run; it is a smoke test, never report its scores.
 # Override CONFIG or RUN_ID in the environment. Output paths come from the
@@ -34,7 +34,7 @@ echo "$PATHS"
 
 GPU=(--gres=gpu:1 --partition=mb-l40s,mb-a30,mb-h100,mb-a6000,mb-r6000)
 TRAIN_JOBS=()
-for role in detector classifier; do
+for role in $ROLES; do
     job=$(sbatch --parsable slurm_scripts/run_train.sh "$role" "${TRAIN_ARGS[@]}")
     best_var="${role^^}_BEST"
     eval_job=$(sbatch --parsable --dependency=afterok:$job "${GPU[@]}" \

@@ -25,6 +25,7 @@ def tune_video_model(
     batch_size: int = 8,
     cpus_per_trial: int = 8,
     gpus_per_trial: float = 1,
+    train_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Search VideoMAE hyperparameters on validation window macro-F1.
 
@@ -46,6 +47,10 @@ def tune_video_model(
         batch_size: Dataloader batch size.
         cpus_per_trial: CPUs reserved per trial.
         gpus_per_trial: GPUs reserved per trial. Defaults to 1.
+        train_kwargs: Further :func:`train_video_model` keyword arguments
+            for every trial. They override ``num_frames``, ``epochs`` and
+            ``batch_size``, and a sampled value overrides both, so any of
+            them can be searched.
 
     Returns:
         ``hyperparameters`` (the best trial's value for each searched
@@ -58,19 +63,23 @@ def tune_video_model(
     output_root = Path(output_root).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
 
+    base_kwargs = {
+        "num_frames": num_frames,
+        "epochs": epochs,
+        "batch_size": batch_size,
+    } | (train_kwargs or {})
+    max_epochs = base_kwargs["epochs"]
+
     def trainable(config: dict[str, Any]) -> None:
         train_video_model(
             clips_root=clips_root,
             output_root=output_root / "trials",
             model_checkpoint=model_checkpoint,  # type: ignore[arg-type]
             output_name=tune.get_context().get_trial_id(),
-            num_frames=num_frames,
-            epochs=epochs,
-            batch_size=batch_size,
             selection_metric="macro_f1",
             save_checkpoint=False,
             epoch_callback=tune.report,
-            **config,
+            **(base_kwargs | config),
         )
 
     tuner = tune.Tuner(
@@ -82,8 +91,8 @@ def tune_video_model(
             num_samples=num_samples,
             scheduler=ASHAScheduler(
                 time_attr="epoch",
-                max_t=epochs,
-                grace_period=min(grace_period, epochs),
+                max_t=max_epochs,
+                grace_period=min(grace_period, max_epochs),
                 reduction_factor=3,
             ),
         ),

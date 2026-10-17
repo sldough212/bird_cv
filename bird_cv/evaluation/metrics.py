@@ -16,16 +16,17 @@ import numpy as np
 import polars as pl
 
 from bird_cv.core.labels import CLASSES
-from bird_cv.core.schemas import KEY_COLUMNS
+from bird_cv.core.schemas import KEY_COLUMNS, PREDICTION_SCHEMA
 from bird_cv.detection.mot_evaluate import compute_mot_metrics
 
 
 def box_columns() -> tuple[str, ...]:
-    """Normalized top-left + size box columns, as in the core schemas.
+    """The ``bbox_`` columns of ``PREDICTION_SCHEMA``, in schema order.
 
-    A null ``bbox_left`` means no box on that frame.
+    Normalized top-left + size (left, top, width, height); a null
+    ``bbox_left`` means no box on that frame.
     """
-    return ("bbox_left", "bbox_top", "bbox_width", "bbox_height")
+    return tuple(c for c in PREDICTION_SCHEMA if c.startswith("bbox_"))
 
 
 @dataclass(frozen=True)

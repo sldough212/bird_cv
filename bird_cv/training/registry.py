@@ -2,15 +2,18 @@
 
 Pipelines only ever talk to the :class:`Trainer` protocol, so swapping in a
 different detector or classifier means writing one class here and pointing
-``[train.detector]`` or ``[train.classifier]`` at its ``kind``. The
-:func:`get_trainer` mapping is the one place model names live.
+``[train.detector]`` or ``[train.classifier]`` at its ``kind``.
+:func:`_trainers` is the one place model names live. Importing this module
+doesn't import Ray or any model library; config loading uses it to
+validate kinds and search spaces.
 """
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
-from bird_cv.pipelines.config import ModelSpec
+if TYPE_CHECKING:
+    from bird_cv.pipelines.config import ModelSpec
 
 
 @dataclass(frozen=True)
@@ -53,9 +56,16 @@ class Trainer(Protocol):
         """Where :meth:`train` and :meth:`tune` put the selected checkpoint."""
         ...
 
+    def dataset_cameras(self, dataset: Path) -> set[str]:
+        """Cameras visible in a dataset's train and val data, from its layout.
+
+        Used to catch CV fold leaks; empty if the layout doesn't show them.
+        """
+        ...
+
     def train(
         self,
-        spec: ModelSpec,
+        spec: "ModelSpec",
         dataset: Path,
         run_dir: Path,
         hyperparameters: dict[str, Any],
@@ -65,7 +75,7 @@ class Trainer(Protocol):
         ...
 
     def tune(
-        self, spec: ModelSpec, dataset: Path, run_dir: Path, context: TrainContext
+        self, spec: "ModelSpec", dataset: Path, run_dir: Path, context: TrainContext
     ) -> TrainResult:
         """Search ``spec.search_space`` and return the selected model."""
         ...
@@ -73,7 +83,7 @@ class Trainer(Protocol):
     def evaluate(
         self,
         checkpoint: Path,
-        spec: ModelSpec,
+        spec: "ModelSpec",
         dataset: Path,
         split: str,
         output_dir: Path,
@@ -81,6 +91,45 @@ class Trainer(Protocol):
     ) -> dict[str, Any]:
         """Score a checkpoint on one split of its dataset (model-level metrics)."""
         ...
+
+
+def _distribution_keys() -> dict[str, tuple[str, ...]]:
+    """Required keys for each search-space distribution type."""
+    return {
+        "uniform": ("lower", "upper"),
+        "loguniform": ("lower", "upper"),
+        "randint": ("lower", "upper"),
+        "choice": ("values",),
+    }
+
+
+def check_search_space(spec: dict[str, dict], where: str = "search_space") -> None:
+    """Validate config distribution specs without importing Ray.
+
+    Args:
+        spec: Parameter name to ``{"type": ..., ...}`` (see
+            :func:`build_search_space`).
+        where: Location named in error messages, e.g. ``"[train.classifier]"``.
+
+    Raises:
+        ValueError: On a non-table entry, an unknown ``type`` or a missing
+            required key.
+    """
+    required = _distribution_keys()
+    for name, dist in spec.items():
+        if not isinstance(dist, dict):
+            raise ValueError(f"{where} search_space.{name} must be a table")
+        kind = dist.get("type")
+        if kind not in required:
+            raise ValueError(
+                f"{where} search_space.{name} has type {kind!r};"
+                f" expected one of {sorted(required)}"
+            )
+        missing = [k for k in required[kind] if k not in dist]
+        if missing:
+            raise ValueError(
+                f"{where} search_space.{name} ({kind}) is missing {missing}"
+            )
 
 
 def build_search_space(spec: dict[str, dict]) -> dict[str, Any]:
@@ -96,8 +145,9 @@ def build_search_space(spec: dict[str, dict]) -> dict[str, Any]:
         Parameter name to Ray Tune distribution.
 
     Raises:
-        ValueError: On an unknown distribution type.
+        ValueError: As for :func:`check_search_space`.
     """
+    check_search_space(spec)
     from ray import tune
 
     builders = {
@@ -106,26 +156,33 @@ def build_search_space(spec: dict[str, dict]) -> dict[str, Any]:
         "randint": lambda d: tune.randint(d["lower"], d["upper"]),
         "choice": lambda d: tune.choice(d["values"]),
     }
-    space = {}
-    for name, dist in spec.items():
-        if dist.get("type") not in builders:
-            raise ValueError(
-                f"Unknown distribution {dist.get('type')!r} for {name!r};"
-                f" expected one of {sorted(builders)}"
-            )
-        space[name] = builders[dist["type"]](dist)
-    return space
+    return {name: builders[dist["type"]](dist) for name, dist in spec.items()}
 
 
 class YoloTrainer:
-    """Ultralytics YOLO, selected on val presence F1 (ADR 0005)."""
+    """Ultralytics YOLO, selected on val presence F1 (ADR 0005).
+
+    ``spec.options`` are Ultralytics training arguments applied to every
+    run; ``spec.tune_options`` go to Ultralytics' ``run_ray_tune`` only
+    (e.g. ``grace_period``).
+    """
 
     def checkpoint_path(self, run_dir: Path) -> Path:
         return run_dir / "best.pt"
 
+    def dataset_cameras(self, dataset: Path) -> set[str]:
+        """Camera folders under ``images/{train,val}/``."""
+        return {
+            d.name
+            for split in ("train", "val")
+            if (dataset / "images" / split).is_dir()
+            for d in (dataset / "images" / split).iterdir()
+            if d.is_dir()
+        }
+
     def _fit(
         self,
-        spec: ModelSpec,
+        spec: "ModelSpec",
         dataset: Path,
         run_dir: Path,
         context: TrainContext,
@@ -146,7 +203,8 @@ class YoloTrainer:
             select_conf=context.select_conf,
             iou_threshold=context.iou_threshold,
             search_space=build_search_space(spec.search_space) if tune else None,
-            tune_options=spec.options if tune else None,
+            train_options=spec.options,
+            tune_options=spec.tune_options if tune else None,
         )
         return TrainResult(
             checkpoint=Path(best.pop("best_checkpoint")),
@@ -178,28 +236,42 @@ class YoloTrainer:
 class VideoMAETrainer:
     """VideoMAE clip classifier, selected on val window macro-F1 (ADR 0005).
 
-    ``spec.options``: ``num_frames``, ``batch_size``, and for tuning
-    ``cpus_per_trial`` and ``grace_period``.
+    ``spec.options`` are :func:`train_video_model` keyword arguments for
+    every run (e.g. ``num_frames``, ``batch_size``); ``spec.tune_options``
+    are :func:`tune_video_model` arguments (``cpus_per_trial``,
+    ``grace_period``).
     """
 
     def checkpoint_path(self, run_dir: Path) -> Path:
         return run_dir / "model" / "best"
 
+    def dataset_cameras(self, dataset: Path) -> set[str]:
+        """Clip paths don't carry the camera; rely on ``split.parquet``."""
+        return set()
+
+    def _train_kwargs(
+        self, spec: "ModelSpec", context: TrainContext, overrides: dict[str, Any]
+    ) -> dict[str, Any]:
+        """One kwargs dict: run settings, then options, then hyperparameters."""
+        return (
+            {
+                "epochs": spec.epochs,
+                "device": "cpu" if context.device == "cpu" else "cuda",
+            }
+            | spec.options
+            | overrides
+        )
+
     def train(self, spec, dataset, run_dir, hyperparameters, context) -> TrainResult:
         from bird_cv.classification.train_video_model import train_video_model
 
-        opts = spec.options
         result = train_video_model(
             clips_root=dataset,
             output_root=run_dir,
             model_checkpoint=spec.pretrained,
             output_name="model",
-            num_frames=opts.get("num_frames", 16),
-            epochs=spec.epochs,
-            batch_size=opts.get("batch_size", 8),
-            device="cuda" if context.device != "cpu" else "cpu",
             selection_metric="macro_f1",
-            **hyperparameters,
+            **self._train_kwargs(spec, context, hyperparameters),
         )
         return TrainResult(
             checkpoint=self.checkpoint_path(run_dir),
@@ -213,18 +285,14 @@ class VideoMAETrainer:
     def tune(self, spec, dataset, run_dir, context) -> TrainResult:
         from bird_cv.classification.tune_video_model import tune_video_model
 
-        opts = spec.options
         best = tune_video_model(
             clips_root=dataset,
             output_root=run_dir / "tune",
             search_space=build_search_space(spec.search_space),
             model_checkpoint=spec.pretrained,
             num_samples=spec.tune_trials,
-            epochs=spec.epochs,
-            grace_period=opts.get("grace_period", 2),
-            num_frames=opts.get("num_frames", 16),
-            batch_size=opts.get("batch_size", 8),
-            cpus_per_trial=opts.get("cpus_per_trial", 8),
+            train_kwargs=self._train_kwargs(spec, context, {}),
+            **spec.tune_options,
         )
         # Retrain the best configuration once, saving its checkpoint.
         return self.train(spec, dataset, run_dir, best["hyperparameters"], context)
@@ -248,13 +316,23 @@ class VideoMAETrainer:
         }
 
 
+def _trainers() -> dict[str, type]:
+    """The registry: ``ModelSpec.kind`` to trainer class."""
+    return {"yolo": YoloTrainer, "videomae": VideoMAETrainer}
+
+
+def trainer_kinds() -> list[str]:
+    """Every registered ``kind``, sorted."""
+    return sorted(_trainers())
+
+
 def get_trainer(kind: str) -> Trainer:
     """The trainer for a ``ModelSpec.kind``.
 
     Raises:
         ValueError: If no trainer is registered for ``kind``.
     """
-    trainers: dict[str, type] = {"yolo": YoloTrainer, "videomae": VideoMAETrainer}
+    trainers = _trainers()
     if kind not in trainers:
-        raise ValueError(f"No trainer for kind {kind!r}; known: {sorted(trainers)}")
+        raise ValueError(f"No trainer for kind {kind!r}; known: {trainer_kinds()}")
     return trainers[kind]()

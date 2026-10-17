@@ -99,6 +99,11 @@ def run_evaluate(
     ev = cfg.evaluate
     base = cfg.path_to_base_output
     predictions_root = base / ev.predictions
+    if mode == "model":
+        if role not in cfg.train.roles():
+            raise ValueError(f"role must be one of {sorted(cfg.train.roles())}")
+        if checkpoint is None:
+            raise ValueError("model mode needs --checkpoint")
     out = resolve_run_dir(base / ev.output / mode, run_id)
     inputs: dict[str, str] = {}
     split_version = None
@@ -106,8 +111,7 @@ def run_evaluate(
     if mode == "model":
         from bird_cv.training.registry import TrainContext, get_trainer
 
-        if role is None or checkpoint is None:
-            raise ValueError("model mode needs --role and --checkpoint")
+        assert role is not None and checkpoint is not None  # checked above
         spec = cfg.train.roles()[role]
         dataset = base / spec.dataset
         context = TrainContext(

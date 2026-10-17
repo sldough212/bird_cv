@@ -52,8 +52,10 @@ freeze_encoder = true
 
 # ---- Training from generic weights (optional; defaults shown) ----
 # Each role table picks a model by `kind` (see bird_cv/training/registry.py)
-# and overrides only the keys it sets. Paths are relative to
-# path_to_base_output unless absolute.
+# and overrides only the keys it sets. A table that changes `kind` starts
+# from scratch and must set `pretrained` and `dataset`. `options` apply to
+# every training run of the role; `tune_options` only to the tuner. Paths are
+# relative to path_to_base_output unless absolute.
 #
 # [train]
 # output = "train"
@@ -68,8 +70,10 @@ freeze_encoder = true
 # tune_trials = 30
 # # Empty means Ultralytics' default Ray Tune space.
 # search_space = {}
-# # e.g. options = { grace_period = 10 }
+# # Ultralytics training arguments, e.g. { imgsz = 640 }
 # options = {}
+# # Ultralytics run_ray_tune arguments, e.g. { grace_period = 10 }
+# tune_options = {}
 #
 # [train.classifier]
 # kind = "videomae"
@@ -78,7 +82,8 @@ freeze_encoder = true
 # epochs = 10
 # tune = true
 # tune_trials = 20
-# options = { num_frames = 16, batch_size = 8, cpus_per_trial = 8, grace_period = 2 }
+# options = { num_frames = 16, batch_size = 8 }
+# tune_options = { cpus_per_trial = 8, grace_period = 2 }
 #
 # [train.classifier.search_space]
 # lr = { type = "loguniform", lower = 1e-5, upper = 1e-3 }

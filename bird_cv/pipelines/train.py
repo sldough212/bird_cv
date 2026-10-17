@@ -23,7 +23,7 @@ import argparse
 import dataclasses
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
@@ -36,16 +36,18 @@ from bird_cv.pipelines.config import (
     resolve_run_dir,
 )
 
+if TYPE_CHECKING:
+    from bird_cv.training.registry import Trainer
+
 
 def smoke_config(cfg: BirdCVConfig) -> BirdCVConfig:
-    """Copy of ``cfg`` with 2 tuning trials and 2 epochs for every role."""
+    """Copy of ``cfg`` with 2 tuning trials and 2 epochs for every role.
+
+    Options are left alone; both tuners already cap their ASHA grace period
+    at the epoch count.
+    """
     smoke: dict[str, Any] = {
-        role: dataclasses.replace(
-            spec,
-            tune_trials=2,
-            epochs=2,
-            options=spec.options | {"grace_period": 1},
-        )
+        role: dataclasses.replace(spec, tune_trials=2, epochs=2)
         for role, spec in cfg.train.roles().items()
     }
     return dataclasses.replace(cfg, train=dataclasses.replace(cfg.train, **smoke))
@@ -61,17 +63,24 @@ def _run_base(cfg: BirdCVConfig, role: str, fold: int | None) -> Path:
     return base / f"fold{fold}" if fold is not None else base
 
 
-def _check_fold(
+def check_fold(
     cfg: BirdCVConfig,
     fold: int | None,
     hyperparameters: dict | None,
     dataset: Path,
+    trainer: "Trainer",
     split_file: str = "split.parquet",
 ) -> None:
     """Folds reuse frozen-split hyperparameters and never train on test cameras.
 
-    The fold dataset's cameras come from ``{dataset}/{split_file}``: the
-    :func:`bird_cv.evaluation.cv.fold_split` output it was built from.
+    A fold dataset's train/val cameras are the union of those listed in
+    ``{dataset}/{split_file}`` (the :func:`bird_cv.evaluation.cv.fold_split`
+    output it was built from) and those its layout shows
+    (:meth:`Trainer.dataset_cameras`).
+
+    Raises:
+        ValueError: If a fold has no hyperparameters, no cameras can be
+            found, or any found camera is one of the fold's test cameras.
     """
     if fold is None:
         return
@@ -79,14 +88,18 @@ def _check_fold(
         raise ValueError(
             "CV folds reuse the frozen-split hyperparameters; pass --hyperparameters"
         )
+    cameras = trainer.dataset_cameras(dataset)
     path = dataset / split_file
-    if not path.exists():
+    if path.exists():
+        split = pl.read_parquet(path)
+        cameras |= set(
+            split.filter(pl.col("split").is_in(["train", "val"]))["camera_id"]
+        )
+    if not cameras:
         raise ValueError(
             f"Can't tell which cameras {dataset} trains on: write its "
             f"fold_split output to {path}"
         )
-    split = pl.read_parquet(path)
-    cameras = set(split.filter(pl.col("split").is_in(["train", "val"]))["camera_id"])
     cv_folds = pl.read_parquet(cfg.path_to_base_output / cfg.evaluate.cv_folds)
     check_fold_cameras(cv_folds, fold, cameras)
 
@@ -122,7 +135,7 @@ def run_train(
     spec = cfg.train.roles()[role]
     trainer = get_trainer(spec.kind)
     dataset = _dataset_dir(cfg, spec, fold)
-    _check_fold(cfg, fold, hyperparameters, dataset)
+    check_fold(cfg, fold, hyperparameters, dataset, trainer)
     run_dir = resolve_run_dir(_run_base(cfg, role, fold), run_id)
     context = TrainContext(
         device=cfg.train.device,
@@ -166,10 +179,12 @@ def run_train(
 def print_paths(cfg: BirdCVConfig, run_id: str) -> None:
     """Print each role's frozen-split run dir and checkpoint as shell assignments.
 
-    Variables are ``BASE``, ``{ROLE}_RUN_DIR`` and ``{ROLE}_BEST``.
+    Variables are ``ROLES`` (space-separated role names), ``BASE``,
+    ``{ROLE}_RUN_DIR`` and ``{ROLE}_BEST``.
     """
     from bird_cv.training.registry import get_trainer
 
+    print(f"ROLES='{' '.join(cfg.train.roles())}'")
     print(f"BASE='{cfg.path_to_base_output}'")
     for role, spec in cfg.train.roles().items():
         run_dir = _run_base(cfg, role, None) / run_id
