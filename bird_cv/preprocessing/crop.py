@@ -17,6 +17,49 @@ from bird_cv.segmentation.utils import lookup_segment_idx
 from bird_cv.utils import extract_camera_video
 
 
+def crop_cage_frame(
+    frame: np.ndarray | Image.Image,
+    cage_mask: list | np.ndarray,
+    padding: int = 5,
+) -> np.ndarray | None:
+    """Crop one in-memory frame to one cage and black out pixels outside it.
+
+    The per-frame step of :func:`crop_cages`, usable on frames held in memory
+    (e.g. during inference). Channel order is preserved: an RGB frame gives an
+    RGB crop, a BGR frame a BGR crop.
+
+    Args:
+        frame: Full frame, as an ``(H, W[, C])`` array or a PIL image.
+        cage_mask: 2D boolean mask for the cage, the same size as ``frame``.
+        padding: Pixels to keep around the mask's bounding box.
+
+    Returns:
+        The cropped, masked frame, or None if the mask is empty (camera
+        starting up or cage significantly obstructed).
+    """
+    mask = np.asarray(cage_mask, dtype=bool)
+    if not mask.any():
+        return None
+    cropped_img, _ = crop_and_mask_image(frame, mask, black_out=True, padding=padding)
+    return np.asarray(cropped_img)
+
+
+def empty_cage_frame(frame: np.ndarray | Image.Image) -> np.ndarray:
+    """Black placeholder standing in for a cage frame whose mask is empty.
+
+    It is 2x2 px so it never enlarges a cage video: ``images_to_video`` pads
+    every frame with black up to the largest frame of the video.
+
+    Args:
+        frame: The full frame being cropped; sets the dtype and channel count.
+
+    Returns:
+        A 2x2 black array with the channels and dtype of ``frame``.
+    """
+    arr = np.asarray(frame)
+    return np.zeros((2, 2, *arr.shape[2:]), dtype=arr.dtype)
+
+
 def _load_cage_masks(seg_dir: Path, segment_index: dict, frame: int) -> dict | None:
     """Load cage masks for a given frame from the segmentation JSON.
 
@@ -256,13 +299,16 @@ def crop_cages(
     video_segments_path: Path,
     clip_output_path: Path,
     videos_path: Path,
+    *,
+    keep_empty_frames: bool = False,
 ) -> None:
     """Crop each cage region from every target frame and save as individual JPEGs.
 
     For each video in the split guidance, extracts all frames to a temporary
     directory, loads the corresponding SAM2 cage masks, and saves a cropped
     JPEG per cage per frame under ``clip_output_path/{camera_id}/{video_id}/{cage_id}/``.
-    Frames with missing segmentation masks are skipped.
+    Frames with missing segmentation masks are skipped. Frames whose cage mask
+    is empty are skipped too, unless ``keep_empty_frames`` is set.
 
     Args:
         split_guidance_path: Path to the split guidance parquet produced by
@@ -271,6 +317,15 @@ def crop_cages(
             structured as ``{camera_id}/{video_id}/``.
         clip_output_path: Root directory where cropped cage images will be saved.
         videos_path: Root directory containing the source video files.
+        keep_empty_frames: If True, write a black placeholder
+            (:func:`empty_cage_frame`) for a cage whose mask is empty instead
+            of skipping it, so frame i of the cage video is canonical frame i
+            (see ``docs/adr/0002-canonical-frame-index.md``).
+
+    Raises:
+        ValueError: With ``keep_empty_frames``, if a video's ``target_frames``
+            don't cover every frame, a frame's segmentation JSON is missing
+            or invalid, or a cage ends up with fewer frames than the video.
     """
     split_guidance = pl.read_parquet(split_guidance_path)
 
@@ -291,6 +346,17 @@ def crop_cages(
                 output_path=frame_store_path,
             )
 
+            # extract_all_frames names frames 1..n
+            n_frames = len(list(frame_store_path.glob("*.jpg")))
+            if keep_empty_frames:
+                missing = set(range(1, n_frames + 1)) - set(target_frames)
+                if missing:
+                    raise ValueError(
+                        f"{camera_id}/{video_id}: target_frames miss "
+                        f"{len(missing)} of {n_frames} frames"
+                    )
+            written: dict[str, int] = {}
+
             # Extract segmentation info
             seg_dir = video_segments_path / camera_id / video_id
             seg_index_path = seg_dir / "segment_index.json"
@@ -301,21 +367,34 @@ def crop_cages(
             for frame in sorted(target_frames):
                 frame_cage_masks = _load_cage_masks(seg_dir, segment_index, frame)
                 if frame_cage_masks is None:
+                    if keep_empty_frames:
+                        raise ValueError(
+                            f"{camera_id}/{video_id}: no valid segmentation "
+                            f"for frame {frame}"
+                        )
                     continue
 
                 img = Image.open(frame_store_path / f"{frame:05d}.jpg")
 
                 for cage_id, cage_mask in frame_cage_masks.items():
-                    # If there is no detecged mask (camera starting up or significantly obstructed)
-                    # Then do not crop
-                    if not any(item for sublist in cage_mask for item in sublist):
-                        continue
-
-                    cropped_img, _ = crop_and_mask_image(
-                        img, cage_mask, black_out=True, padding=5
-                    )
+                    # An empty mask (camera starting up or significantly obstructed)
+                    # gives no crop: skip it, or keep a placeholder if asked
+                    cropped = crop_cage_frame(img, cage_mask)
+                    if cropped is None:
+                        if not keep_empty_frames:
+                            continue
+                        cropped = empty_cage_frame(img)
 
                     crop_output = image_output_path / cage_id
                     crop_output.mkdir(exist_ok=True, parents=True)
 
-                    cropped_img.save(crop_output / f"{frame:05d}.jpg")
+                    Image.fromarray(cropped).save(crop_output / f"{frame:05d}.jpg")
+                    written[cage_id] = written.get(cage_id, 0) + 1
+
+            if keep_empty_frames:
+                for cage_id, n_written in written.items():
+                    if n_written != n_frames:
+                        raise ValueError(
+                            f"{camera_id}/{video_id} cage {cage_id}: wrote "
+                            f"{n_written} of {n_frames} frames"
+                        )
