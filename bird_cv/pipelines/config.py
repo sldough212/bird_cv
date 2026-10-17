@@ -93,6 +93,46 @@ class EvaluateConfig:
     iou_threshold: float = 0.5
     sweep_gap_fill_frames: list[int] = field(default_factory=lambda: [0, 8, 16])
     sweep_det_conf: list[float] = field(default_factory=lambda: [0.05, 0.25, 0.5])
+    # Paths below are relative to path_to_base_output unless absolute.
+    # Ground-truth parquet (GROUND_TRUTH_SCHEMA), or a directory of them.
+    ground_truth: Path = Path("ground_truth")
+    # Directory of split_v{n}.parquet (SPLIT_SCHEMA); the highest n is used.
+    splits: Path = Path("splits")
+    # CV fold assignment (CV_FOLD_SCHEMA).
+    cv_folds: Path = Path("splits/cv_folds.parquet")
+    # Prediction runs (PREDICTION_SCHEMA): {val_sweep/gap{g}_conf{c}, test,
+    # cv/fold{k}}/ under this directory.
+    predictions: Path = Path("predictions")
+    output: Path = Path("evaluation")
+    # Non-test cameras held out as val within each CV fold.
+    cv_val_cameras: int = 1
+
+
+@dataclass
+class TrainConfig:
+    """Training from generic pretrained weights (ADR 0004). Optional ``[train]`` table."""
+
+    # Paths are relative to path_to_base_output unless absolute.
+    # YOLO dataset root (images/{train,val}, labels/{train,val}); CV folds
+    # read {yolo_dataset}/fold{k}.
+    yolo_dataset: Path = Path("datasets/yolo")
+    # VideoMAE clip root ({train,val}/{label}/{clip}/); CV folds read
+    # {mae_clips}/fold{k}.
+    mae_clips: Path = Path("datasets/videomae_clips")
+    output: Path = Path("train")
+    device: int = 0
+    yolo_pretrained: str = "yolo11n.pt"
+    yolo_epochs: int = 60
+    yolo_tune: bool = True
+    yolo_tune_iterations: int = 30
+    mae_pretrained: str = "MCG-NJU/videomae-base"
+    mae_num_frames: int = 16
+    mae_epochs: int = 10
+    mae_batch_size: int = 8
+    mae_tune: bool = True
+    mae_tune_trials: int = 20
+    mae_tune_grace_period: int = 2
+    mae_cpus_per_trial: int = 8
 
 
 @dataclass
@@ -115,6 +155,7 @@ class BirdCVConfig:
     prepare: PrepareConfig = field(default_factory=PrepareConfig)
     infer: InferConfig = field(default_factory=InferConfig)
     evaluate: EvaluateConfig = field(default_factory=EvaluateConfig)
+    train: TrainConfig = field(default_factory=TrainConfig)
     # Derived paths
     path_to_cage_videos: Path = field(init=False)
     path_to_bbox_videos: Path = field(init=False)
@@ -216,6 +257,7 @@ def load_config(
         ("prepare", PrepareConfig),
         ("infer", InferConfig),
         ("evaluate", EvaluateConfig),
+        ("train", TrainConfig),
     ):
         table = raw.pop(name, {})
         unknown = set(table) - {f.name for f in fields(typ)}
