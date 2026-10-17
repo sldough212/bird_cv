@@ -1,9 +1,12 @@
 """Windowed VideoMAE inference: load a model and predict behavior segments for a video."""
 
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar, Literal
 
+import numpy as np
 import torch
 import cv2
 from torch.utils.data import DataLoader, Dataset
@@ -20,31 +23,45 @@ class VideoWindowDataset(Dataset):
     and the window's start frame index for mapping predictions back to timestamps.
 
     Args:
-        video_path: Path to the video file.
+        video_path: Path to the video file. Ignored when ``frames`` is given.
         processor: HuggingFace image processor for the VideoMAE model.
         num_frames: Number of frames per window. Must match the model's input size.
         stride: Step size between consecutive windows in frames.
+        frames: Optional in-memory RGB frames to use instead of reading
+            ``video_path``.
+        cover_tail: If True, add one final window ending on the last frame
+            when the stride leaves trailing frames uncovered, so every frame
+            of a video at least ``num_frames`` long gets a vote.
     """
 
     def __init__(
         self,
-        video_path: Path,
+        video_path: Path | None,
         processor: AutoImageProcessor,
         num_frames: int = 16,
         stride: int = 8,
+        *,
+        frames: Sequence[np.ndarray] | None = None,
+        cover_tail: bool = False,
     ) -> None:
-        cap = cv2.VideoCapture(str(video_path))
-        self.frames = []
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            self.frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        cap.release()
+        if frames is not None:
+            self.frames = list(frames)
+        else:
+            cap = cv2.VideoCapture(str(video_path))
+            self.frames = []
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                self.frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            cap.release()
 
         self.processor = processor
         self.num_frames = num_frames
         self.start_frames = list(range(0, len(self.frames) - num_frames + 1, stride))
+        last_start = len(self.frames) - num_frames
+        if cover_tail and self.start_frames and self.start_frames[-1] != last_start:
+            self.start_frames.append(last_start)
 
     def __len__(self) -> int:
         return len(self.start_frames)
@@ -82,13 +99,16 @@ def load_videomae_model(
 
 
 def _predict_frame_votes(
-    video_path: Path,
+    video_path: Path | None,
     model: VideoMAEForVideoClassification,
     processor: AutoImageProcessor,
     dev: torch.device,
     num_frames: int = 16,
     stride: int = 8,
     batch_size: int = 4,
+    *,
+    frames: Sequence[np.ndarray] | None = None,
+    cover_tail: bool = False,
 ) -> list[list[int]]:
     """Run windowed VideoMAE inference and collect per-frame class-id votes.
 
@@ -106,13 +126,22 @@ def _predict_frame_votes(
             Defaults to 16.
         stride: Step size between consecutive windows in frames. Defaults to 8.
         batch_size: Dataloader batch size for windowed inference. Defaults to 4.
+        frames: Optional in-memory RGB frames used instead of ``video_path``.
+        cover_tail: See :class:`VideoWindowDataset`.
 
     Returns:
         List with one entry per video frame, each a list of the class ids
         voted for that frame by every window covering it (empty if no
         window covers that frame).
     """
-    ds = VideoWindowDataset(video_path, processor, num_frames, stride)
+    ds = VideoWindowDataset(
+        video_path,
+        processor,
+        num_frames,
+        stride,
+        frames=frames,
+        cover_tail=cover_tail,
+    )
     loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0)
 
     # Collect per-window predictions alongside their start frames
@@ -231,7 +260,58 @@ def predict_video_frames(
     frame_votes = _predict_frame_votes(
         video_path, model, processor, dev, num_frames, stride, batch_size
     )
+    return _votes_to_predictions(frame_votes, id_to_label)
 
+
+def predict_frame_list(
+    frames: Sequence[np.ndarray],
+    model: VideoMAEForVideoClassification,
+    processor: AutoImageProcessor,
+    dev: torch.device,
+    id_to_label: dict,
+    num_frames: int = 16,
+    stride: int = 8,
+    batch_size: int = 4,
+    *,
+    cover_tail: bool = True,
+) -> list[FramePrediction]:
+    """Like :func:`predict_video_frames`, but over in-memory RGB frames.
+
+    Args:
+        frames: RGB frames, in order.
+        model: Loaded VideoMAE classification model, already on ``dev``.
+        processor: HuggingFace image processor for the VideoMAE model.
+        dev: Device the model is loaded on.
+        id_to_label: Mapping from predicted class id to label name.
+        num_frames: Frames per window. Defaults to 16.
+        stride: Step size between consecutive windows. Defaults to 8.
+        batch_size: Dataloader batch size. Defaults to 4.
+        cover_tail: Add a final window ending on the last frame (see
+            :class:`VideoWindowDataset`). Defaults to True, so every frame
+            of an input at least ``num_frames`` long is labeled.
+
+    Returns:
+        One :class:`FramePrediction` per input frame, ``frame`` being its
+        0-indexed position in ``frames``.
+    """
+    frame_votes = _predict_frame_votes(
+        None,
+        model,
+        processor,
+        dev,
+        num_frames,
+        stride,
+        batch_size,
+        frames=frames,
+        cover_tail=cover_tail,
+    )
+    return _votes_to_predictions(frame_votes, id_to_label)
+
+
+def _votes_to_predictions(
+    frame_votes: list[list[int]], id_to_label: dict
+) -> list[FramePrediction]:
+    """Majority-vote each frame's window votes into a :class:`FramePrediction`."""
     predictions: list[FramePrediction] = []
     for frame, votes in enumerate(frame_votes):
         if not votes:
@@ -270,6 +350,9 @@ class VideoMAEClassifier:
     stride: int = 8
     batch_size: int = 4
 
+    input_type: ClassVar[Literal["bbox_crop", "cage"]] = "bbox_crop"
+    """Media this classifier expects: 224 px bird crops."""
+
     def __post_init__(self) -> None:
         self.model, self.processor, self.device, self.id_to_label = load_videomae_model(
             self.model_path, num_frames=self.num_frames
@@ -278,6 +361,19 @@ class VideoMAEClassifier:
     def predict(self, video_path: Path) -> list[FramePrediction]:
         return predict_video_frames(
             video_path=video_path,
+            model=self.model,
+            processor=self.processor,
+            dev=self.device,
+            id_to_label=self.id_to_label,
+            num_frames=self.num_frames,
+            stride=self.stride,
+            batch_size=self.batch_size,
+        )
+
+    def predict_frames(self, frames: Sequence[np.ndarray]) -> list[FramePrediction]:
+        """Classify in-memory RGB frames; see :func:`predict_frame_list`."""
+        return predict_frame_list(
+            frames=frames,
             model=self.model,
             processor=self.processor,
             dev=self.device,

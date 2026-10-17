@@ -11,6 +11,7 @@ from PIL import Image
 
 # External / project-specific dependencies
 from sam2.build_sam import build_sam2_video_predictor_hf
+from sam2.sam2_video_predictor import SAM2VideoPredictor
 
 # Local utilities (adjust module paths as needed)
 from bird_cv.segmentation.visualize import (
@@ -231,6 +232,8 @@ def set_sam_and_predict(
     data_path: Path,
     config_path: Path,
     device: str = "cpu",
+    *,
+    predictor: SAM2VideoPredictor | None = None,
 ) -> dict[int, dict[int, np.ndarray]]:
     """Initializes a SAM2 video predictor, applies segmentation prompts, and
     generates mask predictions for objects in a video.
@@ -248,6 +251,9 @@ def set_sam_and_predict(
                 - "labels": List of labels corresponding to each point.
         device (str, optional): Device to run inference on (e.g., "cpu", "cuda").
             Defaults to "cpu".
+        predictor: An already-built SAM2 video predictor to reuse (e.g.
+            across chunks of one video), instead of building one from
+            ``sam_model_id`` on ``device``.
 
     Returns:
         dict[int, dict[int, np.ndarray]]: A nested dictionary containing predicted
@@ -255,7 +261,8 @@ def set_sam_and_predict(
             which map object IDs to their corresponding mask arrays (as NumPy arrays).
     """
     # Load the frames into the sam2 model
-    predictor = build_sam2_video_predictor_hf(sam_model_id, device=device)
+    if predictor is None:
+        predictor = build_sam2_video_predictor_hf(sam_model_id, device=device)
     inference_state = predictor.init_state(video_path=str(data_path))
 
     # Load in the config
