@@ -68,6 +68,8 @@ class PrepareConfig:
     cv_folds: int = 3
     # Every k-th frame for Detect videos that have no Classify labels yet.
     yolo_uniform_stride: int = 5
+    # Frames between consecutive VideoMAE clip starts within a labeled stretch.
+    videomae_clip_stride: int = 8
 
 
 @dataclass
