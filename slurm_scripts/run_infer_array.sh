@@ -9,9 +9,11 @@
 #SBATCH --array=0-3
 
 # End-to-end inference, videos split across array tasks; every task writes
-# into the same run directory (named after the array job id).
-# Extra arguments go to infer.py, e.g.:
+# into the same run directory (infer/infer_<array job id>, see
+# bird_cv/core/layout.py). Models come from the config; extra arguments go to
+# infer.py, e.g.:
 #   sbatch slurm_scripts/run_infer_array.sh --camera H7,I22 --limit 4
+#   sbatch slurm_scripts/run_infer_array.sh --train-run-id RUN_ID
 
 echo "SLURM_JOB_ID:" $SLURM_JOB_ID "TASK:" $SLURM_ARRAY_TASK_ID
 start=$(date +'%D %T')

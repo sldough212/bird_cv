@@ -1,9 +1,13 @@
+import dataclasses
 import re
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 import pytest
 
+from bird_cv.core.layout import Layout
+from bird_cv.inference.registry import inference_models
 from bird_cv.pipelines.config import TrainConfig, load_config
 from bird_cv.pipelines.train import check_fold
 from bird_cv.training.registry import (
@@ -16,36 +20,44 @@ from bird_cv.training.registry import (
 CONFIG = Path(__file__).parents[1] / "bird_cv/pipelines/configs/config.toml"
 
 
-def _config(tmp_path: Path, extra: str = "") -> Path:
+def _config(tmp_path: Path, detector: str = "", extra: str = "") -> Path:
+    """The committed config under ``tmp_path``, ``detector`` added to
+    [train.detector] and ``extra`` appended."""
     text = re.sub(
         r'^path_to_base_output = ".*"$',
         f'path_to_base_output = "{tmp_path}"',
         CONFIG.read_text(),
         flags=re.M,
     )
+    text = text.replace("\n[train.detector]\n", f"\n[train.detector]\n{detector}\n")
     path = tmp_path / "config.toml"
     path.write_text(text + extra)
     return path
 
 
+def _without_checkpoints(train: TrainConfig) -> TrainConfig:
+    """``train`` minus the committed smoke-test checkpoints."""
+    specs: dict[str, Any] = {
+        role: dataclasses.replace(spec, checkpoint=None)
+        for role, spec in train.roles().items()
+    }
+    return dataclasses.replace(train, **specs)
+
+
 def test_train_tables_merge_onto_defaults(tmp_path: Path) -> None:
-    cfg = load_config(
-        _config(tmp_path, "\n[train.detector]\nepochs = 5\n"), require_api_key=False
-    )
+    cfg = load_config(_config(tmp_path, "epochs = 5"), require_api_key=False)
     defaults = TrainConfig()
     assert cfg.train.detector.epochs == 5
     assert cfg.train.detector.kind == defaults.detector.kind
     assert cfg.train.detector.pretrained == defaults.detector.pretrained
     assert cfg.train.detector.tune_trials == defaults.detector.tune_trials
-    assert cfg.train.classifier == defaults.classifier
+    assert _without_checkpoints(cfg.train).classifier == defaults.classifier
 
     with pytest.raises(ValueError, match="train.detector"):
-        load_config(
-            _config(tmp_path, "\n[train.detector]\nepoch = 5\n"),
-            require_api_key=False,
-        )
+        load_config(_config(tmp_path, "epoch = 5"), require_api_key=False)
 
-    assert load_config(_config(tmp_path), require_api_key=False).train == defaults
+    train = load_config(_config(tmp_path), require_api_key=False).train
+    assert _without_checkpoints(train) == defaults
 
 
 def test_registry_and_search_space() -> None:
@@ -72,16 +84,42 @@ def test_registry_and_search_space() -> None:
 
 
 def test_fold_check_sees_test_camera_in_yolo_layout(tmp_path: Path) -> None:
-    cfg = load_config(_config(tmp_path), require_api_key=False)
-    folds_path = tmp_path / cfg.evaluate.cv_folds
-    folds_path.parent.mkdir(parents=True)
+    folds_path = tmp_path / "cv_folds.parquet"
     pl.DataFrame({"camera_id": ["A", "C"], "fold": [0, 1]}).write_parquet(folds_path)
 
     dataset = tmp_path / "fold1"
     (dataset / "images" / "train" / "C").mkdir(parents=True)  # fold 1's test camera
-    pl.DataFrame({"camera_id": ["A"], "split": ["train"]}).write_parquet(
-        dataset / "split.parquet"
-    )
+    split_path = dataset / "split.parquet"
+    pl.DataFrame({"camera_id": ["A"], "split": ["train"]}).write_parquet(split_path)
 
     with pytest.raises(ValueError, match="C"):
-        check_fold(cfg, 1, {}, dataset, YoloTrainer())
+        check_fold(
+            1,
+            {},
+            dataset,
+            YoloTrainer(),
+            split_path=split_path,
+            cv_folds_path=folds_path,
+        )
+
+
+def test_inference_models_come_from_config(tmp_path: Path) -> None:
+    cfg = load_config(_config(tmp_path), require_api_key=False)
+    models = inference_models(cfg, train_run_id="r1")
+    assert models.kinds() == {
+        "segmenter": "sam2",
+        "detector": "yolo",
+        "classifier": "videomae",
+    }
+    run_dir = Layout(tmp_path).train_run("detector", "r1")
+    assert models.checkpoints["detector"] == YoloTrainer().checkpoint_path(run_dir)
+    assert inference_models(cfg).checkpoints == {
+        "detector": cfg.train.detector.checkpoint,
+        "classifier": cfg.train.classifier.checkpoint,
+    }
+
+    with pytest.raises(ValueError, match="infer.segmenter"):
+        load_config(
+            _config(tmp_path, extra='\n[infer.segmenter]\nkind = "nope"\n'),
+            require_api_key=False,
+        )

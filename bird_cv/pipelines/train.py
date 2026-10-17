@@ -27,14 +27,10 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
+from bird_cv.core.layout import Layout
 from bird_cv.core.manifest import new_manifest, read_manifest, write_manifest
 from bird_cv.evaluation.cv import check_fold_cameras
-from bird_cv.pipelines.config import (
-    BirdCVConfig,
-    ModelSpec,
-    load_config,
-    resolve_run_dir,
-)
+from bird_cv.pipelines.config import BirdCVConfig, default_run_id, load_config
 
 if TYPE_CHECKING:
     from bird_cv.training.registry import Trainer
@@ -53,29 +49,20 @@ def smoke_config(cfg: BirdCVConfig) -> BirdCVConfig:
     return dataclasses.replace(cfg, train=dataclasses.replace(cfg.train, **smoke))
 
 
-def _dataset_dir(cfg: BirdCVConfig, spec: ModelSpec, fold: int | None) -> Path:
-    root = cfg.path_to_base_output / spec.dataset
-    return root / f"fold{fold}" if fold is not None else root
-
-
-def _run_base(cfg: BirdCVConfig, role: str, fold: int | None) -> Path:
-    base = cfg.path_to_base_output / cfg.train.output / role
-    return base / f"fold{fold}" if fold is not None else base
-
-
 def check_fold(
-    cfg: BirdCVConfig,
     fold: int | None,
     hyperparameters: dict | None,
     dataset: Path,
     trainer: "Trainer",
-    split_file: str = "split.parquet",
+    *,
+    split_path: Path,
+    cv_folds_path: Path,
 ) -> None:
     """Folds reuse frozen-split hyperparameters and never train on test cameras.
 
     A fold dataset's train/val cameras are the union of those listed in
-    ``{dataset}/{split_file}`` (the :func:`bird_cv.evaluation.cv.fold_split`
-    output it was built from) and those its layout shows
+    ``split_path`` (the :func:`bird_cv.evaluation.cv.fold_split` output it
+    was built from) and those its layout shows
     (:meth:`Trainer.dataset_cameras`).
 
     Raises:
@@ -89,19 +76,17 @@ def check_fold(
             "CV folds reuse the frozen-split hyperparameters; pass --hyperparameters"
         )
     cameras = trainer.dataset_cameras(dataset)
-    path = dataset / split_file
-    if path.exists():
-        split = pl.read_parquet(path)
+    if split_path.exists():
+        split = pl.read_parquet(split_path)
         cameras |= set(
             split.filter(pl.col("split").is_in(["train", "val"]))["camera_id"]
         )
     if not cameras:
         raise ValueError(
             f"Can't tell which cameras {dataset} trains on: write its "
-            f"fold_split output to {path}"
+            f"fold_split output to {split_path}"
         )
-    cv_folds = pl.read_parquet(cfg.path_to_base_output / cfg.evaluate.cv_folds)
-    check_fold_cameras(cv_folds, fold, cameras)
+    check_fold_cameras(pl.read_parquet(cv_folds_path), fold, cameras)
 
 
 def run_train(
@@ -113,14 +98,14 @@ def run_train(
 ) -> Path:
     """Tune (optionally) and train one role's model; write results and a manifest.
 
-    Writes ``best_hyperparameters.json``, ``train_result.json`` and
-    ``manifest.json`` to the run directory; the checkpoint goes where the
-    role's trainer puts it (:meth:`Trainer.checkpoint_path`).
+    Trains on :meth:`Layout.dataset` of the current prepared data and
+    writes ``best_hyperparameters.json``, ``train_result.json`` and
+    ``manifest.json`` to :meth:`Layout.train_run`; the checkpoint goes where
+    the role's trainer puts it (:meth:`Trainer.checkpoint_path`).
 
     Args:
         cfg: Pipeline config; uses ``[train]``, ``infer.det_conf`` and
-            ``evaluate.iou_threshold`` (detector selection) and
-            ``evaluate.cv_folds`` (folds).
+            ``evaluate.iou_threshold`` (detector selection).
         role: A role from ``TrainConfig.roles()``.
         run_id: Fixed run directory name; timestamped if ``None``.
         fold: CV fold to train on; ``None`` for the frozen split.
@@ -134,9 +119,20 @@ def run_train(
 
     spec = cfg.train.roles()[role]
     trainer = get_trainer(spec.kind)
-    dataset = _dataset_dir(cfg, spec, fold)
-    check_fold(cfg, fold, hyperparameters, dataset, trainer)
-    run_dir = resolve_run_dir(_run_base(cfg, role, fold), run_id)
+    layout = Layout(cfg.path_to_base_output)
+    prepared = layout.read_current()
+    dataset = layout.dataset(prepared, role, fold)
+    check_fold(
+        fold,
+        hyperparameters,
+        dataset,
+        trainer,
+        split_path=layout.dataset_split(prepared, role, fold),
+        cv_folds_path=layout.cv_folds(prepared.split_version),
+    )
+    run_dir = layout.train_run(role, default_run_id(run_id), fold)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Run directory: {run_dir}")
     context = TrainContext(
         device=cfg.train.device,
         select_conf=cfg.infer.det_conf,
@@ -184,10 +180,11 @@ def print_paths(cfg: BirdCVConfig, run_id: str) -> None:
     """
     from bird_cv.training.registry import get_trainer
 
+    layout = Layout(cfg.path_to_base_output)
     print(f"ROLES='{' '.join(cfg.train.roles())}'")
     print(f"BASE='{cfg.path_to_base_output}'")
     for role, spec in cfg.train.roles().items():
-        run_dir = _run_base(cfg, role, None) / run_id
+        run_dir = layout.train_run(role, run_id)
         best = get_trainer(spec.kind).checkpoint_path(run_dir)
         print(f"{role.upper()}_RUN_DIR='{run_dir}'")
         print(f"{role.upper()}_BEST='{best}'")

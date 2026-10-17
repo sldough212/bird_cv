@@ -39,17 +39,16 @@ for role in $ROLES; do
     best_var="${role^^}_BEST"
     eval_job=$(sbatch --parsable --dependency=afterok:$job "${GPU[@]}" \
         slurm_scripts/run_evaluate.sh model --role "$role" \
-        --checkpoint "${!best_var}" --run-id "${RUN_ID}_${role}")
+        --checkpoint "${!best_var}" --run-id "$RUN_ID")
     echo "train_${role}=$job evaluate_${role}=$eval_job"
     TRAIN_JOBS+=("$job")
 done
 
-# End-to-end evaluation needs predictions from the inference pipeline under
-# {path_to_base_output}/predictions/{val_sweep/gap{g}_conf{c},test}/, made
-# with $DETECTOR_BEST and $CLASSIFIER_BEST.
-# TODO(integration): run_infer_array.sh reads models and gap-fill settings
-# from the config only; once it can take them per run, submit val-sweep
-# inference with --dependency=afterok:$(IFS=:; echo "${TRAIN_JOBS[*]}"), then
+# End-to-end evaluation reads predictions from the inference runs that
+# bird_cv/core/layout.py places under infer/$RUN_ID/{val_sweep/gap{g}_conf{c},test}/,
+# made with this run's checkpoints (infer.py --train-run-id $RUN_ID).
+# TODO(integration, #48 part 3): submit val-sweep inference with
+# --dependency=afterok:$(IFS=:; echo "${TRAIN_JOBS[*]}"), then
 #   sbatch --dependency=afterok:$infer_val slurm_scripts/run_evaluate.sh sweep --run-id "$RUN_ID"
 # then test inference with best_setting.json, then
 #   sbatch --dependency=afterok:$infer_test slurm_scripts/run_evaluate.sh test --run-id "$RUN_ID"

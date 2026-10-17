@@ -203,11 +203,6 @@ def sweep_settings(
     return [(g, c) for g in gap_fill_frames for c in det_conf]
 
 
-def sweep_dir_name(gap_fill_frames: int, det_conf: float) -> str:
-    """Directory name for one sweep setting's predictions, e.g. ``gap8_conf0.25``."""
-    return f"gap{gap_fill_frames}_conf{det_conf:g}"
-
-
 def run_sweep(
     truth: pl.DataFrame,
     predictions_by_setting: Mapping[tuple[int, float], pl.DataFrame],

@@ -1,33 +1,36 @@
 """Evaluate predictions against ground truth (ADR 0005).
 
+Ground truth, split and CV folds are the current prepared data
+(``prepared/current.json``); predictions are read from, and results written
+to, the run ``--run-id`` names in :class:`bird_cv.core.layout.Layout`.
+
 Modes:
 
 - ``sweep``: val end-to-end macro-F1 for every ``(gap_fill_frames,
-  det_conf)`` in ``[evaluate]``, reading predictions from
-  ``{predictions}/val_sweep/gap{g}_conf{c}/``; writes ``sweep.parquet`` and
-  ``best_setting.json``.
-- ``test``: frozen-split test cameras, predictions from ``{predictions}/test/``.
-- ``cv``: 3-fold camera CV, predictions from ``{predictions}/cv/fold{k}/``;
-  pooled, per-camera and per-fold results.
+  det_conf)`` in ``[evaluate]``, from :meth:`Layout.sweep_infer_run`;
+  writes ``sweep.parquet`` and ``best_setting.json``.
+- ``test``: frozen-split test cameras, from :meth:`Layout.test_infer_run`.
+- ``cv``: 3-fold camera CV, from :meth:`Layout.cv_infer_run`; pooled,
+  per-camera and per-fold results.
 - ``model``: one role's model-level metrics (e.g. window macro-F1 for a
   clip classifier, presence F1 for a detector) on the val and test splits
-  of its ``[train.{role}] dataset``, for ``--role`` and ``--checkpoint``.
+  of its frozen-split dataset, for ``--role`` and ``--checkpoint``.
 
 Usage::
 
-    python bird_cv/pipelines/evaluate.py CONFIG {sweep,test,cv} [--run-id ID]
+    python bird_cv/pipelines/evaluate.py CONFIG {sweep,test,cv} --run-id ID
     python bird_cv/pipelines/evaluate.py CONFIG model --role ROLE \\
         --checkpoint PATH [--run-id ID]
 """
 
 import argparse
 import json
-import re
 from dataclasses import asdict
 from pathlib import Path
 
 import polars as pl
 
+from bird_cv.core.layout import Layout
 from bird_cv.core.manifest import new_manifest, write_manifest
 from bird_cv.evaluation.cv import evaluate_cv
 from bird_cv.evaluation.e2e import (
@@ -35,37 +38,10 @@ from bird_cv.evaluation.e2e import (
     load_ground_truth,
     load_predictions,
     run_sweep,
-    sweep_dir_name,
     sweep_settings,
     write_e2e_result,
 )
-from bird_cv.pipelines.config import BirdCVConfig, load_config, resolve_run_dir
-
-
-def latest_split(
-    splits_dir: Path, pattern: str = r"^split_v(\d+)\.parquet$"
-) -> tuple[pl.DataFrame, int]:
-    """The highest-numbered split file in ``splits_dir`` and its version.
-
-    Args:
-        splits_dir: Directory of split files.
-        pattern: File-name regex whose first group is the version number.
-
-    Returns:
-        The split (``SPLIT_SCHEMA``) and its version.
-
-    Raises:
-        FileNotFoundError: If no file matches.
-    """
-    versions = {
-        int(m.group(1)): p
-        for p in splits_dir.iterdir()
-        if (m := re.match(pattern, p.name))
-    }
-    if not versions:
-        raise FileNotFoundError(f"No split_v{{n}}.parquet in {splits_dir}")
-    n = max(versions)
-    return pl.read_parquet(versions[n]), n
+from bird_cv.pipelines.config import BirdCVConfig, default_run_id, load_config
 
 
 def _cameras(split: pl.DataFrame, name: str) -> pl.Series:
@@ -89,7 +65,9 @@ def run_evaluate(
         cfg: Pipeline config; uses ``[evaluate]`` (and ``[train]`` for
             ``model``).
         mode: ``"sweep"``, ``"test"``, ``"cv"`` or ``"model"``.
-        run_id: Fixed output directory name; timestamped if ``None``.
+        run_id: The pipeline run whose inference outputs to score (required
+            except for ``model``, where ``None`` means a timestamp); also
+            names the output directory.
         role: A ``[train]`` role, for ``model``.
         checkpoint: That role's checkpoint, for ``model``.
 
@@ -97,23 +75,31 @@ def run_evaluate(
         The output directory.
     """
     ev = cfg.evaluate
-    base = cfg.path_to_base_output
-    predictions_root = base / ev.predictions
+    layout = Layout(cfg.path_to_base_output)
+    prepared = layout.read_current()
     if mode == "model":
         if role not in cfg.train.roles():
             raise ValueError(f"role must be one of {sorted(cfg.train.roles())}")
         if checkpoint is None:
             raise ValueError("model mode needs --checkpoint")
-    out = resolve_run_dir(base / ev.output / mode, run_id)
+    elif mode in ("sweep", "test", "cv"):
+        if not run_id:
+            raise ValueError(f"{mode} mode needs the inference run's --run-id")
+    else:
+        raise ValueError(f"Unknown mode {mode!r}")
+    out = layout.evaluation_run(mode, default_run_id(run_id), role)
+    out.mkdir(parents=True, exist_ok=True)
+    print(f"Run directory: {out}")
     inputs: dict[str, str] = {}
-    split_version = None
+    split_version = prepared.split_version
+    split = pl.read_parquet(layout.split(split_version))
 
     if mode == "model":
         from bird_cv.training.registry import TrainContext, get_trainer
 
         assert role is not None and checkpoint is not None  # checked above
         spec = cfg.train.roles()[role]
-        dataset = base / spec.dataset
+        dataset = layout.dataset(prepared, role)
         context = TrainContext(
             device=cfg.train.device,
             select_conf=cfg.infer.det_conf,
@@ -133,26 +119,25 @@ def run_evaluate(
         )
         inputs = {"dataset": str(dataset), "checkpoint": str(checkpoint)}
     else:
-        truth_path = base / ev.ground_truth
+        assert run_id  # checked above
+        truth_path = layout.ground_truth(prepared.snapshot_hash, prepared.gt_version)
         truth = load_ground_truth(truth_path)
         inputs["ground_truth"] = str(truth_path)
 
         if mode == "sweep":
-            split, split_version = latest_split(base / ev.splits)
             val_truth = _truth_for(truth, _cameras(split, "val"))
             predictions = {}
             for gap, conf in sweep_settings(
                 ev.sweep_gap_fill_frames, ev.sweep_det_conf
             ):
-                pred_dir = predictions_root / "val_sweep" / sweep_dir_name(gap, conf)
+                pred_dir = layout.sweep_infer_run(run_id, gap, conf).predictions_dir
                 if not pred_dir.exists():
                     print(f"Skipping missing sweep setting: {pred_dir}")
                     continue
                 predictions[(gap, conf)] = load_predictions(pred_dir)
+            sweep_root = layout.sweep_root(run_id)
             if not predictions:
-                raise FileNotFoundError(
-                    f"No sweep predictions under {predictions_root}"
-                )
+                raise FileNotFoundError(f"No sweep predictions under {sweep_root}")
             sweep = run_sweep(val_truth, predictions, ev.iou_threshold)
             print(sweep)
             sweep.write_parquet(out / "sweep.parquet")
@@ -163,11 +148,10 @@ def run_evaluate(
                     indent=2,
                 )
             )
-            inputs["predictions"] = str(predictions_root / "val_sweep")
+            inputs["predictions"] = str(sweep_root)
 
         elif mode == "test":
-            split, split_version = latest_split(base / ev.splits)
-            pred_dir = predictions_root / "test"
+            pred_dir = layout.test_infer_run(run_id).predictions_dir
             result = evaluate_e2e(
                 _truth_for(truth, _cameras(split, "test")),
                 load_predictions(pred_dir),
@@ -179,10 +163,12 @@ def run_evaluate(
             inputs["predictions"] = str(pred_dir)
 
         elif mode == "cv":
-            folds_path = base / ev.cv_folds
+            folds_path = layout.cv_folds(split_version)
             cv_folds = pl.read_parquet(folds_path)
             fold_predictions = {
-                fold: load_predictions(predictions_root / "cv" / f"fold{fold}")
+                fold: load_predictions(
+                    layout.cv_infer_run(run_id, fold).predictions_dir
+                )
                 for fold in sorted(cv_folds["fold"].unique().to_list())
             }
             cv = evaluate_cv(truth, cv_folds, fold_predictions, ev.iou_threshold)
@@ -193,7 +179,6 @@ def run_evaluate(
             cv.per_fold.write_parquet(out / "per_fold.parquet")
             # Hyperparameters and the gap-fill/det_conf setting were chosen on
             # the frozen split's val cameras, which are also CV test cameras.
-            split, split_version = latest_split(base / ev.splits)
             (out / "cv.json").write_text(
                 json.dumps(
                     {
@@ -214,14 +199,13 @@ def run_evaluate(
             )
             inputs |= {
                 "cv_folds": str(folds_path),
-                "predictions": str(predictions_root / "cv"),
+                "predictions": str(layout.cv_root(run_id)),
             }
-        else:
-            raise ValueError(f"Unknown mode {mode!r}")
 
     write_manifest(
         new_manifest(
             kind="evaluate",
+            snapshot_hash=prepared.snapshot_hash,
             split_version=split_version,
             config={"mode": mode, "evaluate": asdict(ev)},
             inputs=inputs,
@@ -235,7 +219,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("config_path", type=Path, help="Path to the TOML config")
     parser.add_argument("mode", choices=("sweep", "test", "cv", "model"))
-    parser.add_argument("--run-id", default=None, help="Output directory name")
+    parser.add_argument(
+        "--run-id", default=None, help="Pipeline run to score (and output name)"
+    )
     parser.add_argument("--role", default=None, help="[train] role, for model")
     parser.add_argument("--checkpoint", type=Path, default=None)
     args = parser.parse_args()

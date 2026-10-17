@@ -73,8 +73,28 @@ class PrepareConfig:
 
 
 @dataclass
+class SegmenterSpec:
+    """Which cage segmenter inference uses. Optional ``[infer.segmenter]`` table.
+
+    Attributes:
+        kind: Registry key in :mod:`bird_cv.inference.registry`, e.g.
+            ``"sam2"`` (prompted from ``path_to_segmentation_configs``, model
+            ``sam_model_id``) or ``"whole_frame"`` (one cage per frame).
+        options: Constructor arguments of that segmenter.
+    """
+
+    kind: str = "sam2"
+    options: dict = field(default_factory=dict)
+
+
+@dataclass
 class InferConfig:
-    """Configuration for end-to-end inference. Optional ``[infer]`` TOML table."""
+    """Configuration for end-to-end inference. Optional ``[infer]`` TOML table.
+
+    The detector and classifier are the ``[train.detector]`` and
+    ``[train.classifier]`` models (see :class:`ModelSpec`); the segmenter is
+    ``[infer.segmenter]``.
+    """
 
     chunk_frames: int = 900
     # Frames of overlap between consecutive VideoMAE chunks.
@@ -84,6 +104,7 @@ class InferConfig:
     # Detection confidence threshold for e2e output (not Label Studio pre-labels).
     det_conf: float = 0.25
     crop_size: int = 224
+    segmenter: SegmenterSpec = field(default_factory=SegmenterSpec)
 
 
 @dataclass
@@ -93,36 +114,26 @@ class EvaluateConfig:
     iou_threshold: float = 0.5
     sweep_gap_fill_frames: list[int] = field(default_factory=lambda: [0, 8, 16])
     sweep_det_conf: list[float] = field(default_factory=lambda: [0.05, 0.25, 0.5])
-    # Paths below are relative to path_to_base_output unless absolute.
-    # Ground-truth parquet (GROUND_TRUTH_SCHEMA), or a directory of them.
-    ground_truth: Path = Path("ground_truth")
-    # Directory of split_v{n}.parquet (SPLIT_SCHEMA); the highest n is used.
-    splits: Path = Path("splits")
-    # CV fold assignment (CV_FOLD_SCHEMA).
-    cv_folds: Path = Path("splits/cv_folds.parquet")
-    # Prediction runs (PREDICTION_SCHEMA): {val_sweep/gap{g}_conf{c}, test,
-    # cv/fold{k}}/ under this directory.
-    predictions: Path = Path("predictions")
-    output: Path = Path("evaluation")
+    # Inputs and outputs are located by bird_cv.core.layout.Layout.
     # Non-test cameras held out as val within each CV fold.
     cv_val_cameras: int = 1
 
 
 @dataclass
 class ModelSpec:
-    """Which model fills a pipeline role and how to train it.
+    """Which model fills a pipeline role, for training and for inference.
 
-    ``kind`` picks the trainer in ``bird_cv.training.registry``; nothing
-    else in the pipelines names a model. A ``[train.detector]`` or
+    ``kind`` picks the registry entry in ``bird_cv.training.registry``,
+    which knows how to train that model and how to load it for inference;
+    nothing else in the pipelines names a model. A ``[train.detector]`` or
     ``[train.classifier]`` table overrides only the keys it sets, unless it
     changes ``kind``: then it starts from a bare spec (these field
-    defaults) and must set ``pretrained`` and ``dataset``.
+    defaults) and must set ``pretrained``. Training data is located by
+    :meth:`bird_cv.core.layout.Layout.dataset`.
 
     Attributes:
         kind: Registry key, e.g. ``"yolo"`` or ``"videomae"``.
         pretrained: Generic pretrained weights to start from (ADR 0004).
-        dataset: Training data root, relative to ``path_to_base_output``
-            unless absolute; CV folds read ``{dataset}/fold{k}``.
         epochs: Epochs per training run or tuning trial.
         tune: Tune hyperparameters on the frozen split before training.
         tune_trials: Number of tuning trials.
@@ -137,17 +148,22 @@ class ModelSpec:
             not (e.g. ``batch_size``).
         tune_options: Arguments for the tuner only (e.g. ``grace_period``,
             ``cpus_per_trial``).
+        checkpoint: Weights inference loads when it isn't given a training
+            run (``infer.py --train-run-id``); absolute.
+        infer_options: Constructor arguments of the inference model (e.g.
+            a tracker config, a window stride).
     """
 
     kind: str
     pretrained: str
-    dataset: Path
     epochs: int = 10
     tune: bool = True
     tune_trials: int = 20
     search_space: dict[str, dict] = field(default_factory=dict)
     options: dict = field(default_factory=dict)
     tune_options: dict = field(default_factory=dict)
+    checkpoint: Path | None = None
+    infer_options: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -158,16 +174,12 @@ class TrainConfig:
     ``[train.detector]`` and ``[train.classifier]``.
     """
 
-    # Relative to path_to_base_output unless absolute; runs go to
-    # {output}/{role}/{run_id}.
-    output: Path = Path("train")
+    # Runs go to Layout.train_run(role, run_id[, fold]).
     device: int = 0
     detector: ModelSpec = field(
         default_factory=lambda: ModelSpec(
             kind="yolo",
             pretrained="yolo11n.pt",
-            # images/{train,val}, labels/{train,val}
-            dataset=Path("datasets/yolo"),
             epochs=60,
             tune_trials=30,
             # Empty: Ultralytics' default Ray Tune space.
@@ -178,8 +190,6 @@ class TrainConfig:
         default_factory=lambda: ModelSpec(
             kind="videomae",
             pretrained="MCG-NJU/videomae-base",
-            # {train,val}/{label}/{clip}/
-            dataset=Path("datasets/videomae_clips"),
             epochs=10,
             tune_trials=20,
             search_space={
@@ -212,8 +222,8 @@ def _convert_train_config(table: dict, dec_hook) -> TrainConfig:
 
     Raises:
         ValueError: On unknown keys in ``[train]`` or a role table, an
-            unknown ``kind``, a new ``kind`` without ``pretrained`` and
-            ``dataset``, or a malformed ``search_space`` entry.
+            unknown ``kind``, a new ``kind`` without ``pretrained``, or a
+            malformed ``search_space`` entry.
     """
     from bird_cv.training.registry import check_search_space, trainer_kinds
 
@@ -238,7 +248,7 @@ def _convert_train_config(table: dict, dec_hook) -> TrainConfig:
         if kind == default.kind:
             base = msgspec.to_builtins(default, enc_hook=lambda p: str(p))
         else:
-            missing = sorted({"pretrained", "dataset"} - set(role_table))
+            missing = sorted({"pretrained"} - set(role_table))
             if missing:
                 raise ValueError(
                     f"{where} changes kind to {kind!r}, so it must set {missing}"
@@ -247,6 +257,31 @@ def _convert_train_config(table: dict, dec_hook) -> TrainConfig:
         merged[role] = base | role_table
         check_search_space(merged[role].get("search_space", {}), where=where)
     return msgspec.convert(merged, type=TrainConfig, dec_hook=dec_hook)
+
+
+def _convert_infer_config(table: dict, dec_hook) -> InferConfig:
+    """Build :class:`InferConfig`, checking ``[infer.segmenter]`` keys and kind.
+
+    Raises:
+        ValueError: On unknown keys in ``[infer]`` or ``[infer.segmenter]``,
+            or a segmenter ``kind`` with no registry entry.
+    """
+    from bird_cv.inference.registry import segmenter_kinds
+
+    for where, typ, keys in (
+        ("[infer]", InferConfig, table),
+        ("[infer.segmenter]", SegmenterSpec, table.get("segmenter", {})),
+    ):
+        unknown = set(keys) - {f.name for f in fields(typ)}
+        if unknown:
+            raise ValueError(f"Unknown keys in {where}: {sorted(unknown)}")
+    cfg = msgspec.convert(table, type=InferConfig, dec_hook=dec_hook)
+    if cfg.segmenter.kind not in segmenter_kinds():
+        raise ValueError(
+            f"[infer.segmenter] kind {cfg.segmenter.kind!r} is not registered;"
+            f" known: {segmenter_kinds()}"
+        )
+    return cfg
 
 
 @dataclass
@@ -369,7 +404,6 @@ def load_config(
     optional_cfgs = {}
     for name, typ in (
         ("prepare", PrepareConfig),
-        ("infer", InferConfig),
         ("evaluate", EvaluateConfig),
     ):
         table = raw.pop(name, {})
@@ -377,7 +411,10 @@ def load_config(
         if unknown:
             raise ValueError(f"Unknown keys in [{name}]: {sorted(unknown)}")
         optional_cfgs[name] = msgspec.convert(table, type=typ, dec_hook=str_to_path)
-    # [train] nests per-role tables merged onto role defaults (same check).
+    # [infer] and [train] nest tables (same unknown-key check).
+    optional_cfgs["infer"] = _convert_infer_config(
+        raw.pop("infer", {}), dec_hook=str_to_path
+    )
     optional_cfgs["train"] = _convert_train_config(
         raw.pop("train", {}), dec_hook=str_to_path
     )
@@ -430,9 +467,12 @@ def resolve_run_dir(base_path: Path, run_id: str | None) -> Path:
     Returns:
         Path to the run directory (not yet created).
     """
-    if not run_id:
-        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = base_path / run_id
+    run_dir = base_path / default_run_id(run_id)
     print(f"Run directory: {run_dir}")
     run_dir.mkdir(exist_ok=True, parents=True)
     return run_dir
+
+
+def default_run_id(run_id: str | None) -> str:
+    """``run_id``, or a ``YYYYMMDD_HHMMSS`` timestamp if it is None or empty."""
+    return run_id or datetime.now().strftime("%Y%m%d_%H%M%S")

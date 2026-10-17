@@ -1,11 +1,13 @@
-"""Trainers for each model kind, looked up by ``ModelSpec.kind``.
+"""Model kinds, looked up by ``ModelSpec.kind``: how to train and load each.
 
 Pipelines only ever talk to the :class:`Trainer` protocol, so swapping in a
 different detector or classifier means writing one class here and pointing
-``[train.detector]`` or ``[train.classifier]`` at its ``kind``.
-:func:`_trainers` is the one place model names live. Importing this module
-doesn't import Ray or any model library; config loading uses it to
-validate kinds and search spaces.
+``[train.detector]`` or ``[train.classifier]`` at its ``kind``; training
+and inference (:meth:`Trainer.load_for_inference`) then both use it.
+:func:`_trainers` is the one place detector and classifier names live (the
+segmenter, which is never trained, is in :mod:`bird_cv.inference.registry`).
+Importing this module doesn't import Ray or any model library; config
+loading uses it to validate kinds and search spaces.
 """
 
 from dataclasses import dataclass, field
@@ -90,6 +92,15 @@ class Trainer(Protocol):
         context: TrainContext,
     ) -> dict[str, Any]:
         """Score a checkpoint on one split of its dataset (model-level metrics)."""
+        ...
+
+    def load_for_inference(self, checkpoint: Path, spec: "ModelSpec") -> Any:
+        """The inference model for a checkpoint, built with ``spec.infer_options``.
+
+        A detector kind returns a
+        :class:`~bird_cv.inference.protocols.StreamingDetector`, a
+        classifier kind a :class:`~bird_cv.inference.protocols.FrameClassifier`.
+        """
         ...
 
 
@@ -232,6 +243,18 @@ class YoloTrainer:
             device=context.device,
         )
 
+    def load_for_inference(self, checkpoint: Path, spec: "ModelSpec") -> Any:
+        """A :class:`YoloDetector`; ``infer_options`` are its fields.
+
+        ``tracker_path`` defaults to the repo's ``detection/tracker.yaml``.
+        """
+        from bird_cv.detection.track import YoloDetector
+
+        options = {
+            "tracker_path": Path(__file__).parents[1] / "detection" / "tracker.yaml"
+        } | spec.infer_options
+        return YoloDetector(model_path=checkpoint, **options)
+
 
 class VideoMAETrainer:
     """VideoMAE clip classifier, selected on val window macro-F1 (ADR 0005).
@@ -314,6 +337,18 @@ class VideoMAETrainer:
             "macro_f1": result["macro_f1"],
             "n_skipped_out_of_vocabulary": result["n_skipped_out_of_vocabulary"],
         }
+
+    def load_for_inference(self, checkpoint: Path, spec: "ModelSpec") -> Any:
+        """A :class:`VideoMAEClassifier`; ``infer_options`` are its fields.
+
+        ``num_frames`` follows training (``spec.options``) unless set there.
+        """
+        from bird_cv.classification.predict_video_model import VideoMAEClassifier
+
+        trained = {k: v for k, v in spec.options.items() if k == "num_frames"}
+        return VideoMAEClassifier(
+            model_path=str(checkpoint), **(trained | spec.infer_options)
+        )
 
 
 def _trainers() -> dict[str, type]:

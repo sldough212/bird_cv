@@ -58,18 +58,40 @@ DETECTION_SCHEMA = {
     "camera_id": pl.String,
     "video_id": pl.String,
     "cage_id": pl.String,
-    # The fields of bird_cv.detection.types.Detection, same names and order.
+    # The fields of bird_cv.detection.types.Detection, in order, named as in
+    # PREDICTION_SCHEMA (see detection_columns).
     "frame": pl.Int64,
     "track_id": pl.Int64,
-    "left": pl.Float64,
-    "top": pl.Float64,
-    "width": pl.Float64,
-    "height": pl.Float64,
-    "conf": pl.Float64,
+    "bbox_left": pl.Float64,
+    "bbox_top": pl.Float64,
+    "bbox_width": pl.Float64,
+    "bbox_height": pl.Float64,
+    "det_conf": pl.Float64,
+    # The detector's own class name (e.g. "bird"), not a behavior class.
     "label": pl.String,
 }
 """Raw tracker output before confidence filter and gap fill (inference
 ``detections/``): one row per tracked box per canonical frame of a cage."""
+
+
+def detection_columns() -> dict[str, str]:
+    """The :data:`DETECTION_SCHEMA` column of each ``Detection`` field, in order.
+
+    Boxes and confidence use the ``bbox_*`` / ``det_conf`` names of
+    :data:`PREDICTION_SCHEMA` and :data:`GROUND_TRUTH_SCHEMA`, so the three
+    tables compare without renaming.
+    """
+    return {
+        "frame": "frame",
+        "track_id": "track_id",
+        "left": "bbox_left",
+        "top": "bbox_top",
+        "width": "bbox_width",
+        "height": "bbox_height",
+        "conf": "det_conf",
+        "label": "label",
+    }
+
 
 SPLIT_SCHEMA = {
     "camera_id": pl.String,

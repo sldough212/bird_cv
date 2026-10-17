@@ -1,5 +1,10 @@
 """Entry point: end-to-end inference on raw videos (no Label Studio involved).
 
+Models are the ones the config picks: ``[infer.segmenter]``, and the
+``[train.detector]`` / ``[train.classifier]`` kinds with checkpoints from
+``--train-run-id`` (that run's outputs) or each table's ``checkpoint``.
+Outputs go to :meth:`bird_cv.core.layout.Layout.infer_run`.
+
 Example::
 
     python bird_cv/pipelines/infer.py bird_cv/pipelines/configs/config.toml \\
@@ -9,8 +14,10 @@ Example::
 import argparse
 from pathlib import Path
 
+from bird_cv.core.layout import Layout
 from bird_cv.inference.pipeline import find_raw_videos, run_infer
-from bird_cv.pipelines.config import load_config, resolve_run_dir
+from bird_cv.inference.registry import inference_models
+from bird_cv.pipelines.config import default_run_id, load_config
 
 
 def main() -> None:
@@ -28,25 +35,28 @@ def main() -> None:
     parser.add_argument(
         "--run-id", default=None, help="Run directory name (default: timestamp)"
     )
+    parser.add_argument(
+        "--train-run-id",
+        default=None,
+        help="Use this training run's checkpoints (default: [train.{role}] checkpoint)",
+    )
     parser.add_argument("--task-index", type=int, default=0)
     parser.add_argument("--num-tasks", type=int, default=1)
     args = parser.parse_args()
 
     cfg = load_config(args.config_path, require_api_key=False)
+    models = inference_models(cfg, train_run_id=args.train_run_id)
 
     videos = find_raw_videos(cfg.path_to_raw_videos, args.cameras)[: args.limit]
     if not videos:
         raise SystemExit(f"No videos found under {cfg.path_to_raw_videos}")
-    run_dir = resolve_run_dir(cfg.path_to_base_output / "infer", args.run_id)
+    run_dir = Layout(cfg.path_to_base_output).infer_run(default_run_id(args.run_id)).dir
+    print(f"Run directory: {run_dir}")
 
     run_infer(
         videos=videos,
         run_dir=run_dir,
-        segmentation_configs_path=cfg.path_to_segmentation_configs,
-        sam_model_id=cfg.sam_model_id,
-        yolo_path=cfg.detect.path_to_yolo,
-        tracker_path=cfg.detect.path_to_tracker_config,
-        videomae_path=cfg.classify.path_to_mae,
+        models=models,
         cfg=cfg.infer,
         task_index=args.task_index,
         num_tasks=args.num_tasks,
