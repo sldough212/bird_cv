@@ -1,26 +1,27 @@
 """Frozen, append-only camera split and camera cross-validation folds.
 
-See ``docs/adr/0001-split-by-camera.md``. The first version is drawn once
-with a fixed seed so that every behavior is in train and test (val best
-effort). Later versions only append newly labeled cameras; a camera's split
-and fold never change once assigned.
+See ``docs/adr/0001-split-by-camera.md``. The first version is chosen once
+by a deterministic rule (:data:`SPLIT_RULE`) so that every behavior is in
+train and test (val best effort). Later versions only append newly labeled
+cameras; a camera's split and fold never change once assigned. Each version
+writes ``split_v{n}/manifest.json`` with its rule and per-camera behavior
+frame counts.
 """
 
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from itertools import combinations
 from pathlib import Path
 
 import numpy as np
 import polars as pl
 
 from bird_cv.core.labels import BEHAVIORS
+from bird_cv.core.manifest import new_manifest, write_manifest
 from bird_cv.core.schemas import CV_FOLD_SCHEMA, SPLIT_SCHEMA, SPLITS
 
 logger = logging.getLogger(__name__)
-
-MAX_ATTEMPTS = 1000
-"""Seeded shuffles tried when searching for a split covering every behavior."""
 
 _SPLIT_FILE = re.compile(r"split_v(\d+)\.parquet")
 
@@ -72,55 +73,123 @@ def _covered(cameras: list[str], behaviors: Mapping[str, set[str]]) -> set[str]:
     return set().union(*(behaviors[c] for c in cameras))
 
 
-def draw_initial_split(
-    behaviors: Mapping[str, set[str]], split_ratio: dict[str, float], seed: int
-) -> dict[str, list[str]]:
-    """Draw the first camera split, requiring every behavior in train and test.
-
-    Shuffles cameras the same way as
-    :func:`bird_cv.preprocessing.get_split_guidance.split_camera_data`
-    (permute, then cut at ``round(ratio * n)``), trying seeds ``seed``,
-    ``seed + 1``, ... up to :data:`MAX_ATTEMPTS`. The first draw with every
-    behavior in all three splits wins; otherwise the first draw with every
-    behavior in train and test and the most behaviors in val; otherwise (no
-    draw covers train and test) the draw covering the most, with a warning.
+def camera_behavior_frames(ground_truth: pl.DataFrame) -> dict[str, dict[str, int]]:
+    """Frames of each behavior on each camera.
 
     Args:
-        behaviors: Behaviors present on each camera.
-        split_ratio: Fraction of cameras for ``"train"``, ``"val"``, ``"test"``.
-        seed: Base random seed.
+        ground_truth: Table with ``camera_id`` and ``label`` columns.
+
+    Returns:
+        ``{camera_id: {behavior: frames}}``; every camera in the table is a
+        key, with only the behaviors it has.
+    """
+    frames: dict[str, dict[str, int]] = {
+        c: {} for c in ground_truth.get_column("camera_id").unique().sort()
+    }
+    counts = (
+        ground_truth.filter(pl.col("label").is_in(BEHAVIORS))
+        .group_by("camera_id", "label")
+        .len()
+        .sort("camera_id", "label")
+    )
+    for camera_id, label, n in counts.iter_rows():
+        frames[camera_id][label] = n
+    return frames
+
+
+def _rank(
+    cameras: tuple[str, ...],
+    frames: Mapping[str, Mapping[str, int]],
+    totals: Mapping[str, int],
+) -> tuple[float, int, int, tuple[str, ...]]:
+    """Rare-frame cost of holding ``cameras`` out of train (lower is better).
+
+    The cost is the sum over behaviors of the cameras' share of that
+    behavior's frames, so taking a rare behavior's only stretches costs more
+    than taking a lot of resting. Ties go to fewer frames, then fewer
+    cameras, then names.
+    """
+    held = {b: sum(frames[c].get(b, 0) for c in cameras) for b in totals}
+    return (
+        sum(held[b] / totals[b] for b in totals),
+        sum(held.values()),
+        len(cameras),
+        cameras,
+    )
+
+
+SPLIT_RULE = (
+    "test: the camera pair covering every behavior with the lowest "
+    "sum over behaviors of (pair frames / total frames), ties to fewer frames; "
+    "val: 1-2 of the remaining cameras covering the most behaviors, same "
+    "score; train: the rest, which must keep every behavior"
+)
+"""How :func:`choose_initial_split` picks cameras, recorded in the manifest."""
+
+
+def choose_initial_split(
+    frames: Mapping[str, Mapping[str, int]],
+) -> dict[str, list[str]]:
+    """Choose the first camera split by rule (see :data:`SPLIT_RULE`).
+
+    Test is the pair of cameras covering every behavior that removes the
+    fewest rare-behavior frames from training; val is the 1-2 remaining
+    cameras covering as many behaviors as possible, ranked the same way;
+    train is everything else. A candidate is only allowed if train keeps
+    every behavior. Deterministic: ties go to fewer frames, then names.
+
+    Args:
+        frames: Frames of each behavior on each camera.
 
     Returns:
         Cameras in each split.
+
+    Raises:
+        ValueError: If no camera pair covers every behavior while leaving
+            every behavior in train.
     """
-    cameras = sorted(behaviors)
-    n = len(cameras)
-    n_train = round(split_ratio["train"] * n)
-    n_val = round(split_ratio["val"] * n)
-    target = _covered(cameras, behaviors)
+    cameras = sorted(frames)
+    totals: dict[str, int] = {}
+    for counts in frames.values():
+        for b, n in counts.items():
+            totals[b] = totals.get(b, 0) + n
+    target = set(totals)
 
-    best: tuple[tuple[int, int], dict[str, list[str]]] | None = None
-    for attempt in range(MAX_ATTEMPTS):
-        indices = np.random.RandomState(seed + attempt).permutation(n)
-        parts = np.split(indices, [n_train, n_train + n_val])
-        draw = {
-            split: sorted(cameras[i] for i in part)
-            for split, part in zip(SPLITS, parts)
-        }
-        cover = {s: len(_covered(draw[s], behaviors) & target) for s in SPLITS}
-        score = (min(cover["train"], cover["test"]), cover["val"])
-        if score == (len(target), len(target)):
-            return draw
-        if best is None or score > best[0]:
-            best = (score, draw)
+    def covers(group: Iterable[str]) -> set[str]:
+        return {b for c in group for b in frames[c]}
 
-    assert best is not None
-    if best[0][0] < len(target):
-        logger.warning(
-            "No split within %d attempts has every behavior in train and test",
-            MAX_ATTEMPTS,
+    tests = sorted(
+        (
+            _rank(pair, frames, totals)
+            for pair in combinations(cameras, 2)
+            if covers(pair) == target
+            and covers(c for c in cameras if c not in pair) == target
+        ),
+    )
+    if not tests:
+        raise ValueError(
+            "No camera pair covers every behavior while leaving every behavior "
+            f"in train; behaviors per camera: {dict(frames)}"
         )
-    return best[1]
+    test = tests[0][3]
+
+    rest = [c for c in cameras if c not in test]
+    vals = sorted(
+        (-len(covers(group)), *_rank(group, frames, totals))
+        for size in (1, 2)
+        for group in combinations(rest, size)
+        if covers(c for c in rest if c not in group) == target
+    )
+    val = vals[0][4] if vals else ()
+    if not vals:
+        logger.warning("No val camera leaves every behavior in train; val is empty")
+    elif -vals[0][0] < len(target):
+        logger.warning("Val lacks %s", sorted(target - covers(val)))
+    return {
+        "train": [c for c in rest if c not in val],
+        "val": list(val),
+        "test": list(test),
+    }
 
 
 def _append_cameras(
@@ -199,26 +268,49 @@ def coverage_gaps(
     }
 
 
+def split_behavior_frames(
+    split: pl.DataFrame, frames: Mapping[str, Mapping[str, int]]
+) -> dict[str, dict[str, int]]:
+    """Frames of each behavior in each split.
+
+    Args:
+        split: Split assignment in :data:`~bird_cv.core.schemas.SPLIT_SCHEMA`.
+        frames: Frames of each behavior on each camera.
+
+    Returns:
+        ``{split: {behavior: frames}}`` for every split and every behavior.
+    """
+    totals = {s: {b: 0 for b in BEHAVIORS} for s in SPLITS}
+    for camera_id, name in split.select("camera_id", "split").iter_rows():
+        for b, n in frames.get(camera_id, {}).items():
+            totals[name][b] += n
+    return totals
+
+
 def assign_folds(
-    behaviors: Mapping[str, set[str]], n_folds: int, seed: int
+    behaviors: Mapping[str, set[str]],
+    n_folds: int,
+    seed: int,
+    max_attempts: int = 1000,
 ) -> dict[str, int]:
     """Assign cameras to camera-CV folds (each camera is tested in one fold).
 
     Cameras are dealt round-robin after a seeded shuffle; of
-    :data:`MAX_ATTEMPTS` shuffles, the one whose test folds together cover
+    ``max_attempts`` shuffles, the one whose test folds together cover
     the most (fold, behavior) pairs wins.
 
     Args:
         behaviors: Behaviors present on each camera.
         n_folds: Number of folds.
         seed: Base random seed.
+        max_attempts: Seeded shuffles to try.
 
     Returns:
         Fold of each camera.
     """
     cameras = sorted(behaviors)
     best: tuple[int, dict[str, int]] | None = None
-    for attempt in range(MAX_ATTEMPTS):
+    for attempt in range(max_attempts):
         indices = np.random.RandomState(seed + attempt).permutation(len(cameras))
         folds = {cameras[i]: pos % n_folds for pos, i in enumerate(indices)}
         score = sum(
@@ -240,7 +332,7 @@ def update_split(
 ) -> int:
     """Return the split version covering every camera, writing a new one if needed.
 
-    With no split yet, draws version 1. If the ground truth has cameras the
+    With no split yet, chooses version 1 with :func:`choose_initial_split`. If the ground truth has cameras the
     latest version lacks, writes version ``n + 1``: the old rows unchanged
     plus the new cameras (split and CV fold). Otherwise writes nothing.
 
@@ -248,19 +340,22 @@ def update_split(
         ground_truth: Table with ``camera_id`` and ``label`` columns.
         splits_dir: Directory holding ``split_v{n}.parquet`` and
             ``cv_folds_v{n}.parquet``.
-        split_ratio: Fraction of cameras for ``"train"``, ``"val"``, ``"test"``.
-        seed: Base random seed.
+        split_ratio: Target fraction of cameras per split, used only when
+            appending cameras.
+        seed: Base random seed for appending cameras and CV folds.
         n_folds: Number of camera-CV folds.
 
     Returns:
         The split version to use.
     """
     behaviors = camera_behaviors(ground_truth)
+    behavior_frames = camera_behavior_frames(ground_truth)
     latest = latest_split_version(splits_dir)
 
     if latest is None:
         version = 1
-        draw = draw_initial_split(behaviors, split_ratio, seed)
+        draw = choose_initial_split(behavior_frames)
+        rule = SPLIT_RULE
         split = pl.DataFrame(
             [
                 {"camera_id": c, "split": s, "assigned_in_version": version}
@@ -283,6 +378,11 @@ def update_split(
             logger.info("Split v%d already covers every camera", latest)
             return latest
         version = latest + 1
+        rule = (
+            f"v{latest} unchanged; new cameras to train if both train and test "
+            "lack one of their behaviors, else to test/train/val if it lacks one, "
+            "else to the split furthest below split_ratio"
+        )
         all_behaviors = {c: behaviors.get(c, set()) for c in known} | new
         assigned = _append_cameras(
             old_split, new, all_behaviors, split_ratio, seed + version
@@ -317,5 +417,20 @@ def update_split(
     splits_dir.mkdir(parents=True, exist_ok=True)
     split.write_parquet(split_path(splits_dir, version))
     folds.write_parquet(cv_folds_path(splits_dir, version))
+    write_manifest(
+        new_manifest(
+            "split",
+            split_version=version,
+            config={
+                "rule": rule,
+                "split_ratio": split_ratio,
+                "seed": seed,
+                "n_folds": n_folds,
+                "behavior_frames": behavior_frames,
+                "split_behavior_frames": split_behavior_frames(split, behavior_frames),
+            },
+        ),
+        splits_dir / f"split_v{version}",
+    )
     logger.info("Wrote split v%d (%d cameras)", version, split.height)
     return version

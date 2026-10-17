@@ -1,6 +1,6 @@
 # Split train/val/test by camera, frozen and append-only
 
-The models will be deployed on cameras that have no labels, and camera orientation is the hardest thing to generalize across, so every split is by camera: all of a camera's videos land in one split. Birds shared between camera folders (e.g. `H7`) are not grouped, because the views differ enough that the camera, not the bird, is what leaks. The split is drawn once with a fixed seed (about 70/15/15, every behavior present in train and test, val best effort), then frozen: newly labeled cameras are appended, existing cameras never move.
+The models will be deployed on cameras that have no labels, and camera orientation is the hardest thing to generalize across, so every split is by camera: all of a camera's videos land in one split. Birds shared between camera folders (e.g. `H7`) are not grouped, because the views differ enough that the camera, not the bird, is what leaks. The split is chosen once by a deterministic rule (test is the camera pair that covers every behavior while removing the smallest share of each behavior's frames from training, val is the 1–2 remaining cameras chosen the same way covering as many behaviors as possible, the rest are train, which must keep every behavior), then frozen: newly labeled cameras are appended, existing cameras never move.
 
 ## Considered Options
 

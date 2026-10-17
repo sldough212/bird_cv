@@ -27,15 +27,9 @@ from bird_cv.core.schemas import GROUND_TRUTH_SCHEMA
 
 logger = logging.getLogger(__name__)
 
+# Version marker in prepare's ground-truth skip key, not a parameter default.
 GT_VERSION = 1
 """Bump when the ground truth rules change, so prepare rebuilds it."""
-
-OVERSHOOT_TOLERANCE = 8
-"""Classify tasks whose ranges run more than this many frames past the
-bird-crop video's boxed-frame count are excluded (the crop and the Detect
-boxes no longer correspond); smaller overshoots are clipped."""
-
-VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv")
 
 CageKey = tuple[str, str, str]
 """``(camera_id, video_id, cage_id)``."""
@@ -57,7 +51,7 @@ class GroundTruthResult:
             null.
         unmatched_classify_tasks: Classify tasks with no Detect task, skipped.
         overshoot_classify_tasks: Classify tasks overshooting the boxed
-            frames by more than :data:`OVERSHOOT_TOLERANCE`, excluded.
+            frames by more than ``overshoot_tolerance``, excluded.
         classify_dropped_with_detect: Classify tasks dropped because their
             Detect task was excluded.
         misaligned_detect_tasks: Detect tasks failing
@@ -175,12 +169,15 @@ def behavior_by_crop_frame(task: dict[str, Any]) -> dict[int, list[str]]:
     return labels
 
 
-def standard_frame_counts(raw_videos_dir: Path) -> dict[tuple[str, str], int] | None:
+def standard_frame_counts(
+    raw_videos_dir: Path, extensions: tuple[str, ...] = (".mp4", ".avi", ".mov", ".mkv")
+) -> dict[tuple[str, str], int] | None:
     """Frame counts of the standardized videos, read from their headers.
 
     Args:
         raw_videos_dir: Directory of standardized videos laid out as
             ``{camera}/{video}.{ext}``.
+        extensions: Lower-case file suffixes counted as videos.
 
     Returns:
         ``{(camera_id, video_id): frame_count}``, or None if the directory
@@ -190,7 +187,7 @@ def standard_frame_counts(raw_videos_dir: Path) -> dict[tuple[str, str], int] | 
         return None
     counts = {}
     for path in raw_videos_dir.rglob("*"):
-        if path.suffix.lower() in VIDEO_EXTENSIONS:
+        if path.suffix.lower() in extensions:
             cap = cv2.VideoCapture(str(path))
             counts[parse_raw_video_path(path)] = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             cap.release()
@@ -212,6 +209,7 @@ def build_ground_truth(
     detect_tasks: list[dict[str, Any]],
     classify_tasks: list[dict[str, Any]],
     standard_counts: dict[tuple[str, str], int] | None = None,
+    overshoot_tolerance: int = 8,
 ) -> GroundTruthResult:
     """Convert Detect and Classify exports to per-frame ground truth.
 
@@ -226,6 +224,10 @@ def build_ground_truth(
             standardized videos, to catch cage videos with dropped frames.
             Tasks whose video is missing (or all tasks, if None) are only
             checked for fps and counted as unchecked.
+        overshoot_tolerance: Classify tasks whose ranges run more than this
+            many frames past the boxed-frame count are excluded (the crop
+            and the Detect boxes no longer correspond); smaller overshoots
+            are clipped.
 
     Returns:
         The ground truth table and counts of clipped, conflicting and
@@ -302,7 +304,7 @@ def build_ground_truth(
                 len(boxed_ls),
                 overshoot,
             )
-        if overshoot > OVERSHOOT_TOLERANCE:
+        if overshoot > overshoot_tolerance:
             logger.warning("Excluding Classify task %s: overshoot %d", key, overshoot)
             result.overshoot_classify_tasks += 1
             behaviors_by_frame = {}

@@ -19,13 +19,6 @@ from bird_cv.data.ground_truth import annotation_results
 
 logger = logging.getLogger(__name__)
 
-HASH_LENGTH = 16
-"""Hex characters of the SHA-256 digest kept in a snapshot name."""
-
-# Region keys that carry annotation content; everything else (region ids,
-# origin, ...) is bookkeeping that changes without the labels changing.
-_REGION_CONTENT_KEYS = ("type", "from_name", "to_name", "value")
-
 
 def _canonical_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Reduce an export to sorted (video, regions) records for hashing.
@@ -33,10 +26,13 @@ def _canonical_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     Only the annotation ground truth reads (the most recent non-cancelled
     one, see :func:`bird_cv.data.ground_truth.annotation_results`) counts.
     """
+    # Region keys that carry annotation content; everything else (region ids,
+    # origin, ...) is bookkeeping that changes without the labels changing.
+    content_keys = ("type", "from_name", "to_name", "value")
     records = []
     for task in tasks:
         regions = [
-            json.dumps({k: region.get(k) for k in _REGION_CONTENT_KEYS}, sort_keys=True)
+            json.dumps({k: region.get(k) for k in content_keys}, sort_keys=True)
             for region in annotation_results(task)
         ]
         records.append({"video": task["data"]["video"], "regions": sorted(regions)})
@@ -44,16 +40,19 @@ def _canonical_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def annotation_hash(
-    detect_tasks: list[dict[str, Any]], classify_tasks: list[dict[str, Any]]
+    detect_tasks: list[dict[str, Any]],
+    classify_tasks: list[dict[str, Any]],
+    length: int = 16,
 ) -> str:
     """Hash the annotation content of a Detect and a Classify export.
 
     Args:
         detect_tasks: Parsed Detect project export (list of tasks).
         classify_tasks: Parsed Classify project export (list of tasks).
+        length: Hex characters of the SHA-256 digest to keep.
 
     Returns:
-        The first :data:`HASH_LENGTH` hex characters of the SHA-256 digest.
+        The first ``length`` hex characters of the SHA-256 digest.
     """
     content = json.dumps(
         {
@@ -62,7 +61,7 @@ def annotation_hash(
         },
         sort_keys=True,
     )
-    return hashlib.sha256(content.encode()).hexdigest()[:HASH_LENGTH]
+    return hashlib.sha256(content.encode()).hexdigest()[:length]
 
 
 def export_annotations(

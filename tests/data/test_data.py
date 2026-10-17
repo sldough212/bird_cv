@@ -14,6 +14,7 @@ from bird_cv.data.sampling import select_videomae_clips, select_yolo_frames
 from bird_cv.data.snapshot import annotation_hash
 from bird_cv.data.splits import (
     camera_behaviors,
+    choose_initial_split,
     coverage_gaps,
     cv_folds_path,
     split_path,
@@ -159,10 +160,16 @@ def test_split_is_frozen_and_append_only(tmp_path: Path) -> None:
 
     assert run() == 1
     v1 = pl.read_parquet(split_path(tmp_path, 1))
-    for split in ("train", "test"):
-        cams = v1.filter(pl.col("split") == split)["camera_id"]
-        assert any(c.startswith("c") for c in cams)
+    # test: cheapest covering pair (c0, r0); val: one camera covering all
+    assert dict(v1.group_by("split").agg(pl.col("camera_id").sort()).iter_rows()) == {
+        "test": ["c0", "r0"],
+        "val": ["c1"],
+        "train": ["c2", "c3", "r1", "r2"],
+    }
+    assert (tmp_path / "split_v1" / "manifest.json").exists()
     assert run() == 1
+    with pytest.raises(ValueError, match="pair"):  # flying only on one camera
+        choose_initial_split({"a": {"flying": 1}, "b": {}, "c": {}})
 
     cameras |= {"new0": ["flying"], "new1": ["resting"]}
     assert run() == 2
@@ -193,6 +200,7 @@ def test_sampling_caps() -> None:
         [
             gt_rows("c", "labeled", labeled, "train"),
             gt_rows("c", "unlabeled", [NO_BIRD] * 7 + [None] * 13, "train"),
+            gt_rows("c", "resting_only", ["resting"] * 30, "train"),
             gt_rows("t", "test", labeled, "test"),
         ]
     )
@@ -207,9 +215,11 @@ def test_sampling_caps() -> None:
         10,
         15,
     ]
+    assert yolo.filter(pl.col("video_id") == "resting_only").height == 6  # stride
     assert yolo.filter(pl.col("split") == "test").height == len(labeled)
 
-    # head_move 10 frames -> 1 clip; resting 30 frames -> 3 windows, capped to 1
+    # head_move and preening 1 clip each, so train's 6 resting windows (two
+    # cages) are capped to 1 across the whole split
     clips = select_videomae_clips(frames, num_frames=8, stride=8, seed=0)
     train = clips.filter(pl.col("split") == "train")
     assert dict(train.group_by("label").len().iter_rows()) == {
@@ -256,7 +266,9 @@ def test_prepare_skips_and_recomputes_on_stride_change(
 ) -> None:
     monkeypatch.setenv(API_KEY_ENV_VAR, "test")
     detect, classify = tmp_path / "detect.json", tmp_path / "classify.json"
-    detect.write_text(json.dumps([detect_task("c", "v", "0", [(1, 20)], n=30)]))
+    # four unlabeled cameras: test a+b, val c, train d
+    tasks = [detect_task(c, "v", "0", [(1, 20)], n=30) for c in "abcd"]
+    detect.write_text(json.dumps(tasks))
     classify.write_text("[]")
 
     def prepare(extra: str = "") -> Path:
@@ -276,7 +288,8 @@ def test_prepare_skips_and_recomputes_on_stride_change(
     assert prepare() == first
     third = prepare("[prepare]\nyolo_uniform_stride = 3\n")
     assert third != first
-    frames = pl.read_parquet(third / "yolo_frames.parquet")["frame"].to_list()
+    yolo = pl.read_parquet(third / "yolo_frames.parquet").filter(split="train")
+    frames = yolo["frame"].to_list()
     assert frames == list(range(0, 30, 3))
 
 
