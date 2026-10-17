@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Any
 import os
 import json
 import shutil
@@ -12,6 +11,7 @@ from PIL import Image
 
 # External / project-specific dependencies
 from sam2.build_sam import build_sam2_video_predictor_hf
+from sam2.sam2_video_predictor import SAM2VideoPredictor
 
 # Local utilities (adjust module paths as needed)
 from bird_cv.segmentation.visualize import (
@@ -233,7 +233,7 @@ def set_sam_and_predict(
     config_path: Path,
     device: str = "cpu",
     *,
-    predictor: Any = None,
+    predictor: SAM2VideoPredictor | None = None,
 ) -> dict[int, dict[int, np.ndarray]]:
     """Initializes a SAM2 video predictor, applies segmentation prompts, and
     generates mask predictions for objects in a video.

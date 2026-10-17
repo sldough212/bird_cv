@@ -12,20 +12,18 @@ import bisect
 import shutil
 import tempfile
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import cv2
 import numpy as np
+from sam2.sam2_video_predictor import SAM2VideoPredictor
 
 from bird_cv.core.ids import cage_id_from_index
 from bird_cv.preprocessing.crop import crop_cage_frame
+from bird_cv.preprocessing.image_utils import crop_and_mask_image
 from bird_cv.segmentation.segment import find_segment_boundaries, set_sam_and_predict
 from bird_cv.segmentation.smooth import smooth_masks
-
-SEGMENT_IOU_THRESHOLD = 0.85
-"""Per-cage IoU below which a new mask keyframe starts; ``segment()``'s default."""
 
 Keyframe = tuple[int, dict[str, np.ndarray]]
 """``(first canonical frame, {cage_id: 2D bool mask})`` of one stable mask segment."""
@@ -82,30 +80,70 @@ def check_sam2_configs(
         )
 
 
-@dataclass
-class CageMasks:
-    """Keyframe cage masks of one video, looked up by canonical frame.
+@dataclass(frozen=True)
+class CageCrop:
+    """One cage's crop region in one keyframe.
 
     Attributes:
-        keyframes: :data:`Keyframe` entries sorted by start frame; the first
-            starts at frame 0. Each mask holds from its start frame until
-            the next keyframe.
+        box: ``(x_min, y_min, x_max, y_max)``, inclusive, in full-frame
+            pixels: the mask's bounding box plus ``crop_cage_frame``'s
+            default padding (5 px).
+        mask: The cage mask cut to ``box``.
     """
 
-    keyframes: list[Keyframe] = field(default_factory=list)
+    box: tuple[int, int, int, int]
+    mask: np.ndarray
+
+    @classmethod
+    def from_mask(cls, mask: np.ndarray, padding: int = 5) -> "CageCrop | None":
+        """Crop region of a full-frame mask, or None if the mask is empty.
+
+        ``padding`` must match :func:`crop_cage_frame`'s, as in :func:`cage_frame`.
+        """
+        if not mask.any():
+            return None
+        _, (x0, y0, x1, y1) = crop_and_mask_image(
+            mask, mask, black_out=False, padding=padding
+        )
+        box = (int(x0), int(y0), int(x1), int(y1))
+        return cls(box=box, mask=mask[y0 : y1 + 1, x0 : x1 + 1])
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        """``(height, width)`` of the crop."""
+        return self.mask.shape[0], self.mask.shape[1]
+
+
+class CageMasks:
+    """Keyframe cage crops of one video, looked up by canonical frame.
+
+    Only each keyframe's crop box and cropped mask are kept, not the
+    full-frame masks, so memory stays small however long the video is.
+    """
+
+    def __init__(self) -> None:
+        self.starts: list[int] = []
+        self.crops: list[dict[str, CageCrop | None]] = []
+
+    def add(self, keyframes: Iterable[Keyframe]) -> None:
+        """Append keyframes, in frame order, after those already added."""
+        for start, masks in keyframes:
+            if self.starts and start <= self.starts[-1]:
+                raise ValueError("keyframes must be added in frame order")
+            self.starts.append(start)
+            self.crops.append({c: CageCrop.from_mask(m) for c, m in masks.items()})
 
     @property
     def cage_ids(self) -> list[str]:
         """Cage ids in config order."""
-        ids: dict[str, None] = {}
-        for _, masks in self.keyframes:
-            ids.update(dict.fromkeys(masks))
+        ids: set[str] = set()
+        for crops in self.crops:
+            ids.update(crops)
         return sorted(ids, key=int)
 
-    def at(self, frame: int) -> dict[str, np.ndarray]:
-        """Masks in effect at canonical ``frame``."""
-        starts = [start for start, _ in self.keyframes]
-        return self.keyframes[bisect.bisect_right(starts, frame) - 1][1]
+    def at(self, frame: int, cage_id: str) -> CageCrop | None:
+        """Crop of ``cage_id`` in effect at canonical ``frame`` (None if empty)."""
+        return self.crops[bisect.bisect_right(self.starts, frame) - 1].get(cage_id)
 
     def cage_frame_shapes(self) -> dict[str, tuple[int, int]]:
         """Per cage, the ``(height, width)`` every cage frame is padded to.
@@ -115,30 +153,36 @@ class CageMasks:
         cage video. Cages whose mask is empty in every keyframe are omitted.
         """
         shapes: dict[str, tuple[int, int]] = {}
-        for _, masks in self.keyframes:
-            for cage_id, mask in masks.items():
-                crop = crop_cage_frame(mask.astype(np.uint8), mask)
+        for crops in self.crops:
+            for cage_id, crop in crops.items():
                 if crop is None:
                     continue
-                h, w = crop.shape[:2]
+                h, w = crop.shape
                 prev_h, prev_w = shapes.get(cage_id, (0, 0))
                 shapes[cage_id] = (max(prev_h, h), max(prev_w, w))
         return {c: (h + h % 2, w + w % 2) for c, (h, w) in shapes.items()}
 
 
 def cage_frame(
-    frame: np.ndarray, mask: np.ndarray, shape: tuple[int, int]
+    frame: np.ndarray, crop: CageCrop | None, shape: tuple[int, int]
 ) -> np.ndarray | None:
     """Crop and mask one cage, padded bottom/right with black to ``shape``.
 
+    Same pixels as :func:`crop_cage_frame` on the full-frame mask: cutting
+    the frame to ``crop.box`` first leaves the mask's bounding box and its
+    padding unchanged.
+
     Returns None for an empty mask: that cage-frame is ``no_bird``.
     """
-    crop = crop_cage_frame(frame, mask)
     if crop is None:
         return None
-    h, w = crop.shape[:2]
+    x0, y0, x1, y1 = crop.box
+    cropped = crop_cage_frame(frame[y0 : y1 + 1, x0 : x1 + 1], crop.mask)
+    if cropped is None:
+        return None
+    h, w = cropped.shape[:2]
     return cv2.copyMakeBorder(
-        crop, 0, shape[0] - h, 0, shape[1] - w, cv2.BORDER_CONSTANT, value=0
+        cropped, 0, shape[0] - h, 0, shape[1] - w, cv2.BORDER_CONSTANT, value=0
     )
 
 
@@ -151,23 +195,25 @@ class Sam2CageSegmenter:
     :func:`find_segment_boundaries`).
 
     Args:
-        predictor: A built SAM2 video predictor, reused across chunks.
+        predictor: A built SAM2 video predictor, reused across chunks; if
+            None, ``set_sam_and_predict`` builds one per chunk.
         sam_model_id: Hugging Face id of the SAM2 checkpoint (only used if
             ``predictor`` is None).
         config_path: The camera's SAM2 prompt config.
         reference_frame_path: The frame the prompts were drawn on.
         device: Device for SAM2.
-        iou_threshold: See :data:`SEGMENT_IOU_THRESHOLD`.
+        iou_threshold: Per-cage IoU below which a new mask keyframe starts;
+            0.85 as in ``segment()``.
     """
 
     def __init__(
         self,
-        predictor: Any,
+        predictor: SAM2VideoPredictor | None,
         sam_model_id: str,
         config_path: Path,
         reference_frame_path: Path,
         device: str = "cuda",
-        iou_threshold: float = SEGMENT_IOU_THRESHOLD,
+        iou_threshold: float = 0.85,
     ) -> None:
         self.predictor = predictor
         self.sam_model_id = sam_model_id
@@ -217,5 +263,14 @@ class WholeFrameSegmenter:
     """
 
     def segment_chunk(self, frames: Sequence[np.ndarray], start: int) -> list[Keyframe]:
+        """One keyframe at ``start`` whose single mask covers the whole frame.
+
+        Args:
+            frames: BGR frames of the chunk; only the first's size is used.
+            start: Canonical frame of ``frames[0]``.
+
+        Returns:
+            ``[(start, {"0": all-True mask})]``.
+        """
         h, w = frames[0].shape[:2]
         return [(start, {cage_id_from_index(0): np.ones((h, w), dtype=bool)})]

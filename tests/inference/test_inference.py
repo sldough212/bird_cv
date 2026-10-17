@@ -1,13 +1,87 @@
+from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import ClassVar, Literal
 
+import numpy as np
 import pytest
 
+import bird_cv.inference.chunks as chunks
 from bird_cv.classification.types import FramePrediction
 from bird_cv.core.labels import NO_BIRD
 from bird_cv.detection.types import Detection
 from bird_cv.inference.cages import check_sam2_configs
-from bird_cv.inference.chunks import stitch_overlapping
+from bird_cv.inference.chunks import iter_chunks, stitch_overlapping
+from bird_cv.inference.classify import classify_runs
 from bird_cv.inference.gap_fill import cage_predictions, fill_gaps
+
+
+class EchoClassifier:
+    """Labels each input frame with the canonical frame its crop encodes."""
+
+    input_type: ClassVar[Literal["bbox_crop", "cage"]] = "bbox_crop"
+    num_frames = 16
+
+    def predict(self, video_path: Path) -> list[FramePrediction]:
+        raise NotImplementedError
+
+    def predict_frames(self, frames: Sequence[np.ndarray]) -> list[FramePrediction]:
+        assert len(frames) >= self.num_frames
+        return [
+            FramePrediction(i, f"f{int(c[0, 0])}", 1.0) for i, c in enumerate(frames)
+        ]
+
+
+def _crop(frame: int) -> np.ndarray:
+    return np.full((2, 2), frame, dtype=np.int64)
+
+
+def test_labels_map_back_to_their_canonical_frames() -> None:
+    # Long run 0-19, short run 30-34 (padded from neighbors), and 50-52
+    # where the whole pool (other frames excluded) is shorter than a window
+    frames = list(range(0, 20)) + list(range(30, 35))
+    preds = classify_runs(frames, [_crop(f) for f in frames], EchoClassifier())
+    assert {f: p.label for f, p in preds.items()} == {f: f"f{f}" for f in frames}
+
+    tiny = [50, 51, 52]
+    preds = classify_runs(tiny, [_crop(f) for f in tiny], EchoClassifier())
+    assert {f: p.label for f, p in preds.items()} == {f: f"f{f}" for f in tiny}
+
+
+def test_run_crossing_a_chunk_boundary_stitches_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 40 frames, chunks of 20 overlapping by 4; boxed run 5-34 crosses 20
+    monkeypatch.setattr(
+        chunks,
+        "iter_canonical_frames",
+        lambda path: ((i, _crop(i)) for i in range(40)),
+    )
+    boxed = set(range(5, 35))
+    windows = []
+    for start, window in iter_chunks(Path("unused"), 20, overlap=4):
+        frames = [start + i for i in range(len(window)) if start + i in boxed]
+        crops = [window[f - start] for f in frames]
+        windows.append(
+            (start, start + len(window), classify_runs(frames, crops, EchoClassifier()))
+        )
+    stitched = stitch_overlapping(windows)
+    assert {f: p.label for f, p in stitched.items()} == {f: f"f{f}" for f in boxed}
+
+
+def test_iter_chunks_prepends_overlap(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_frames(path: Path) -> Iterator[tuple[int, np.ndarray]]:
+        return ((i, _crop(i)) for i in range(25))
+
+    monkeypatch.setattr(chunks, "iter_canonical_frames", fake_frames)
+    got = [
+        (start, [int(f[0, 0]) for f in frames])
+        for start, frames in iter_chunks(Path("unused"), 10, overlap=3)
+    ]
+    assert got == [
+        (0, list(range(0, 10))),
+        (7, list(range(7, 20))),
+        (17, list(range(17, 25))),
+    ]
 
 
 def _det(frame: int, conf: float = 0.9) -> Detection:

@@ -9,7 +9,7 @@ import numpy as np
 import polars as pl
 from PIL import Image
 
-from bird_cv.inference.standardize import standardize_video
+from bird_cv.preprocessing.standardize import standardize_video
 from bird_cv.utils import extract_camera_video
 
 

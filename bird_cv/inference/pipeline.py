@@ -14,17 +14,29 @@ Output is keyed by ``cage_id`` and canonical frame, one row per cage per
 frame; frames with no usable box are ``no_bird``.
 """
 
+import json
+import traceback
 from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import cv2
+import msgspec
+import numpy as np
 import polars as pl
+import torch
+from sam2.build_sam import build_sam2_video_predictor_hf
+
+from bird_cv.classification.predict_video_model import VideoMAEClassifier
+from bird_cv.classification.types import FramePrediction
 
 from bird_cv.core.frames import STANDARD_FPS
 from bird_cv.core.ids import parse_raw_video_path
-from bird_cv.core.manifest import new_manifest, write_manifest
+from bird_cv.core.manifest import new_manifest
+from bird_cv.core.schemas import PREDICTION_SCHEMA
 from bird_cv.core.timing import StageTimer
+from bird_cv.detection.track import YoloDetector
 from bird_cv.detection.types import Detection
 from bird_cv.inference.cages import (
     CageMasks,
@@ -46,7 +58,7 @@ from bird_cv.inference.protocols import (
     FrameClassifier,
     StreamingDetector,
 )
-from bird_cv.inference.standardize import standardize_video
+from bird_cv.preprocessing.standardize import standardize_video
 from bird_cv.pipelines.config import InferConfig
 
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv"}
@@ -94,7 +106,8 @@ def infer_video(
         max_frames: Optionally truncate the standardized video.
 
     Returns:
-        The predictions, :data:`PREDICTION_SCHEMA`, sorted by cage and frame.
+        The predictions, :data:`PREDICTION_SCHEMA`, sorted by cage and frame
+        (empty if the standardized video has no frames).
 
     Raises:
         NotImplementedError: For classifiers taking ``cage`` input.
@@ -106,11 +119,12 @@ def infer_video(
         )
     camera_id, video_id = parse_raw_video_path(raw_video_path)
     std_path = run_dir / "standardized" / camera_id / f"{video_id}.mp4"
+    out_path = run_dir / "predictions" / camera_id / f"{video_id}.parquet"
 
     expected = _expected_frames(raw_video_path)
     if max_frames is not None:
         expected = min(expected, max_frames)
-    with timer.stage(video_id, "standardize", frames=expected):
+    with timer.stage(camera_id, video_id, "standardize", frames=expected):
         result = standardize_video(
             raw_video_path, std_path, fps=STANDARD_FPS, max_frames=max_frames
         )
@@ -126,10 +140,15 @@ def infer_video(
     # Pass 1: cage masks
     masks = CageMasks()
     n_frames = 0
-    with timer.stage(video_id, "sam2", frames=approx_frames):
+    with timer.stage(camera_id, video_id, "sam2", frames=approx_frames):
         for start, frames in iter_chunks(std_path, cfg.chunk_frames):
-            masks.keyframes.extend(segmenter.segment_chunk(frames, start))
+            masks.add(segmenter.segment_chunk(frames, start))
             n_frames = start + len(frames)
+    if n_frames == 0:
+        print(f"{raw_video_path}: standardized video has no frames")
+        predictions = pl.DataFrame(schema=PREDICTION_SCHEMA)
+        _write_parquet(predictions, out_path)
+        return predictions
     shapes = masks.cage_frame_shapes()
     cage_ids = masks.cage_ids
 
@@ -137,13 +156,13 @@ def infer_video(
     trackers = {c: detector.frame_tracker() for c in shapes}
     detections: dict[str, list[Detection]] = {c: [] for c in cage_ids}
     empty: dict[str, set[int]] = {c: set() for c in cage_ids}
-    with timer.stage(video_id, "detect", frames=n_frames):
+    with timer.stage(camera_id, video_id, "detect", frames=n_frames):
         for start, frames in iter_chunks(std_path, cfg.chunk_frames):
             for cage_id, tracker in trackers.items():
-                cage_frames = []
+                cage_frames: list[tuple[int, np.ndarray]] = []
                 for i, frame in enumerate(frames):
                     cropped = cage_frame(
-                        frame, masks.at(start + i)[cage_id], shapes[cage_id]
+                        frame, masks.at(start + i, cage_id), shapes[cage_id]
                     )
                     if cropped is None:
                         empty[cage_id].add(start + i)
@@ -152,9 +171,7 @@ def infer_video(
                 # Track each contiguous stretch of non-empty cage frames
                 for run_start, run in _split_runs(cage_frames):
                     detections[cage_id].extend(tracker.track(run, run_start))
-    _write_detections(
-        detections, camera_id, video_id, run_dir / "detections" / camera_id
-    )
+    _write_detections(detections, camera_id, video_id, run_dir / "detections")
 
     boxes = {
         c: fill_gaps(
@@ -169,8 +186,10 @@ def infer_video(
     centers = {c: smoothed_box_centers(boxes[c]) for c in cage_ids}
 
     # Pass 3: classification over boxed frames, overlapping chunk windows
-    windows: dict[str, list] = {c: [] for c in cage_ids}
-    with timer.stage(video_id, "classify", frames=n_frames):
+    windows: dict[str, list[tuple[int, int, dict[int, FramePrediction]]]] = {
+        c: [] for c in cage_ids
+    }
+    with timer.stage(camera_id, video_id, "classify", frames=n_frames):
         for start, frames in iter_chunks(std_path, cfg.chunk_frames, cfg.chunk_overlap):
             end = start + len(frames)
             for cage_id in cage_ids:
@@ -178,7 +197,7 @@ def infer_video(
                 crops = []
                 for f in boxed:
                     cropped = cage_frame(
-                        frames[f - start], masks.at(f)[cage_id], shapes[cage_id]
+                        frames[f - start], masks.at(f, cage_id), shapes[cage_id]
                     )
                     assert cropped is not None  # empty cage-frames have no box
                     crops.append(
@@ -187,7 +206,7 @@ def infer_video(
                 preds = classify_runs(boxed, crops, classifier) if boxed else {}
                 windows[cage_id].append((start, end, preds))
 
-    with timer.stage(video_id, "write", frames=n_frames):
+    with timer.stage(camera_id, video_id, "write", frames=n_frames):
         predictions = pl.concat(
             [
                 cage_predictions(
@@ -200,9 +219,7 @@ def infer_video(
                 for cage_id in cage_ids
             ]
         )
-        out_path = run_dir / "predictions" / camera_id / f"{video_id}.parquet"
-        out_path.parent.mkdir(exist_ok=True, parents=True)
-        predictions.write_parquet(out_path)
+        _write_parquet(predictions, out_path)
     return predictions
 
 
@@ -216,16 +233,25 @@ def _expected_frames(video_path: Path) -> int:
 
 
 def _split_runs(
-    frames: Sequence[tuple[int, object]],
-) -> list[tuple[int, list]]:
-    """Group ``(canonical_frame, item)`` pairs into runs of consecutive frames."""
-    runs: list[tuple[int, list]] = []
-    for frame, item in frames:
-        if runs and runs[-1][0] + len(runs[-1][1]) == frame:
-            runs[-1][1].append(item)
+    frames: Sequence[tuple[int, np.ndarray]],
+) -> list[tuple[int, list[np.ndarray]]]:
+    """Group ``(canonical_frame, frame)`` pairs into runs of consecutive frames.
+
+    Returns:
+        ``(first canonical frame, frames)`` per run, in order.
+    """
+    runs: list[tuple[int, list[np.ndarray]]] = []
+    for frame_idx, frame in frames:
+        if runs and runs[-1][0] + len(runs[-1][1]) == frame_idx:
+            runs[-1][1].append(frame)
         else:
-            runs.append((frame, [item]))
+            runs.append((frame_idx, [frame]))
     return runs
+
+
+def _write_parquet(df: pl.DataFrame, path: Path) -> None:
+    path.parent.mkdir(exist_ok=True, parents=True)
+    df.write_parquet(path)
 
 
 def _write_detections(
@@ -234,6 +260,15 @@ def _write_detections(
     video_id: str,
     output_dir: Path,
 ) -> None:
+    """Write raw tracker output, before filtering and gap fill.
+
+    Args:
+        detections: Each cage's detections, frames canonical.
+        camera_id: Camera id.
+        video_id: Video id.
+        output_dir: Root; writes ``{camera_id}/{video_id}.parquet`` under it
+            with :data:`DETECTION_SCHEMA`.
+    """
     rows = [
         {
             "camera_id": camera_id,
@@ -250,9 +285,9 @@ def _write_detections(
         for cage_id, dets in detections.items()
         for d in dets
     ]
-    output_dir.mkdir(exist_ok=True, parents=True)
-    pl.DataFrame(rows, schema=DETECTION_SCHEMA).write_parquet(
-        output_dir / f"{video_id}.parquet"
+    _write_parquet(
+        pl.DataFrame(rows, schema=DETECTION_SCHEMA),
+        output_dir / camera_id / f"{video_id}.parquet",
     )
 
 
@@ -270,6 +305,18 @@ def find_raw_videos(
     return videos
 
 
+def _write_task_manifest(
+    run_dir: Path,
+    task_index: int,
+    config: dict[str, Any],
+    inputs: dict[str, str],
+) -> None:
+    """Write ``manifest_task{i}.json`` so array tasks never overwrite each other."""
+    manifest = new_manifest("infer", config=config, inputs=inputs)
+    path = run_dir / f"manifest_task{task_index:03d}.json"
+    path.write_bytes(msgspec.json.format(msgspec.json.encode(manifest)))
+
+
 def run_infer(
     videos: Sequence[Path],
     run_dir: Path,
@@ -282,13 +329,16 @@ def run_infer(
     *,
     task_index: int = 0,
     num_tasks: int = 1,
-) -> None:
+    limit: int | None = None,
+) -> list[Path]:
     """Run inference on this task's share of ``videos``.
 
     Every camera in ``videos`` is checked for a SAM2 prompt config before
-    any work starts. Task ``i`` of ``n`` processes ``videos[i::n]`` and
-    writes ``timings.parquet`` (``timings_task{i:03d}.parquet`` when
-    ``n > 1``) and ``manifest.json`` into ``run_dir``.
+    any work starts. Task ``i`` of ``n`` processes ``videos[i::n]``; a video
+    that fails is logged and skipped. Writes into ``run_dir``:
+    ``timings.parquet`` (``timings_task{i:03d}.parquet`` when ``n > 1``),
+    ``manifest_task{i:03d}.json`` (config, this task's videos, ``limit`` and
+    failures) and ``failed_task{i:03d}.json`` (failed videos and errors).
 
     Args:
         videos: Raw videos at ``.../{camera_id}/{video_id}.{ext}``.
@@ -301,38 +351,44 @@ def run_infer(
         cfg: Inference settings.
         task_index: This task's index (e.g. ``SLURM_ARRAY_TASK_ID``).
         num_tasks: Number of tasks sharing ``videos``.
+        limit: The ``--limit`` that selected ``videos``, recorded in the
+            manifest.
+
+    Returns:
+        The videos that failed.
+
+    Raises:
+        ValueError: If ``chunk_overlap`` is not in ``[0, chunk_frames)``.
+        FileNotFoundError: If a camera lacks a SAM2 prompt config.
     """
+    if not 0 <= cfg.chunk_overlap < cfg.chunk_frames:
+        raise ValueError(
+            f"chunk_overlap ({cfg.chunk_overlap}) must be in "
+            f"[0, chunk_frames={cfg.chunk_frames})"
+        )
     check_sam2_configs(
         segmentation_configs_path, {parse_raw_video_path(v)[0] for v in videos}
     )
 
-    # Heavy imports only once configs are known to be complete
-    import torch
-    from sam2.build_sam import build_sam2_video_predictor_hf
-
-    from bird_cv.classification.predict_video_model import VideoMAEClassifier
-    from bird_cv.detection.track import YoloDetector
-
     my_videos = list(videos)[task_index::num_tasks]
-    write_manifest(
-        new_manifest(
-            "infer",
-            config={
-                **asdict(cfg),
-                "sam_model_id": sam_model_id,
-                "num_tasks": num_tasks,
-            },
-            inputs={
-                "yolo": str(yolo_path),
-                "tracker": str(tracker_path),
-                "videomae": str(videomae_path),
-                "segmentation_configs": str(segmentation_configs_path),
-            },
-        ),
-        run_dir,
-    )
+    config: dict[str, Any] = {
+        **asdict(cfg),
+        "sam_model_id": sam_model_id,
+        "task_index": task_index,
+        "num_tasks": num_tasks,
+        "limit": limit,
+        "videos": [str(v) for v in my_videos],
+    }
+    inputs = {
+        "yolo": str(yolo_path),
+        "tracker": str(tracker_path),
+        "videomae": str(videomae_path),
+        "segmentation_configs": str(segmentation_configs_path),
+    }
+    run_dir.mkdir(exist_ok=True, parents=True)
+    _write_task_manifest(run_dir, task_index, config, inputs)
     if not my_videos:
-        return
+        return []
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     predictor = build_sam2_video_predictor_hf(sam_model_id, device=device)
@@ -343,18 +399,29 @@ def run_infer(
         "timings.parquet" if num_tasks == 1 else f"timings_task{task_index:03d}.parquet"
     )
 
+    failed: dict[str, str] = {}
     for video in my_videos:
         camera_id, video_id = parse_raw_video_path(video)
         print(f"Inferring {camera_id}/{video_id}")
-        segmenter = Sam2CageSegmenter(
-            predictor=predictor,
-            sam_model_id=sam_model_id,
-            config_path=sam2_config_path(segmentation_configs_path, camera_id),
-            reference_frame_path=sam2_reference_frame(
-                segmentation_configs_path, camera_id
-            ),
-            device=device,
-        )
-        infer_video(video, run_dir, segmenter, detector, classifier, cfg, timer)
-        # Rewrite after every video so a crash keeps earlier timings
+        try:
+            segmenter = Sam2CageSegmenter(
+                predictor=predictor,
+                sam_model_id=sam_model_id,
+                config_path=sam2_config_path(segmentation_configs_path, camera_id),
+                reference_frame_path=sam2_reference_frame(
+                    segmentation_configs_path, camera_id
+                ),
+                device=device,
+            )
+            infer_video(video, run_dir, segmenter, detector, classifier, cfg, timer)
+        except Exception as e:
+            print(f"FAILED {camera_id}/{video_id}:\n{traceback.format_exc()}")
+            failed[str(video)] = f"{type(e).__name__}: {e}"
+        # Rewrite after every video so a crash keeps earlier results
         timer.write(run_dir / timings_name)
+        (run_dir / f"failed_task{task_index:03d}.json").write_text(
+            json.dumps(failed, indent=2)
+        )
+
+    _write_task_manifest(run_dir, task_index, {**config, "failed": failed}, inputs)
+    return [Path(v) for v in failed]

@@ -9,12 +9,13 @@ per-frame boxes written out directly as an intermediate evaluation artifact.
 """
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
+from ultralytics.trackers.track import on_predict_start
 
 from bird_cv.detection.types import Detection
 
@@ -139,30 +140,46 @@ def track_frames(
     return detections
 
 
-@dataclass
 class YoloFrameTracker:
-    """One YOLO model and tracker state for a single stream of frames.
+    """Tracker state for one stream of frames, on a YOLO model it may share.
 
-    Attributes:
-        model_path: Path to the YOLO model weights.
+    Several trackers (e.g. one per cage) can share one loaded ``model``:
+    each keeps its own Ultralytics tracker objects and swaps them onto the
+    model's predictor while it tracks, so streams never mix.
+
+    Args:
+        model: Loaded YOLO model, possibly shared with other trackers.
         tracker_path: Path to the tracker config.
         conf: Confidence threshold passed to ``model.track``.
         iou: NMS IoU threshold passed to ``model.track``.
         max_det: Maximum detections per frame passed to ``model.track``.
     """
 
-    model_path: Path | str
-    tracker_path: Path | str
-    conf: float = 0.05
-    iou: float = 0.70
-    max_det: int = 1
-
-    def __post_init__(self) -> None:
-        self.model = YOLO(str(self.model_path))
+    def __init__(
+        self,
+        model: YOLO,
+        tracker_path: Path | str,
+        conf: float = 0.05,
+        iou: float = 0.70,
+        max_det: int = 1,
+    ) -> None:
+        self.model = model
+        self.tracker_path = tracker_path
+        self.conf = conf
+        self.iou = iou
+        self.max_det = max_det
+        self._trackers: list | None = None
 
     def track(self, frames: Iterable[np.ndarray], frame_offset: int) -> list[Detection]:
         """Track the next chunk of this stream; see :func:`track_frames`."""
-        return track_frames(
+        predictor = self.model.predictor
+        if predictor is not None and hasattr(predictor, "trackers"):
+            if self._trackers is None:
+                # New stream on a model another stream used: fresh trackers
+                on_predict_start(predictor, persist=False)
+            else:
+                predictor.trackers = self._trackers
+        detections = track_frames(
             self.model,
             frames,
             self.tracker_path,
@@ -171,6 +188,9 @@ class YoloFrameTracker:
             max_det=self.max_det,
             frame_offset=frame_offset,
         )
+        if self.model.predictor is not None:
+            self._trackers = getattr(self.model.predictor, "trackers", None)
+        return detections
 
 
 @dataclass
@@ -194,6 +214,7 @@ class YoloDetector:
     conf: float = 0.05
     iou: float = 0.70
     max_det: int = 1
+    _model: YOLO | None = field(default=None, init=False, repr=False)
 
     def predict(self, video_path: Path | str) -> list[Detection]:
         return track_video(
@@ -206,9 +227,14 @@ class YoloDetector:
         )
 
     def frame_tracker(self) -> YoloFrameTracker:
-        """Return a fresh tracker for one stream of in-memory frame chunks."""
+        """Return a fresh tracker for one stream of in-memory frame chunks.
+
+        All trackers from one detector share a single loaded model.
+        """
+        if self._model is None:
+            self._model = YOLO(str(self.model_path))
         return YoloFrameTracker(
-            model_path=self.model_path,
+            model=self._model,
             tracker_path=self.tracker_path,
             conf=self.conf,
             iou=self.iou,

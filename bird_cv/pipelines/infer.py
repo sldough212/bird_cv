@@ -7,11 +7,10 @@ Example::
 """
 
 import argparse
-import os
 from pathlib import Path
 
 from bird_cv.inference.pipeline import find_raw_videos, run_infer
-from bird_cv.pipelines.config import API_KEY_ENV_VAR, load_config, resolve_run_dir
+from bird_cv.pipelines.config import load_config, resolve_run_dir
 
 
 def main() -> None:
@@ -33,9 +32,7 @@ def main() -> None:
     parser.add_argument("--num-tasks", type=int, default=1)
     args = parser.parse_args()
 
-    # load_config requires a Label Studio key; inference never uses it
-    os.environ.setdefault(API_KEY_ENV_VAR, "unused-by-infer")
-    cfg = load_config(args.config_path)
+    cfg = load_config(args.config_path, require_api_key=False)
 
     videos = find_raw_videos(cfg.path_to_raw_videos, args.cameras)[: args.limit]
     if not videos:
@@ -53,6 +50,7 @@ def main() -> None:
         cfg=cfg.infer,
         task_index=args.task_index,
         num_tasks=args.num_tasks,
+        limit=args.limit,
     )
 
 
