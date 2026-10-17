@@ -9,6 +9,76 @@ from collections import defaultdict
 from typing import Any, Dict, Optional
 import polars as pl
 
+from bird_cv.core.frames import FrameMap, frame_map_path
+
+
+def crop_bird(
+    frame: np.ndarray, cx_norm: float, cy_norm: float, crop_size: int = 224
+) -> np.ndarray:
+    """Crop a fixed square centered on a bird, padding with black past the edges.
+
+    Args:
+        frame: Frame as an ``(H, W[, C])`` array (e.g. BGR from cv2).
+        cx_norm: Crop center x, normalized 0-1 to the frame width.
+        cy_norm: Crop center y, normalized 0-1 to the frame height.
+        crop_size: Side length in pixels of the square crop.
+
+    Returns:
+        The ``crop_size`` x ``crop_size`` crop (for even ``crop_size``).
+    """
+    frame_h, frame_w = frame.shape[:2]
+    half = crop_size // 2
+
+    cx = int(cx_norm * frame_w)
+    cy = int(cy_norm * frame_h)
+
+    x1, y1 = cx - half, cy - half
+    x2, y2 = cx + half, cy + half
+
+    pad_left = max(0, -x1)
+    pad_top = max(0, -y1)
+    pad_right = max(0, x2 - frame_w)
+    pad_bottom = max(0, y2 - frame_h)
+
+    crop = frame[max(0, y1) : min(frame_h, y2), max(0, x1) : min(frame_w, x2)]
+
+    if pad_left or pad_top or pad_right or pad_bottom:
+        crop = cv2.copyMakeBorder(
+            crop,
+            pad_top,
+            pad_bottom,
+            pad_left,
+            pad_right,
+            cv2.BORDER_CONSTANT,
+            value=0,
+        )
+    return crop
+
+
+def smooth_centers(
+    cx: np.ndarray, cy: np.ndarray, window: int = 5
+) -> tuple[np.ndarray, np.ndarray]:
+    """Smooth box-center sequences with an edge-padded moving average.
+
+    The window shrinks to ``min(window, len(cx))`` for short sequences.
+
+    Args:
+        cx: Box x-centers, one per frame, in frame order.
+        cy: Box y-centers, one per frame, the same length as ``cx``.
+        window: Moving-average window length in frames.
+
+    Returns:
+        Smoothed ``(cx, cy)``, each the same length as the input.
+    """
+    n = len(cx)
+    k = min(window, n)
+    kernel = np.ones(k) / k
+    pad = k // 2
+    cx_smooth = np.convolve(np.pad(cx, pad, mode="edge"), kernel, mode="valid")
+    cy_smooth = np.convolve(np.pad(cy, pad, mode="edge"), kernel, mode="valid")
+    # An even window yields one extra trailing value; drop it
+    return cx_smooth[:n], cy_smooth[:n]
+
 
 def _save_cropped_bird_frame(
     frame: Any,
@@ -30,34 +100,14 @@ def _save_cropped_bird_frame(
         cx_norm: Optional smoothed x-center override (normalized 0-1).
         cy_norm: Optional smoothed y-center override (normalized 0-1).
     """
-    frame_h, frame_w = frame.shape[:2]
-    half = crop_size // 2
-
     for i, line in enumerate(yolo_lines):
         parts = line.strip().split()
-        cx = int((cx_norm if cx_norm is not None else float(parts[1])) * frame_w)
-        cy = int((cy_norm if cy_norm is not None else float(parts[2])) * frame_h)
-
-        x1, y1 = cx - half, cy - half
-        x2, y2 = cx + half, cy + half
-
-        pad_left = max(0, -x1)
-        pad_top = max(0, -y1)
-        pad_right = max(0, x2 - frame_w)
-        pad_bottom = max(0, y2 - frame_h)
-
-        crop = frame[max(0, y1) : min(frame_h, y2), max(0, x1) : min(frame_w, x2)]
-
-        if pad_left or pad_top or pad_right or pad_bottom:
-            crop = cv2.copyMakeBorder(
-                crop,
-                pad_top,
-                pad_bottom,
-                pad_left,
-                pad_right,
-                cv2.BORDER_CONSTANT,
-                value=0,
-            )
+        crop = crop_bird(
+            frame,
+            cx_norm if cx_norm is not None else float(parts[1]),
+            cy_norm if cy_norm is not None else float(parts[2]),
+            crop_size=crop_size,
+        )
 
         suffix = f"_bird_{i}" if len(yolo_lines) > 1 else ""
         cv2.imwrite(str(frame_file.with_stem(frame_file.stem + suffix)), crop)
@@ -69,6 +119,8 @@ def process_item(
     path_to_output: Path,
     path_to_guidance: Path,
     crop_size: int | None = None,
+    *,
+    frame_map_root: Path | None = None,
 ) -> None:
     """Process a single annotation item and write YOLO-format labels per frame.
 
@@ -95,6 +147,16 @@ def process_item(
             pixels) centered on each bird bbox instead of the full frame and
             YOLO label. Bbox centers are smoothed across frames to reduce
             YOLO jitter before cropping.
+        frame_map_root: Crop mode only. If provided, also write a
+            :class:`~bird_cv.core.frames.FrameMap` giving the canonical frame
+            of each saved crop frame, at
+            ``frame_map_path(frame_map_root / camera_id / video_id / f"{cage}.mp4")``:
+            next to the bird-crop video when ``frame_map_root`` is the
+            ``video_output_path`` later given to ``run_images_to_video``.
+            Assumes the cage video keeps every canonical frame
+            (``crop_cages(keep_empty_frames=True)``). Not written if a frame
+            has more than one box, since the crops then don't form one
+            frame per canonical frame.
 
     Returns:
         None. Files are written to disk as a side effect.
@@ -205,24 +267,20 @@ def process_item(
             if frame_annotations[int(f * ls_fps / fps)]
         ]
         if len(annotated) >= 2:
-            k = min(5, len(annotated))
-            kernel = np.ones(k) / k
             cx_seq = np.array(
                 [float(frame_annotations[af][0].split()[1]) for _, af in annotated]
             )
             cy_seq = np.array(
                 [float(frame_annotations[af][0].split()[2]) for _, af in annotated]
             )
-            pad = k // 2
-            cx_smooth = np.convolve(
-                np.pad(cx_seq, pad, mode="edge"), kernel, mode="valid"
-            )
-            cy_smooth = np.convolve(
-                np.pad(cy_seq, pad, mode="edge"), kernel, mode="valid"
-            )
+            cx_smooth, cy_smooth = smooth_centers(cx_seq, cy_seq, window=5)
             smoothed_centers = {
                 vf: (cx_smooth[i], cy_smooth[i]) for i, (vf, _) in enumerate(annotated)
             }
+
+    # Canonical frame of each saved crop frame, in order (for the frame map)
+    crop_canonical: list[int] = []
+    multi_box = False
 
     # Extract that image frame and save
     frame_num = 1
@@ -251,6 +309,10 @@ def process_item(
                 cx_norm=center[0] if center else None,
                 cy_norm=center[1] if center else None,
             )
+            if lines:
+                # frame_num counts video frames from 1
+                crop_canonical.append(frame_num - 1)
+                multi_box = multi_box or len(lines) > 1
         else:
             stem = f"{camera_id}_{video_id}_{cage}_{frame_num:05d}"
             frame_file = path_to_output_frames / f"{stem}.jpg"
@@ -263,6 +325,14 @@ def process_item(
 
     cap.release()
 
+    if crop_size and frame_map_root is not None:
+        if multi_box:
+            print(f"Not writing frame map for {video_path}: frames with >1 box")
+        else:
+            FrameMap(tuple(crop_canonical)).write(
+                frame_map_path(frame_map_root / camera_id / video_id / f"{cage}.mp4")
+            )
+
 
 def stream_annotations_to_yolo(
     path_to_videos: Path,
@@ -271,6 +341,8 @@ def stream_annotations_to_yolo(
     path_to_guidance: Path,
     processes: int = 4,
     crop_size: int | None = None,
+    *,
+    frame_map_root: Path | None = None,
 ) -> None:
     """Stream a large JSON annotation file and convert it to YOLO format.
 
@@ -285,6 +357,10 @@ def stream_annotations_to_yolo(
         processes: Number of worker processes to use. If set to 1, processing
             runs serially (useful for testing and debugging). Values greater
             than 1 enable multiprocessing.
+        crop_size: If provided, save bird crops instead of YOLO frames and
+            labels (see :func:`process_item`).
+        frame_map_root: Crop mode only: root under which to write a frame map
+            per bird-crop video (see :func:`process_item`).
 
     Returns:
         None. YOLO annotation files are written to disk as a side effect.
@@ -308,6 +384,7 @@ def stream_annotations_to_yolo(
                     path_to_output=path_to_output,
                     path_to_guidance=path_to_guidance,
                     crop_size=crop_size,
+                    frame_map_root=frame_map_root,
                 )
         else:
             # Parallel execution
@@ -317,6 +394,7 @@ def stream_annotations_to_yolo(
                 path_to_output=path_to_output,
                 path_to_guidance=path_to_guidance,
                 crop_size=crop_size,
+                frame_map_root=frame_map_root,
             )
 
             with Pool(processes=processes) as pool:
