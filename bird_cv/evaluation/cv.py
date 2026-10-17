@@ -48,6 +48,31 @@ def fold_split(
     ).sort("camera_id")
 
 
+def check_fold_cameras(
+    cv_folds: pl.DataFrame, fold: int, train_val_cameras: set[str]
+) -> None:
+    """Raise if a fold's training data includes any of its test cameras.
+
+    Args:
+        cv_folds: ``CV_FOLD_SCHEMA`` rows.
+        fold: The fold being trained.
+        train_val_cameras: Cameras found in the fold's train and val data.
+
+    Raises:
+        ValueError: If any of ``train_val_cameras`` is a test camera of
+            ``fold``.
+    """
+    test = set(cv_folds.filter(pl.col("fold") == fold)["camera_id"].to_list())
+    if not test:
+        raise ValueError(f"Fold {fold} has no cameras")
+    leaked = sorted(train_val_cameras & test)
+    if leaked:
+        raise ValueError(
+            f"Fold {fold} trains on its own test cameras {leaked}; build fold "
+            "datasets with bird_cv.evaluation.cv.fold_split"
+        )
+
+
 @dataclass(frozen=True)
 class CVResult:
     """Cross-validation scores.

@@ -48,16 +48,20 @@ def evaluate_video_model(
         split: Split subdirectory of ``clips_root`` to evaluate. Defaults to
             ``"test"``.
         window_macro_f1: If ``True``, index clips by the model's own
-            ``label2id`` (so a split missing a class is scored correctly),
-            report over the model's full vocabulary, and add a
-            ``"macro_f1"`` key computed by
-            :func:`bird_cv.evaluation.metrics.window_macro_f1`. Defaults to
-            ``False`` (the original per-split indexing).
+            ``label2id`` (so a split missing a class is scored correctly,
+            and clips with labels outside it are skipped and counted),
+            restrict the report and confusion matrix to classes present in
+            truth or predictions, and add the single headline number
+            ``"macro_f1"`` from
+            :func:`bird_cv.evaluation.metrics.window_macro_f1` (equal to the
+            report's macro avg F1). Defaults to ``False`` (the original
+            per-split indexing).
 
     Returns:
         dict with keys ``"report"`` (sklearn classification report dict) and
         ``"confusion_matrix"`` (numpy array, rows=true, cols=predicted), plus
-        ``"macro_f1"`` when ``window_macro_f1`` is set.
+        ``"macro_f1"`` and ``"n_skipped_out_of_vocabulary"`` when
+        ``window_macro_f1`` is set.
     """
     output_path.mkdir(parents=True, exist_ok=True)
     dev = torch.device(device if torch.cuda.is_available() else "cpu")
@@ -86,11 +90,22 @@ def evaluate_video_model(
 
     all_labels, all_preds = predict_clip_indices(model, test_loader, dev)
 
-    report_kwargs: dict = (
-        {"labels": list(range(len(label_names))), "zero_division": 0}
-        if window_macro_f1
-        else {}
-    )
+    report_kwargs: dict = {}
+    report_header = ""
+    if window_macro_f1:
+        # Report exactly the classes present in truth or predictions, the
+        # set metrics.window_macro_f1 averages over, so the report's
+        # "macro avg" F1 equals results["macro_f1"].
+        vocabulary = label_names
+        present = sorted(set(all_labels) | set(all_preds))
+        label_names = [vocabulary[i] for i in present]
+        report_kwargs = {"labels": present}
+        report_header = (
+            f"Window metrics, {split} split: classes present in truth or"
+            " predictions; macro avg F1 is the window macro-F1.\n"
+            f"Clips skipped (label outside the model vocabulary):"
+            f" {test_ds.n_skipped_clips}\n\n"
+        )
     report = classification_report(
         all_labels,
         all_preds,
@@ -98,17 +113,13 @@ def evaluate_video_model(
         output_dict=True,
         **report_kwargs,
     )
-    report_str = classification_report(
+    report_str = report_header + classification_report(
         all_labels, all_preds, target_names=label_names, **report_kwargs
     )
     print(report_str)
     (output_path / "classification_report.txt").write_text(report_str)
 
-    cm = confusion_matrix(
-        all_labels,
-        all_preds,
-        labels=report_kwargs.get("labels"),
-    )
+    cm = confusion_matrix(all_labels, all_preds, **report_kwargs)
     fig, ax = plt.subplots(
         figsize=(max(6, len(label_names)), max(5, len(label_names) - 1))
     )
@@ -123,9 +134,10 @@ def evaluate_video_model(
     results = {"report": report, "confusion_matrix": cm}
     if window_macro_f1:
         results["macro_f1"] = compute_window_macro_f1(
-            [label_names[i] for i in all_labels],
-            [label_names[i] for i in all_preds],
-            classes=label_names,
+            [vocabulary[i] for i in all_labels],
+            [vocabulary[i] for i in all_preds],
+            classes=vocabulary,
         )
+        results["n_skipped_out_of_vocabulary"] = test_ds.n_skipped_clips
         print(f"Window macro-F1 ({split}): {results['macro_f1']:.4f}")
     return results

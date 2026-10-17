@@ -69,12 +69,13 @@ def tune_video_model(
     from ray import tune
     from ray.tune.schedulers import ASHAScheduler
 
-    output_root = output_root.resolve()
+    clips_root = Path(clips_root).resolve()
+    output_root = Path(output_root).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
 
     def trainable(config: dict[str, Any]) -> None:
         train_video_model(
-            clips_root=Path(clips_root),
+            clips_root=clips_root,
             output_root=output_root / "trials",
             model_checkpoint=model_checkpoint,  # type: ignore[arg-type]
             output_name=tune.get_context().get_trial_id(),
@@ -111,7 +112,8 @@ def tune_video_model(
 
     # Best epoch of any trial, not just each trial's last reported epoch.
     best = results.get_best_result(metric="val_macro_f1", mode="max", scope="all")
-    best_epoch = best.metrics_dataframe.sort_values("val_macro_f1").iloc[-1]
+    history = best.metrics_dataframe
+    best_epoch = history.loc[history["val_macro_f1"].idxmax()]
     summary = {k: best.config[k] for k in TUNED_KEYS} | {
         "val_macro_f1": float(best_epoch["val_macro_f1"]),
         "epoch": int(best_epoch["epoch"]),

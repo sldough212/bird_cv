@@ -13,6 +13,7 @@ import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 
@@ -27,15 +28,18 @@ from bird_cv.evaluation.metrics import (
 )
 
 PRED_PREFIX = "pred_"
-NON_PREDICTION_FILES = frozenset({"timings.parquet"})
 
 
-def load_predictions(path: Path) -> pl.DataFrame:
+def load_predictions(
+    path: Path, skip_files: tuple[str, ...] = ("timings.parquet",)
+) -> pl.DataFrame:
     """Read prediction parquet(s) into one ``PREDICTION_SCHEMA`` frame.
 
     Args:
         path: A prediction parquet, or a directory searched recursively for
-            them (``timings.parquet`` is skipped).
+            them.
+        skip_files: File names in the directory that aren't predictions.
+            Defaults to ``("timings.parquet",)``.
 
     Returns:
         All predictions, cast to ``PREDICTION_SCHEMA``.
@@ -43,9 +47,7 @@ def load_predictions(path: Path) -> pl.DataFrame:
     files = (
         [path]
         if path.is_file()
-        else sorted(
-            p for p in path.rglob("*.parquet") if p.name not in NON_PREDICTION_FILES
-        )
+        else sorted(p for p in path.rglob("*.parquet") if p.name not in skip_files)
     )
     frames = [
         pl.read_parquet(f, columns=list(PREDICTION_SCHEMA)).cast(PREDICTION_SCHEMA)  # type: ignore[arg-type]
@@ -60,7 +62,14 @@ def load_ground_truth(path: Path) -> pl.DataFrame:
     """Read ground-truth parquet(s) into one ``GROUND_TRUTH_SCHEMA`` frame.
 
     Args:
-        path: A ground-truth parquet or a directory of them.
+        path: A ground-truth parquet, or a directory searched recursively
+            for them.
+
+    Returns:
+        All ground-truth rows, cast to ``GROUND_TRUTH_SCHEMA``.
+
+    Raises:
+        FileNotFoundError: If ``path`` holds no parquet files.
     """
     files = [path] if path.is_file() else sorted(path.rglob("*.parquet"))
     if not files:
@@ -112,7 +121,7 @@ class E2EResult:
     mot: pl.DataFrame
     n_frames_without_prediction: int
 
-    def summary(self) -> dict[str, float | int]:
+    def summary(self) -> dict[str, Any]:
         """Scalar headline numbers for logging, JSON and sweep tables."""
         mot = {"mota": math.nan, "idf1": math.nan}
         if "camera_id" in self.mot.columns:
@@ -162,7 +171,15 @@ def evaluate_e2e(
 
 
 def write_e2e_result(result: E2EResult, output_dir: Path) -> None:
-    """Write ``metrics.json``, ``per_class``, ``confusion``, ``per_camera`` and ``mot`` parquets."""
+    """Write an end-to-end result to a directory.
+
+    Args:
+        result: The scores to write.
+        output_dir: Created if missing. Receives ``metrics.json``
+            (:meth:`E2EResult.summary`), ``per_class.parquet``,
+            ``confusion.parquet`` (rows true, one column per predicted
+            class), ``per_camera.parquet`` and ``mot.parquet``.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "metrics.json").write_text(
         json.dumps(result.summary(), indent=2, default=float)

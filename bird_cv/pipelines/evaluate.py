@@ -20,6 +20,7 @@ Usage::
 
 import argparse
 import json
+import re
 from dataclasses import asdict
 from pathlib import Path
 
@@ -41,11 +42,15 @@ from bird_cv.pipelines.config import BirdCVConfig, load_config, resolve_run_dir
 MODES = ("sweep", "test", "cv", "windows")
 
 
+SPLIT_FILE_RE = re.compile(r"^split_v(\d+)\.parquet$")
+
+
 def latest_split(splits_dir: Path) -> tuple[pl.DataFrame, int]:
     """The highest-numbered ``split_v{n}.parquet`` in ``splits_dir`` and its ``n``."""
     versions = {
-        int(p.stem.removeprefix("split_v")): p
-        for p in splits_dir.glob("split_v*.parquet")
+        int(m.group(1)): p
+        for p in splits_dir.iterdir()
+        if (m := SPLIT_FILE_RE.match(p.name))
     }
     if not versions:
         raise FileNotFoundError(f"No split_v{{n}}.parquet in {splits_dir}")
@@ -102,7 +107,12 @@ def run_evaluate(
                 split=split_name,
                 window_macro_f1=True,
             )
-            scores[split_name] = window_result["macro_f1"]
+            scores[split_name] = {
+                "macro_f1": window_result["macro_f1"],
+                "n_skipped_out_of_vocabulary": window_result[
+                    "n_skipped_out_of_vocabulary"
+                ],
+            }
         (out / "window_macro_f1.json").write_text(json.dumps(scores, indent=2))
         inputs = {"clips": str(clips), "model": str(mae_model)}
     else:
@@ -164,6 +174,27 @@ def run_evaluate(
             print(cv.per_fold)
             write_e2e_result(cv.pooled, out)
             cv.per_fold.write_parquet(out / "per_fold.parquet")
+            # Hyperparameters and the gap-fill/det_conf setting were chosen on
+            # the frozen split's val cameras, which are also CV test cameras.
+            split, split_version = latest_split(base / ev.splits)
+            (out / "cv.json").write_text(
+                json.dumps(
+                    {
+                        "pooled": cv.pooled.summary(),
+                        "tuning_and_sweep_val_cameras": sorted(
+                            _cameras(split, "val").to_list()
+                        ),
+                        "tuning_and_sweep_split_version": split_version,
+                        "note": (
+                            "Hyperparameters (YOLO, VideoMAE) and the gap-fill/"
+                            "det_conf sweep were selected on the frozen split's "
+                            "val cameras; every fold reuses them."
+                        ),
+                    },
+                    indent=2,
+                    default=float,
+                )
+            )
             inputs |= {
                 "cv_folds": str(folds_path),
                 "predictions": str(predictions_root / "cv"),
@@ -192,7 +223,10 @@ def main() -> None:
     args = parser.parse_args()
 
     out = run_evaluate(
-        load_config(args.config_path), args.mode, args.run_id, args.mae_model
+        load_config(args.config_path, require_api_key=False),
+        args.mode,
+        args.run_id,
+        args.mae_model,
     )
     print(f"Done: {out}")
 

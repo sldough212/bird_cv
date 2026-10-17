@@ -10,6 +10,7 @@ label are labeling holes (ADR 0003): they are excluded and counted.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -51,10 +52,17 @@ class ClassificationMetrics:
     n_excluded: int
     n_unknown_predictions: int
 
-    def summary(self) -> dict[str, float | int]:
-        """Scalar fields only, for logging and JSON."""
+    @property
+    def classes_scored(self) -> list[str]:
+        """Classes whose F1 is defined, i.e. those in the macro average."""
+        return self.per_class.filter(pl.col("f1").is_not_null())["label"].to_list()
+
+    def summary(self) -> dict[str, Any]:
+        """Headline fields for logging and JSON."""
         return {
             "macro_f1": self.macro_f1,
+            "n_classes_scored": len(self.classes_scored),
+            "classes_scored": self.classes_scored,
             "n_scored": self.n_scored,
             "n_excluded": self.n_excluded,
             "n_unknown_predictions": self.n_unknown_predictions,
@@ -202,6 +210,8 @@ def per_camera_frame_metrics(
         schema={
             "camera_id": pl.String,
             "macro_f1": pl.Float64,
+            "n_classes_scored": pl.Int64,
+            "classes_scored": pl.List(pl.String),
             "n_scored": pl.Int64,
             "n_excluded": pl.Int64,
             "n_unknown_predictions": pl.Int64,
@@ -211,7 +221,16 @@ def per_camera_frame_metrics(
 
 
 def box_iou(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Row-wise IoU of two ``(N, 4)`` arrays of top-left + size boxes."""
+    """Row-wise IoU of two aligned box arrays.
+
+    Args:
+        a: ``(N, 4)`` boxes as ``left, top, width, height``.
+        b: ``(N, 4)`` boxes in the same convention, row ``i`` compared
+            with row ``i`` of ``a``.
+
+    Returns:
+        ``(N,)`` IoU per row; 0 where both boxes have zero area.
+    """
     ax2, ay2 = a[:, 0] + a[:, 2], a[:, 1] + a[:, 3]
     bx2, by2 = b[:, 0] + b[:, 2], b[:, 1] + b[:, 3]
     iw = np.clip(np.minimum(ax2, bx2) - np.maximum(a[:, 0], b[:, 0]), 0, None)

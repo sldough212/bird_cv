@@ -75,9 +75,6 @@ def run_tracking_on_test(
                 )
 
 
-IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png")
-
-
 def _yolo_label_box(label_file: Path) -> tuple[float, ...] | None:
     """First box of a YOLO label file as normalized (left, top, width, height)."""
     if not label_file.exists():
@@ -106,6 +103,7 @@ def yolo_split_boxes(
     conf: float = 0.25,
     device: int | str | None = None,
     batch: int = 32,
+    image_suffixes: tuple[str, ...] = (".jpg", ".jpeg", ".png"),
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Ground-truth and predicted boxes for every image of a YOLO dataset split.
 
@@ -121,6 +119,7 @@ def yolo_split_boxes(
         conf: Detection confidence threshold. Defaults to 0.25.
         device: Device passed to ``model.predict``; ``None`` lets YOLO choose.
         batch: Images per predict call.
+        image_suffixes: Lower-case file suffixes counted as images.
 
     Returns:
         ``(truth, pred)``: one row per image keyed by ``image`` (path
@@ -130,7 +129,7 @@ def yolo_split_boxes(
     images_dir = dataset_root / "images" / split
     labels_dir = dataset_root / "labels" / split
     images = sorted(
-        p for p in images_dir.rglob("*") if p.suffix.lower() in IMAGE_SUFFIXES
+        p for p in images_dir.rglob("*") if p.suffix.lower() in image_suffixes
     )
     model = YOLO(model_path)
 

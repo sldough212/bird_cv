@@ -1,10 +1,14 @@
 import json
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 from ultralytics import YOLO
+
+if TYPE_CHECKING:
+    from ray.tune import ResultGrid
+    from ultralytics.utils.metrics import DetMetrics
 
 import yaml
 import tomli_w
@@ -43,10 +47,10 @@ def train_yolo(
     device: int | str = -1,
     tune: bool = False,
     iterations: int = 30,
-    frozen_parameters: dict | None = None,
+    frozen_parameters: dict[str, Any] | None = None,
     *,
-    tune_kwargs: dict | None = None,
-) -> Any:
+    tune_kwargs: dict[str, Any] | None = None,
+) -> "ResultGrid | DetMetrics | None":
     """Train or hyperparameter-tune a YOLO model.
 
     Args:
@@ -133,20 +137,25 @@ def train_select_yolo(
     device: int | str = 0,
     tune: bool = False,
     iterations: int = 30,
-    hyperparameters: dict | None = None,
+    hyperparameters: dict[str, Any] | None = None,
     select_conf: float = 0.25,
     iou_threshold: float = 0.5,
 ) -> dict[str, Any]:
     """Train (or Ray-tune) YOLO from generic weights and select on val presence F1.
 
-    Every candidate checkpoint (one per tuning trial, or the single
-    training run) is scored with
+    Selection has two levels. Within each run (one per tuning trial, or the
+    single training run), Ultralytics keeps the epoch with the best
+    Ultralytics fitness (mAP-based) as that run's ``weights/best.pt``;
+    presence F1 is not computed per epoch. Between runs, each run's
+    ``best.pt`` is scored with
     :func:`bird_cv.detection.evaluate_yolo.yolo_presence_metrics` on the
-    val split; the best is copied to ``run_dir/best.pt`` and its training
-    arguments, minus :data:`RUN_SPECIFIC_ARGS`, to
-    ``run_dir/best_hyperparameters.json`` so cross-validation folds can
-    retrain with the same hyperparameters. All scores go to
-    ``run_dir/selection.parquet``.
+    val split, and the highest presence F1 wins. The winner is copied to
+    ``run_dir/best.pt`` and its training arguments, minus
+    :data:`RUN_SPECIFIC_ARGS`, go to ``run_dir/best_hyperparameters.json``
+    so cross-validation folds can retrain with the same hyperparameters.
+    Every run's scores go to ``run_dir/selection.parquet``, with
+    ``within_run_selection`` and ``between_run_selection`` columns that
+    record both criteria.
 
     Args:
         dataset_root: YOLO dataset root with ``train`` and ``val`` splits.
@@ -167,7 +176,20 @@ def train_select_yolo(
     Returns:
         ``best_checkpoint``, ``candidate`` (run directory name) and the
         best candidate's val presence metrics.
+
+    Raises:
+        ValueError: If ``tune`` and ``hyperparameters`` are both given, or
+            ``run_dir`` already holds ``{run_name}*`` runs (only runs made
+            by this call are scored).
     """
+    if tune and hyperparameters:
+        raise ValueError("Pass either tune=True or fixed hyperparameters, not both")
+    existing = sorted(p.name for p in run_dir.glob(f"{run_name}*"))
+    if existing:
+        raise ValueError(
+            f"{run_dir} already holds YOLO runs {existing}; use a fresh run dir"
+        )
+
     model_config = write_dataset_yaml(dataset_root, run_dir / "model_config.yaml")
     train_yolo(
         output_root=run_dir,
@@ -197,7 +219,14 @@ def train_select_yolo(
     if not rows:
         raise RuntimeError(f"No YOLO checkpoints found under {run_dir}")
 
-    selection = pl.DataFrame(rows).sort("f1", descending=True, nulls_last=True)
+    selection = (
+        pl.DataFrame(rows)
+        .with_columns(
+            within_run_selection=pl.lit("ultralytics_fitness"),
+            between_run_selection=pl.lit("val_presence_f1"),
+        )
+        .sort("f1", descending=True, nulls_last=True)
+    )
     selection.write_parquet(run_dir / "selection.parquet")
     best = selection.row(0, named=True)
 

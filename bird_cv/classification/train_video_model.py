@@ -83,12 +83,20 @@ class BehaviorClipDataset(Dataset):
         self.num_frames = num_frames
 
         self.label_dirs = sorted([d for d in clips_root.iterdir() if d.is_dir()])
+        # Clips under label directories outside a given label_to_idx.
+        self.n_skipped_clips = 0
         if label_to_idx is None:
             self.label_to_idx = {d.name: i for i, d in enumerate(self.label_dirs)}
         else:
-            skipped = [d.name for d in self.label_dirs if d.name not in label_to_idx]
+            skipped = [d for d in self.label_dirs if d.name not in label_to_idx]
+            self.n_skipped_clips = sum(
+                1 for d in skipped for c in d.iterdir() if c.is_dir()
+            )
             if skipped:
-                print(f"  Skipping labels not in the model's vocabulary: {skipped}")
+                print(
+                    f"  Skipping {self.n_skipped_clips} clips with labels not in"
+                    f" the model's vocabulary: {[d.name for d in skipped]}"
+                )
             self.label_dirs = [d for d in self.label_dirs if d.name in label_to_idx]
             self.label_to_idx = dict(label_to_idx)
 
@@ -168,7 +176,10 @@ def train_video_model(
             trials). Defaults to ``True``.
         epoch_callback: Called after each epoch with that epoch's
             ``epoch``, ``train_loss``, ``val_accuracy`` and
-            ``val_macro_f1``, e.g. to report to Ray Tune.
+            ``val_macro_f1``, e.g. to report to Ray Tune. ``val_macro_f1``
+            is NaN when the val split's label directories differ from the
+            train split's, which can only happen with
+            ``selection_metric="accuracy"``.
 
     Returns:
         ``selection_metric``, ``best_score``, ``best_epoch`` (1-indexed)
@@ -197,6 +208,9 @@ def train_video_model(
         num_frames,
         label_to_idx=label_to_idx if selection_metric == "macro_f1" else None,
     )
+    vocab_matches = val_ds.label_to_idx == label_to_idx
+    if not vocab_matches:
+        print("  Val labels differ from train labels: val_macro_f1 not reported")
 
     id2label = {v: k for k, v in label_to_idx.items()}
     num_classes = len(label_to_idx)
@@ -276,13 +290,17 @@ def train_video_model(
         )
         correct = sum(int(t == p) for t, p in zip(val_labels, val_preds))
         val_acc = correct / len(val_ds)
-        # With the default per-split indexing, val indices can fall outside
-        # the train vocabulary; name them so the F1 is still computable.
-        val_true_names = [id2label.get(i, f"<val index {i}>") for i in val_labels]
-        val_f1 = window_macro_f1(
-            val_true_names,
-            [id2label[i] for i in val_preds],
-            classes=sorted(set(id2label.values()) | set(val_true_names)),
+        # Val indices mean train labels only when both splits share one
+        # vocabulary; otherwise (default per-split indexing with a val split
+        # missing a class) the F1 would be wrong, so it isn't reported.
+        val_f1 = (
+            window_macro_f1(
+                [id2label[i] for i in val_labels],
+                [id2label[i] for i in val_preds],
+                classes=[id2label[i] for i in range(num_classes)],
+            )
+            if vocab_matches
+            else float("nan")
         )
         score = val_f1 if selection_metric == "macro_f1" else val_acc
         marker = " *" if score > best_val_acc else ""
