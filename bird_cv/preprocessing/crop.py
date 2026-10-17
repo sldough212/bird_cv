@@ -17,14 +17,10 @@ from bird_cv.segmentation.utils import lookup_segment_idx
 from bird_cv.utils import extract_camera_video
 
 
-CAGE_CROP_PADDING = 5
-"""Pixels of padding kept around a cage mask's bounding box when cropping."""
-
-
 def crop_cage_frame(
     frame: np.ndarray | Image.Image,
     cage_mask: list | np.ndarray,
-    padding: int = CAGE_CROP_PADDING,
+    padding: int = 5,
 ) -> np.ndarray | None:
     """Crop one in-memory frame to one cage and black out pixels outside it.
 
