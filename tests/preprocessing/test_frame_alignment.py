@@ -11,6 +11,18 @@ import polars as pl
 from bird_cv.core.frames import FrameMap, frame_map_path
 from bird_cv.preprocessing.annotations_to_yolo import crop_bird, process_item
 from bird_cv.preprocessing.crop import crop_cages
+from bird_cv.segmentation.frames import iter_canonical_frames
+
+
+def _write_video(path: Path, values: list[int], size: int = 32) -> None:
+    """Write a tiny 15 fps video whose frame i is filled with ``values[i]``."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(
+        str(path), cv2.VideoWriter_fourcc(*"mp4v"), 15, (size, size)
+    )
+    for value in values:
+        writer.write(np.full((size, size, 3), value, dtype=np.uint8))
+    writer.release()
 
 
 def test_crop_bird_pads_with_black_at_frame_edges() -> None:
@@ -28,14 +40,7 @@ def test_crop_bird_pads_with_black_at_frame_edges() -> None:
 def test_crop_cages_keep_empty_frames_keeps_frame_count(tmp_path: Path) -> None:
     """With keep_empty_frames, an empty-mask frame becomes a placeholder."""
     n_frames, size = 3, 32
-    video_path = tmp_path / "videos" / "cam" / "vid.mp4"
-    video_path.parent.mkdir(parents=True)
-    writer = cv2.VideoWriter(
-        str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), 15, (size, size)
-    )
-    for _ in range(n_frames):
-        writer.write(np.full((size, size, 3), 128, dtype=np.uint8))
-    writer.release()
+    _write_video(tmp_path / "videos" / "cam" / "vid.mp4", [128] * n_frames, size)
 
     guidance_path = tmp_path / "guidance.parquet"
     pl.DataFrame(
@@ -70,7 +75,7 @@ def test_crop_cages_keep_empty_frames_keeps_frame_count(tmp_path: Path) -> None:
 
 
 class _FakeCapture:
-    """cv2.VideoCapture stand-in returning a few tiny frames at 10 fps."""
+    """cv2.VideoCapture stand-in returning a few tiny frames at 15 fps."""
 
     def __init__(self, n_frames: int) -> None:
         self.frames = [np.zeros((48, 64, 3), dtype=np.uint8) for _ in range(n_frames)]
@@ -79,7 +84,7 @@ class _FakeCapture:
         return (True, self.frames.pop(0)) if self.frames else (False, None)
 
     def get(self, prop_id: int) -> int:
-        return 10
+        return 15
 
     def release(self) -> None:
         pass
@@ -110,7 +115,7 @@ def test_bird_crop_frame_map_matches_boxed_frames(tmp_path: Path) -> None:
         {
             "video_path": ["raw/cam/vid.mp4"],
             "target_frames": [[1, 2, 3, 4]],
-            "fps": [10],
+            "fps": [15],
             "split": ["train"],
         }
     ).write_parquet(guidance_path)
@@ -137,3 +142,16 @@ def test_bird_crop_frame_map_matches_boxed_frames(tmp_path: Path) -> None:
     # Crop files are named by 1-indexed video frame
     assert [int(p.stem) - 1 for p in crops] == list(frame_map.canonical)
     assert frame_map.canonical == (1, 2)
+
+
+def test_iter_canonical_frames_numbers_from_zero(tmp_path: Path) -> None:
+    """Frames are numbered from 0 and ``frames`` selects canonical frames."""
+    video_path = tmp_path / "vid.mp4"
+    _write_video(video_path, [0, 120, 240])
+
+    all_frames = list(iter_canonical_frames(video_path))
+    selected = list(iter_canonical_frames(video_path, frames=[0, 2]))
+
+    assert [i for i, _ in all_frames] == [0, 1, 2]
+    assert [i for i, _ in selected] == [0, 2]
+    assert abs(float(selected[1][1].mean()) - 240) < 10

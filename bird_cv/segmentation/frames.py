@@ -51,15 +51,22 @@ def iter_canonical_frames(
 
     Yields:
         ``(canonical_frame, frame)`` pairs in order, ``frame`` in BGR.
+
+    Raises:
+        OSError: If the video can't be opened.
     """
+    wanted = None if frames is None else set(frames)
+    last = None if wanted is None else max(wanted, default=-1)
     cap = cv2.VideoCapture(str(video_path))
     try:
+        if not cap.isOpened():
+            raise OSError(f"Could not open video {video_path}")
         frame_idx = 0
-        while True:
+        while last is None or frame_idx <= last:
             success, frame = cap.read()
             if not success:
                 break
-            if frames is None or frame_idx in frames:
+            if wanted is None or frame_idx in wanted:
                 yield frame_idx, frame
             frame_idx += 1
     finally:
