@@ -40,9 +40,11 @@ class Manifest(msgspec.Struct):
 def current_git_commit(repo_dir: Path | None = None) -> str:
     """Return ``HEAD``'s commit hash, suffixed ``-dirty`` for uncommitted changes.
 
-    Returns ``"unknown"`` outside a git checkout.
+    Defaults to the checkout this package lives in, so the result doesn't
+    depend on the working directory a job was submitted from. Returns
+    ``"unknown"`` outside a git checkout.
     """
-    cwd = str(repo_dir) if repo_dir else None
+    cwd = str(repo_dir or Path(__file__).resolve().parents[2])
     try:
         commit = subprocess.run(
             ["git", "rev-parse", "HEAD"],

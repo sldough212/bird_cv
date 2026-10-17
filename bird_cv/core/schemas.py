@@ -9,7 +9,15 @@ canonical frames (see :mod:`bird_cv.core.frames`).
 import polars as pl
 
 KEY_COLUMNS = ("camera_id", "video_id", "cage_id", "frame")
-"""Columns that identify one cage on one canonical frame."""
+"""Columns that identify one cage on one canonical frame.
+
+Formats (always build them with :mod:`bird_cv.core.ids`):
+
+- ``camera_id``: decoded camera folder name, e.g. ``"H7,I22"`` (never ``%2C``).
+- ``video_id``: raw video name without extension, e.g. ``"IMG_0016"``.
+- ``cage_id``: cage index as a decimal string, e.g. ``"0"``.
+- ``frame``: canonical frame.
+"""
 
 GROUND_TRUTH_SCHEMA = {
     "camera_id": pl.String,
@@ -18,6 +26,13 @@ GROUND_TRUTH_SCHEMA = {
     "frame": pl.Int64,
     # A class from bird_cv.core.labels.CLASSES, or null for a labeling hole.
     "label": pl.String,
+    # Annotated box normalized 0-1 to the cage video, top-left + size; null
+    # when there is no box (label no_bird). Label Studio exports percentages,
+    # so divide its x/y/width/height by 100.
+    "bbox_left": pl.Float64,
+    "bbox_top": pl.Float64,
+    "bbox_width": pl.Float64,
+    "bbox_height": pl.Float64,
 }
 
 PREDICTION_SCHEMA = {
@@ -25,10 +40,13 @@ PREDICTION_SCHEMA = {
     "video_id": pl.String,
     "cage_id": pl.String,
     "frame": pl.Int64,
+    # Never null: frames with no usable detection, or not covered by any
+    # classifier window, are no_bird.
     "label": pl.String,
     # Classifier confidence, 0-1; null when label is no_bird.
     "confidence": pl.Float64,
     # Box normalized 0-1 to the cage video, top-left + size; null when no_bird.
+    # Gap-filled frames carry the source detection's box and det_conf.
     "bbox_left": pl.Float64,
     "bbox_top": pl.Float64,
     "bbox_width": pl.Float64,

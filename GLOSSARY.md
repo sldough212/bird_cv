@@ -5,17 +5,17 @@ Turning cage-camera footage of migratory songbirds into frame-by-frame behavior 
 ## Media
 
 **Camera**:
-One fixed recording setup, identified by its folder name (e.g. `H7,I22`), which lists the birds in view. The unit of the train/val/test split.
+One fixed recording setup, identified by its decoded folder name (`camera_id`, e.g. `H7,I22`, never `H7%2CI22`), which lists the birds in view. The unit of the train/val/test split.
 _Avoid_: setup, rig, camera group
 
 **Raw video**:
-A video file as recorded, before standardization.
+A video file as recorded, before standardization, identified by its name without extension (`video_id`, e.g. `IMG_0016`).
 
 **Standardized video**:
 A raw video re-encoded to 15 fps H.264. Its frames define the canonical frame index.
 
 **Cage**:
-One SAM2-segmented region of a camera's view holding at most one bird, identified by `cage_id`: its position in the camera's SAM2 prompt config.
+One SAM2-segmented region of a camera's view holding at most one bird, identified by `cage_id`: its position in the camera's SAM2 prompt config, as a decimal string (`"0"`).
 _Avoid_: bird id (as an identifier), enclosure
 
 **Cage video**:

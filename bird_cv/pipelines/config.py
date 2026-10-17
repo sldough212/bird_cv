@@ -199,15 +199,19 @@ def load_config(config_path: Path, config_type: type = BirdCVConfig):
     classify_cfg = msgspec.convert(
         classify_data, type=ClassifyConfig, dec_hook=str_to_path
     )
-    # Optional tables for the new pipelines; absent means all defaults
-    optional_cfgs = {
-        name: msgspec.convert(raw.pop(name, {}), type=typ, dec_hook=str_to_path)
-        for name, typ in (
-            ("prepare", PrepareConfig),
-            ("infer", InferConfig),
-            ("evaluate", EvaluateConfig),
-        )
-    }
+    # Optional tables for the new pipelines; absent means all defaults.
+    # Unknown keys raise, so a typo can't silently fall back to a default.
+    optional_cfgs = {}
+    for name, typ in (
+        ("prepare", PrepareConfig),
+        ("infer", InferConfig),
+        ("evaluate", EvaluateConfig),
+    ):
+        table = raw.pop(name, {})
+        unknown = set(table) - {f.name for f in fields(typ)}
+        if unknown:
+            raise ValueError(f"Unknown keys in [{name}]: {sorted(unknown)}")
+        optional_cfgs[name] = msgspec.convert(table, type=typ, dec_hook=str_to_path)
 
     # The Label Studio key comes from the environment when set, so it never
     # has to live in a committed TOML; a TOML value still works as a fallback.

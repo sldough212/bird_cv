@@ -39,3 +39,24 @@ def test_config_without_api_key_fails_clearly(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.delenv(API_KEY_ENV_VAR, raising=False)
     with pytest.raises(ValueError, match=API_KEY_ENV_VAR):
         load_config(CONFIG)
+
+
+def test_ids_match_between_label_studio_and_raw_paths() -> None:
+    from bird_cv.core.ids import parse_media_path, parse_raw_video_path
+
+    url = "/data/local-files/?d=gscratch/x/cage_videos/I35%2CL15/IMG_0016/0.mp4"
+    assert parse_media_path(url) == ("I35,L15", "IMG_0016", "0")
+    assert parse_raw_video_path("videos/I35,L15/IMG_0016.MOV") == (
+        "I35,L15",
+        "IMG_0016",
+    )
+
+
+def test_optional_config_table_rejects_typos(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(API_KEY_ENV_VAR, "k")
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(CONFIG.read_text() + "\n[infer]\ngap_fil_frames = 3\n")
+    with pytest.raises(ValueError, match="gap_fil_frames"):
+        load_config(cfg_path)
