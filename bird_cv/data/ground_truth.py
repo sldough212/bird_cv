@@ -13,16 +13,29 @@ excluded and counted.
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+import cv2
 import polars as pl
 
+from bird_cv.client.evaluate_label_studio_tracking import _select_annotation
 from bird_cv.core.frames import is_aligned_with_standard, ls_to_canonical
-from bird_cv.core.ids import parse_media_path
+from bird_cv.core.ids import parse_media_path, parse_raw_video_path
 from bird_cv.core.labels import NO_BIRD, validate_class
 from bird_cv.core.schemas import GROUND_TRUTH_SCHEMA
 
 logger = logging.getLogger(__name__)
+
+GT_VERSION = 1
+"""Bump when the ground truth rules change, so prepare rebuilds it."""
+
+OVERSHOOT_TOLERANCE = 8
+"""Classify tasks whose ranges run more than this many frames past the
+bird-crop video's boxed-frame count are excluded (the crop and the Detect
+boxes no longer correspond); smaller overshoots are clipped."""
+
+VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv")
 
 CageKey = tuple[str, str, str]
 """``(camera_id, video_id, cage_id)``."""
@@ -43,8 +56,14 @@ class GroundTruthResult:
         conflict_frames: Boxed frames given two different behaviors; set to
             null.
         unmatched_classify_tasks: Classify tasks with no Detect task, skipped.
+        overshoot_classify_tasks: Classify tasks overshooting the boxed
+            frames by more than :data:`OVERSHOOT_TOLERANCE`, excluded.
+        classify_dropped_with_detect: Classify tasks dropped because their
+            Detect task was excluded.
         misaligned_detect_tasks: Detect tasks failing
             :func:`~bird_cv.core.frames.is_aligned_with_standard`, excluded.
+        unchecked_detect_tasks: Detect tasks whose standardized frame count
+            was unknown, so dropped frames could not be checked.
         skipped_detect_tasks: Detect tasks with no boxes and no aligned
             sibling cage to take the frame count from, excluded.
     """
@@ -53,8 +72,15 @@ class GroundTruthResult:
     clipped_frames: int = 0
     conflict_frames: int = 0
     unmatched_classify_tasks: int = 0
+    overshoot_classify_tasks: int = 0
+    classify_dropped_with_detect: int = 0
     misaligned_detect_tasks: int = 0
+    unchecked_detect_tasks: int = 0
     skipped_detect_tasks: int = 0
+
+    def counts(self) -> dict[str, int]:
+        """Every count, keyed by attribute name."""
+        return {k: v for k, v in vars(self).items() if k != "table"}
 
 
 @dataclass
@@ -66,12 +92,14 @@ class DetectTask:
     duration: float | None
 
 
-def _annotation_results(task: dict[str, Any]) -> list[dict[str, Any]]:
-    """Results of the task's first non-cancelled annotation (empty if none)."""
-    for annotation in task.get("annotations", []):
-        if not annotation.get("was_cancelled"):
-            return annotation.get("result", [])
-    return []
+def annotation_results(task: dict[str, Any]) -> list[dict[str, Any]]:
+    """Results of the task's most recent non-cancelled annotation (empty if none).
+
+    Uses the same rule as the tracking evaluation
+    (:func:`bird_cv.client.evaluate_label_studio_tracking._select_annotation`).
+    """
+    annotation = _select_annotation(task.get("annotations", []))
+    return annotation.get("result", []) if annotation else []
 
 
 def parse_detect_task(task: dict[str, Any]) -> DetectTask:
@@ -87,15 +115,27 @@ def parse_detect_task(task: dict[str, Any]) -> DetectTask:
     Returns:
         Boxes by frame, plus ``framesCount`` and ``duration`` (None if the
         task has no regions).
+
+    Raises:
+        ValueError: If a sequence skips frames after an enabled keyframe,
+            i.e. the export was not interpolated.
     """
     parsed = DetectTask(boxes={}, frames_count=None, duration=None)
-    for result in _annotation_results(task):
+    for result in annotation_results(task):
         if result.get("type") != "videorectangle":
             continue
         value = result["value"]
         parsed.frames_count = value["framesCount"]
         parsed.duration = value["duration"]
-        for step in value["sequence"]:
+        sequence = sorted(value["sequence"], key=lambda s: s["frame"])
+        for step, following in zip(sequence, sequence[1:]):
+            if step.get("enabled", True) and following["frame"] != step["frame"] + 1:
+                raise ValueError(
+                    f"{task['data']['video']}: sequence jumps from frame "
+                    f"{step['frame']} to {following['frame']}; export the Detect "
+                    "project with interpolate_frames=True"
+                )
+        for step in sequence:
             if 1 <= step["frame"] <= parsed.frames_count:
                 parsed.boxes.setdefault(
                     step["frame"],
@@ -110,9 +150,21 @@ def parse_detect_task(task: dict[str, Any]) -> DetectTask:
 
 
 def behavior_by_crop_frame(task: dict[str, Any]) -> dict[int, list[str]]:
-    """Behaviors on each 1-indexed frame of a Classify task's bird-crop video."""
+    """Behaviors on each frame of a Classify task's bird-crop video.
+
+    Args:
+        task: One task of a Classify export.
+
+    Returns:
+        For each 1-indexed crop frame inside any ``timelinelabels`` range
+        (out-of-range frames such as -1 included), the behaviors labeled on
+        it, one entry per covering range.
+
+    Raises:
+        ValueError: If a label is not a known class.
+    """
     labels: dict[int, list[str]] = defaultdict(list)
-    for result in _annotation_results(task):
+    for result in annotation_results(task):
         if result.get("type") != "timelinelabels":
             continue
         for label in result["value"]["timelinelabels"]:
@@ -123,8 +175,43 @@ def behavior_by_crop_frame(task: dict[str, Any]) -> dict[int, list[str]]:
     return labels
 
 
+def standard_frame_counts(raw_videos_dir: Path) -> dict[tuple[str, str], int] | None:
+    """Frame counts of the standardized videos, read from their headers.
+
+    Args:
+        raw_videos_dir: Directory of standardized videos laid out as
+            ``{camera}/{video}.{ext}``.
+
+    Returns:
+        ``{(camera_id, video_id): frame_count}``, or None if the directory
+        doesn't exist.
+    """
+    if not raw_videos_dir.is_dir():
+        return None
+    counts = {}
+    for path in raw_videos_dir.rglob("*"):
+        if path.suffix.lower() in VIDEO_EXTENSIONS:
+            cap = cv2.VideoCapture(str(path))
+            counts[parse_raw_video_path(path)] = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap.release()
+    return counts
+
+
+def _by_key(tasks: list[dict[str, Any]], project: str) -> dict[CageKey, dict]:
+    """Index tasks by cage key, raising on duplicate media."""
+    by_key: dict[CageKey, dict] = {}
+    for task in tasks:
+        key = parse_media_path(task["data"]["video"])
+        if key in by_key:
+            raise ValueError(f"Duplicate {project} task for {key}")
+        by_key[key] = task
+    return by_key
+
+
 def build_ground_truth(
-    detect_tasks: list[dict[str, Any]], classify_tasks: list[dict[str, Any]]
+    detect_tasks: list[dict[str, Any]],
+    classify_tasks: list[dict[str, Any]],
+    standard_counts: dict[tuple[str, str], int] | None = None,
 ) -> GroundTruthResult:
     """Convert Detect and Classify exports to per-frame ground truth.
 
@@ -135,32 +222,48 @@ def build_ground_truth(
     Args:
         detect_tasks: Parsed interpolated Detect export.
         classify_tasks: Parsed Classify export.
+        standard_counts: ``{(camera_id, video_id): frame_count}`` of the
+            standardized videos, to catch cage videos with dropped frames.
+            Tasks whose video is missing (or all tasks, if None) are only
+            checked for fps and counted as unchecked.
 
     Returns:
         The ground truth table and counts of clipped, conflicting and
         excluded data.
+
+    Raises:
+        ValueError: On duplicate media in either export, or a
+            non-interpolated Detect export.
     """
-    classify_by_key = {parse_media_path(t["data"]["video"]): t for t in classify_tasks}
+    classify_by_key = _by_key(classify_tasks, "Classify")
     detect = {
-        parse_media_path(t["data"]["video"]): parse_detect_task(t) for t in detect_tasks
+        k: parse_detect_task(t) for k, t in _by_key(detect_tasks, "Detect").items()
     }
 
     result = GroundTruthResult(table=pl.DataFrame(schema=GROUND_TRUTH_SCHEMA))
     result.unmatched_classify_tasks = len(set(classify_by_key) - set(detect))
+    if standard_counts is None:
+        logger.warning(
+            "No standardized frame counts given; skipping the dropped-frame check"
+        )
 
     aligned: dict[CageKey, int] = {}
     for key, task in detect.items():
         if task.frames_count is None or task.duration is None:
             continue
-        if is_aligned_with_standard(task.frames_count, task.duration):
+        standard = (standard_counts or {}).get(key[:2])
+        if standard is None:
+            result.unchecked_detect_tasks += 1
+        if is_aligned_with_standard(task.frames_count, task.duration, standard):
             aligned[key] = task.frames_count
         else:
             logger.warning(
-                "Excluding %s: %d frames over %.2fs is not aligned with %s",
+                "Excluding %s: %d frames over %.2fs (standardized: %s) is not "
+                "aligned with the standardized video",
                 key,
                 task.frames_count,
                 task.duration,
-                "the standardized video",
+                standard,
             )
             result.misaligned_detect_tasks += 1
     video_frames_count = {key[:2]: count for key, count in aligned.items()}
@@ -169,14 +272,14 @@ def build_ground_truth(
     for key in sorted(detect):
         task = detect[key]
         if task.frames_count is not None:
-            if key not in aligned:
-                continue
-            n_frames = aligned[key]
-        elif key[:2] in video_frames_count:
-            n_frames = video_frames_count[key[:2]]
+            n_frames = aligned.get(key)
         else:
-            logger.warning("Excluding %s: no boxes and no frame count", key)
-            result.skipped_detect_tasks += 1
+            n_frames = video_frames_count.get(key[:2])
+            if n_frames is None:
+                logger.warning("Excluding %s: no boxes and no frame count", key)
+                result.skipped_detect_tasks += 1
+        if n_frames is None:
+            result.classify_dropped_with_detect += key in classify_by_key
             continue
 
         labels: list[str | None] = [NO_BIRD] * n_frames
@@ -186,17 +289,31 @@ def build_ground_truth(
             labels[ls_to_canonical(ls_frame)] = None
             boxes[ls_to_canonical(ls_frame)] = task.boxes[ls_frame]
 
-        if key in classify_by_key:
-            for crop_frame, behaviors in behavior_by_crop_frame(
-                classify_by_key[key]
-            ).items():
-                if not 1 <= crop_frame <= len(boxed_ls):
-                    result.clipped_frames += 1
-                    continue
-                if len(set(behaviors)) > 1:
-                    result.conflict_frames += 1
-                    continue
-                labels[ls_to_canonical(boxed_ls[crop_frame - 1])] = behaviors[0]
+        behaviors_by_frame = (
+            behavior_by_crop_frame(classify_by_key[key])
+            if key in classify_by_key
+            else {}
+        )
+        overshoot = max(behaviors_by_frame, default=0) - len(boxed_ls)
+        if overshoot > 0:
+            logger.info(
+                "%s: Classify ranges overshoot %d boxed frames by %d",
+                key,
+                len(boxed_ls),
+                overshoot,
+            )
+        if overshoot > OVERSHOOT_TOLERANCE:
+            logger.warning("Excluding Classify task %s: overshoot %d", key, overshoot)
+            result.overshoot_classify_tasks += 1
+            behaviors_by_frame = {}
+        for crop_frame, behaviors in behaviors_by_frame.items():
+            if not 1 <= crop_frame <= len(boxed_ls):
+                result.clipped_frames += 1
+                continue
+            if len(set(behaviors)) > 1:
+                result.conflict_frames += 1
+                continue
+            labels[ls_to_canonical(boxed_ls[crop_frame - 1])] = behaviors[0]
 
         camera_id, video_id, cage_id = key
         bbox_columns = ("bbox_left", "bbox_top", "bbox_width", "bbox_height")
@@ -219,15 +336,5 @@ def build_ground_truth(
 
     if tables:
         result.table = pl.concat(tables)
-    logger.info(
-        "Ground truth: %d frames; %d Classify frames clipped to the crop, "
-        "%d conflicting frames set to null, %d unmatched Classify tasks, "
-        "%d misaligned and %d unsized Detect tasks excluded",
-        result.table.height,
-        result.clipped_frames,
-        result.conflict_frames,
-        result.unmatched_classify_tasks,
-        result.misaligned_detect_tasks,
-        result.skipped_detect_tasks,
-    )
+    logger.info("Ground truth: %d frames; %s", result.table.height, result.counts())
     return result

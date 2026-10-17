@@ -4,7 +4,7 @@ import logging
 
 import polars as pl
 
-from bird_cv.core.labels import CLASSES
+from bird_cv.core.labels import BEHAVIORS, CLASSES
 from bird_cv.core.schemas import SPLIT_SUMMARY_SCHEMA, SPLITS
 
 logger = logging.getLogger(__name__)
@@ -13,7 +13,16 @@ _CAGE = ("camera_id", "video_id", "cage_id")
 
 
 def with_split(ground_truth: pl.DataFrame, split: pl.DataFrame) -> pl.DataFrame:
-    """Attach each camera's split (from a ``SPLIT_SCHEMA`` table) to ground truth."""
+    """Attach each camera's split to ground truth.
+
+    Args:
+        ground_truth: Table with a ``camera_id`` column.
+        split: Split assignment in :data:`~bird_cv.core.schemas.SPLIT_SCHEMA`.
+
+    Returns:
+        ``ground_truth`` with a ``split`` column; cameras missing from
+        ``split`` are dropped.
+    """
     return ground_truth.join(
         split.select("camera_id", "split"), on="camera_id", how="inner"
     )
@@ -23,9 +32,11 @@ def summarize(frames: pl.DataFrame) -> pl.DataFrame:
     """Count frames, stretches, cameras, videos and cages per split and class.
 
     A stretch is a run of consecutive canonical frames with the same label
-    on one cage. Null labels (labeling holes) count only towards the total
-    row's ``labeling_hole_frames``; ``frac_of_split`` is relative to the
-    split's labeled (non-null) frames.
+    on one cage. Null labels count only towards the total row: as
+    ``unlabeled_video_frames`` in cage videos with no behavior label at all,
+    else as ``labeling_hole_frames``. ``frac_of_split`` is relative to the
+    split's non-null frames. ``stretches`` is null on ``*_sampled`` splits,
+    where runs of sampled frames are not labeled stretches.
 
     Args:
         frames: Table with ``camera_id``, ``video_id``, ``cage_id``, ``frame``,
@@ -41,7 +52,8 @@ def summarize(frames: pl.DataFrame) -> pl.DataFrame:
             | (pl.col("label").ne_missing(pl.col("label").shift()))
         )
         .over(["split", *_CAGE])
-        .fill_null(True)
+        .fill_null(True),
+        labeled_video=pl.col("label").is_in(BEHAVIORS).any().over(_CAGE),
     )
     group = {
         "frames": pl.len(),
@@ -60,7 +72,12 @@ def summarize(frames: pl.DataFrame) -> pl.DataFrame:
             cameras=group["cameras"],
             videos=group["videos"],
             cages=group["cages"],
-            labeling_hole_frames=pl.col("label").is_null().sum(),
+            labeling_hole_frames=(
+                pl.col("label").is_null() & pl.col("labeled_video")
+            ).sum(),
+            unlabeled_video_frames=(
+                pl.col("label").is_null() & ~pl.col("labeled_video")
+            ).sum(),
         )
         .with_columns(label=pl.lit("total"))
     )
@@ -71,6 +88,9 @@ def summarize(frames: pl.DataFrame) -> pl.DataFrame:
         .join(split_frames, on="split")
         .with_columns(
             frac_of_split=pl.col("frames") / pl.col("split_frames"),
+            stretches=pl.when(~pl.col("split").str.ends_with("_sampled")).then(
+                pl.col("stretches")
+            ),
             _order=pl.col("label").replace_strict(order, default=len(order)),
             _split_order=pl.col("split").replace_strict(
                 {s: i for i, s in enumerate(SPLITS)}, default=len(SPLITS)

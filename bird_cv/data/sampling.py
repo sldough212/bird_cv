@@ -8,37 +8,9 @@ common active behavior count. Test keeps everything.
 import polars as pl
 
 from bird_cv.core.labels import ACTIVE_BEHAVIORS, BEHAVIORS, NO_BIRD, RESTING
+from bird_cv.core.schemas import VIDEOMAE_CLIPS_SCHEMA, YOLO_FRAMES_SCHEMA
 
 CAGE = ["camera_id", "video_id", "cage_id"]
-
-YOLO_FRAMES_SCHEMA = {
-    "camera_id": pl.String,
-    "video_id": pl.String,
-    "cage_id": pl.String,
-    "frame": pl.Int64,
-    # Ground truth class, or null for a labeling hole (unlabeled video).
-    "label": pl.String,
-    "split": pl.String,
-    # Ground truth box, as in GROUND_TRUTH_SCHEMA; null on no_bird frames.
-    "bbox_left": pl.Float64,
-    "bbox_top": pl.Float64,
-    "bbox_width": pl.Float64,
-    "bbox_height": pl.Float64,
-}
-"""Canonical cage-video frames selected for YOLO, one row per frame."""
-
-VIDEOMAE_CLIPS_SCHEMA = {
-    "camera_id": pl.String,
-    "video_id": pl.String,
-    "cage_id": pl.String,
-    "label": pl.String,
-    "split": pl.String,
-    # Inclusive canonical frames, inside one labeled stretch. Shorter than
-    # num_frames only when the stretch is; the consumer pads those.
-    "frame_begin": pl.Int64,
-    "frame_end": pl.Int64,
-}
-"""VideoMAE training clips, one row per clip."""
 
 
 def _active_cap(counts: pl.Expr) -> pl.Expr:
@@ -183,7 +155,15 @@ def select_videomae_clips(
 
 
 def clip_frames(clips: pl.DataFrame) -> pl.DataFrame:
-    """Unique canonical frames covered by clips, with their label and split."""
+    """Unique canonical frames covered by clips, with their label and split.
+
+    Args:
+        clips: Clips in :data:`~bird_cv.core.schemas.VIDEOMAE_CLIPS_SCHEMA`.
+
+    Returns:
+        One row per covered (cage, frame) with ``label`` and ``split``, for
+        summarizing clip selections like frame selections.
+    """
     return (
         clips.with_columns(frame=pl.int_ranges("frame_begin", pl.col("frame_end") + 1))
         .explode("frame")

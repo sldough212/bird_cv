@@ -48,8 +48,12 @@ def latest_split_version(splits_dir: Path) -> int | None:
 def camera_behaviors(ground_truth: pl.DataFrame) -> dict[str, set[str]]:
     """Behaviors present on each camera in a ground truth table.
 
-    Every camera in the table is a key, including cameras with no behavior
-    labels (empty set).
+    Args:
+        ground_truth: Table with ``camera_id`` and ``label`` columns.
+
+    Returns:
+        The set of behaviors (not ``no_bird``) on each camera; every camera
+        in the table is a key, including cameras with no behavior labels.
     """
     behaviors: dict[str, set[str]] = {
         c: set() for c in ground_truth.get_column("camera_id").unique()
@@ -128,9 +132,10 @@ def _append_cameras(
 ) -> dict[str, str]:
     """Assign new cameras without moving existing ones.
 
-    New cameras are shuffled with ``seed``, then each goes to test if it has a
-    behavior test lacks, else train if train lacks one of its behaviors, else
-    val if val lacks one, else the split furthest below its target ratio.
+    New cameras are shuffled with ``seed``. Each goes to train if it has a
+    behavior both train and test lack, else test if test lacks one of its
+    behaviors, else train, else val (same test), else the split furthest
+    below its target ratio.
     """
     members = {
         s: split.filter(pl.col("split") == s).get_column("camera_id").to_list()
@@ -141,11 +146,20 @@ def _append_cameras(
     assigned = {}
     for i in order:
         camera = new_cameras[i]
+        missing = {
+            s: new_behaviors[camera] - _covered(members[s], all_behaviors)
+            for s in SPLITS
+        }
         choice = next(
             (
                 s
-                for s in ("test", "train", "val")
-                if new_behaviors[camera] - _covered(members[s], all_behaviors)
+                for s, lacks in (
+                    ("train", missing["train"] & missing["test"]),
+                    ("test", missing["test"]),
+                    ("train", missing["train"]),
+                    ("val", missing["val"]),
+                )
+                if lacks
             ),
             None,
         )
@@ -155,6 +169,34 @@ def _append_cameras(
         members[choice].append(camera)
         assigned[camera] = choice
     return assigned
+
+
+def coverage_gaps(
+    split: pl.DataFrame, behaviors: Mapping[str, set[str]]
+) -> dict[str, set[str]]:
+    """Behaviors present overall but missing from train or test.
+
+    Args:
+        split: Split assignment in :data:`~bird_cv.core.schemas.SPLIT_SCHEMA`.
+        behaviors: Behaviors present on each camera.
+
+    Returns:
+        For ``"train"`` and ``"test"``, the behaviors they lack (empty sets
+        when both cover everything).
+    """
+    target = _covered(list(behaviors), behaviors)
+    return {
+        s: target
+        - _covered(
+            [
+                c
+                for c in split.filter(pl.col("split") == s)["camera_id"]
+                if c in behaviors
+            ],
+            behaviors,
+        )
+        for s in ("train", "test")
+    }
 
 
 def assign_folds(
@@ -267,6 +309,10 @@ def update_split(
         folds = pl.concat(
             [old_folds, pl.DataFrame(new_folds, schema=CV_FOLD_SCHEMA, orient="row")]
         )
+
+    for name, missing in coverage_gaps(split, behaviors).items():
+        if missing:
+            logger.warning("Split v%d: %s lacks %s", version, name, sorted(missing))
 
     splits_dir.mkdir(parents=True, exist_ok=True)
     split.write_parquet(split_path(splits_dir, version))

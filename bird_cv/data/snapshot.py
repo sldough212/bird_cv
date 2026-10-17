@@ -15,6 +15,7 @@ from typing import Any
 
 from bird_cv.client.get_label_studio_annotations import get_label_studio_annotations
 from bird_cv.core.manifest import new_manifest, write_manifest
+from bird_cv.data.ground_truth import annotation_results
 
 logger = logging.getLogger(__name__)
 
@@ -27,14 +28,16 @@ _REGION_CONTENT_KEYS = ("type", "from_name", "to_name", "value")
 
 
 def _canonical_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Reduce an export to sorted (video, regions) records for hashing."""
+    """Reduce an export to sorted (video, regions) records for hashing.
+
+    Only the annotation ground truth reads (the most recent non-cancelled
+    one, see :func:`bird_cv.data.ground_truth.annotation_results`) counts.
+    """
     records = []
     for task in tasks:
         regions = [
             json.dumps({k: region.get(k) for k in _REGION_CONTENT_KEYS}, sort_keys=True)
-            for annotation in task.get("annotations", [])
-            if not annotation.get("was_cancelled")
-            for region in annotation.get("result", [])
+            for region in annotation_results(task)
         ]
         records.append({"video": task["data"]["video"], "regions": sorted(regions)})
     return sorted(records, key=lambda r: (r["video"], r["regions"]))

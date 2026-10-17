@@ -1,17 +1,29 @@
 import copy
+import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import polars as pl
+import pytest
 
 from bird_cv.core.labels import BEHAVIORS, NO_BIRD
 from bird_cv.core.schemas import GROUND_TRUTH_SCHEMA
-from bird_cv.data.ground_truth import build_ground_truth
+from bird_cv.data.ground_truth import build_ground_truth, parse_detect_task
 from bird_cv.data.sampling import select_videomae_clips, select_yolo_frames
 from bird_cv.data.snapshot import annotation_hash
-from bird_cv.data.splits import cv_folds_path, split_path, update_split
+from bird_cv.data.splits import (
+    camera_behaviors,
+    coverage_gaps,
+    cv_folds_path,
+    split_path,
+    update_split,
+)
 from bird_cv.data.summary import summarize
+from bird_cv.pipelines.config import API_KEY_ENV_VAR, load_config
+from bird_cv.pipelines.prepare import run_prepare
+
+CONFIG = Path(__file__).parents[2] / "bird_cv/pipelines/configs/config.toml"
 
 URL = "/data/local-files/?d=gscratch/x/{kind}/{camera}/{video}/{cage}.mp4"
 
@@ -41,7 +53,14 @@ def detect_task(
                 kind="cage_videos", camera=camera, video=video, cage=cage
             )
         },
-        "annotations": [{"id": 1, "result": result, "updated_at": "2026-10-01"}],
+        "annotations": [
+            {
+                "id": 1,
+                "result": result,
+                "created_at": "2026-10-01",
+                "updated_at": "2026-10-01",
+            }
+        ],
         "updated_at": "2026-10-01",
     }
 
@@ -63,7 +82,7 @@ def classify_task(
                 kind="cropped_bbox_videos", camera=camera, video=video, cage=cage
             )
         },
-        "annotations": [{"id": 2, "result": result}],
+        "annotations": [{"id": 2, "result": result, "created_at": "2026-10-01"}],
     }
 
 
@@ -99,6 +118,7 @@ def test_ground_truth_chain_with_mid_video_gap() -> None:
             "0",
             [
                 ("resting", -1, 3),
+                ("preening", 3, 3),
                 ("walking___hopping", 114, 165),
                 ("head_move", 240, 245),
             ],
@@ -114,6 +134,7 @@ def test_ground_truth_chain_with_mid_video_gap() -> None:
     )
     assert all(label[f] == NO_BIRD for f in [*range(0, 45), *range(191, 219)])
     assert label[157] is None and label[45] == "resting"
+    assert label[47] is None and result.conflict_frames == 1  # resting + preening
     # crop frames -1, 0 and 242-245 fall outside the 241 boxed frames
     assert result.clipped_frames == 2 + 4
     assert result.misaligned_detect_tasks == 1
@@ -129,7 +150,7 @@ def _gt_for(cameras: dict[str, list[str]]) -> pl.DataFrame:
 
 
 def test_split_is_frozen_and_append_only(tmp_path: Path) -> None:
-    cameras = {f"c{i}": list(BEHAVIORS) for i in range(4)}
+    cameras = {f"c{i}": [b for b in BEHAVIORS if b != "flying"] for i in range(4)}
     cameras |= {f"r{i}": ["resting"] for i in range(3)}
 
     def run() -> int:
@@ -151,6 +172,9 @@ def test_split_is_frozen_and_append_only(tmp_path: Path) -> None:
         "new0",
         "new1",
     }
+    assert v2.filter(camera_id="new0")["split"].item() == "train"  # nobody had it
+    gaps = coverage_gaps(v2, camera_behaviors(_gt_for(cameras)))
+    assert gaps == {"train": set(), "test": {"flying"}}
     folds1 = pl.read_parquet(cv_folds_path(tmp_path, 1))
     assert (
         pl.read_parquet(cv_folds_path(tmp_path, 2)).head(folds1.height).equals(folds1)
@@ -209,6 +233,52 @@ def test_hash_ignores_ids_and_timestamps() -> None:
     relabeled = classify_task("c", "v", "0", [("preening", 1, 5)])
     assert annotation_hash(detect, classify) != annotation_hash(detect, [relabeled])
 
+    two = [
+        detect_task("c", "v", "0", [(1, 5), (8, 9)], n=10),
+        detect_task("c", "v", "1", [(2, 3)], n=10),
+    ]
+    reordered = copy.deepcopy(two[::-1])
+    reordered[1]["annotations"][0]["result"].reverse()
+    assert annotation_hash(two, classify) == annotation_hash(reordered, classify)
+
+
+def test_rejects_non_interpolated_detect_export() -> None:
+    task = detect_task("c", "v", "0", [(1, 1)], n=10)
+    task["annotations"][0]["result"][0]["value"]["sequence"].append(
+        {"frame": 5, "x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0}
+    )
+    with pytest.raises(ValueError, match="interpolate"):
+        parse_detect_task(task)
+
+
+def test_prepare_skips_and_recomputes_on_stride_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(API_KEY_ENV_VAR, "test")
+    detect, classify = tmp_path / "detect.json", tmp_path / "classify.json"
+    detect.write_text(json.dumps([detect_task("c", "v", "0", [(1, 20)], n=30)]))
+    classify.write_text("[]")
+
+    def prepare(extra: str = "") -> Path:
+        config = tmp_path / "config.toml"
+        lines = [
+            f'path_to_base_output = "{tmp_path / "out"}"'
+            if line.startswith("path_to_base_output")
+            else line
+            for line in CONFIG.read_text().splitlines()
+        ]
+        config.write_text("\n".join(lines) + "\n" + extra)
+        return run_prepare(
+            load_config(config), detect_export=detect, classify_export=classify
+        )
+
+    first = prepare()
+    assert prepare() == first
+    third = prepare("[prepare]\nyolo_uniform_stride = 3\n")
+    assert third != first
+    frames = pl.read_parquet(third / "yolo_frames.parquet")["frame"].to_list()
+    assert frames == list(range(0, 30, 3))
+
 
 def test_summary_counts() -> None:
     frames = pl.concat(
@@ -218,6 +288,7 @@ def test_summary_counts() -> None:
                 "a", "v1", ["resting"] * 3 + [NO_BIRD, None] + ["resting"] * 2, "train"
             ),
             gt_rows("b", "v2", ["preening", "preening", NO_BIRD], "train"),
+            gt_rows("c", "v3", [NO_BIRD, None, None], "train"),  # no Classify task
         ]
     )
     rows = {r["label"]: r for r in summarize(frames).iter_rows(named=True)}
@@ -226,8 +297,9 @@ def test_summary_counts() -> None:
     } == {
         "preening": (2, 1, 1),
         "resting": (5, 2, 1),
-        NO_BIRD: (2, 2, 2),
-        "total": (9, 5, 2),
+        NO_BIRD: (3, 3, 3),
+        "total": (10, 6, 3),
     }
     assert rows["total"]["labeling_hole_frames"] == 1
-    assert rows["resting"]["frac_of_split"] == 5 / 9
+    assert rows["total"]["unlabeled_video_frames"] == 2
+    assert rows["resting"]["frac_of_split"] == 5 / 10

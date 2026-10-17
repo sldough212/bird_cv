@@ -79,9 +79,42 @@ SPLIT_SUMMARY_SCHEMA = {
     "cameras": pl.Int64,
     "videos": pl.Int64,
     "cages": pl.Int64,
-    # Only set on "total" rows: boxed frames with no behavior label.
+    # Only set on "total" rows: boxed frames with no behavior label, in cage
+    # videos that have Classify labels.
     "labeling_hole_frames": pl.Int64,
+    # Only set on "total" rows: boxed frames in cage videos with no Classify
+    # labels at all (not yet labeled, rather than a hole).
+    "unlabeled_video_frames": pl.Int64,
 }
+
+YOLO_FRAMES_SCHEMA = {
+    "camera_id": pl.String,
+    "video_id": pl.String,
+    "cage_id": pl.String,
+    "frame": pl.Int64,
+    # Ground truth class, or null for a boxed frame with no behavior label.
+    "label": pl.String,
+    "split": pl.String,
+    # Ground truth box, as in GROUND_TRUTH_SCHEMA; null on no_bird frames.
+    "bbox_left": pl.Float64,
+    "bbox_top": pl.Float64,
+    "bbox_width": pl.Float64,
+    "bbox_height": pl.Float64,
+}
+"""Canonical cage-video frames selected for YOLO, one row per frame."""
+
+VIDEOMAE_CLIPS_SCHEMA = {
+    "camera_id": pl.String,
+    "video_id": pl.String,
+    "cage_id": pl.String,
+    "label": pl.String,
+    "split": pl.String,
+    # Inclusive canonical frames, inside one labeled stretch. Shorter than
+    # the clip length only when the stretch is; the consumer pads those.
+    "frame_begin": pl.Int64,
+    "frame_end": pl.Int64,
+}
+"""VideoMAE training clips, one row per clip."""
 
 TIMINGS_SCHEMA = {
     "camera_id": pl.String,
