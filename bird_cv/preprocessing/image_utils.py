@@ -9,6 +9,7 @@ import numpy as np
 import polars as pl
 from PIL import Image
 
+from bird_cv.inference.standardize import standardize_video
 from bird_cv.utils import extract_camera_video
 
 
@@ -266,7 +267,6 @@ def check_video_specs(
             output video (defaults to 900, i.e. 60s at 15fps).
     """
     video_extensions = {".mp4", ".avi", ".mov", ".mkv"}
-    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
     for p in videos_path.rglob("*"):
         if not (p.is_file() and p.suffix.lower() in video_extensions):
@@ -285,31 +285,6 @@ def check_video_specs(
                 print(f"{p}: duration={duration:.2f}s, fps={fps:.2f}")
 
         out_path = (output_path / p.relative_to(videos_path)).with_suffix(".mp4")
-        out_path.parent.mkdir(exist_ok=True, parents=True)
-
-        # Downsample to expected_fps (via ffmpeg's fps filter, which handles
-        # arbitrary source frame rates by frame-accurate drop/duplicate), cap
-        # the output at max_frames, and re-encode explicitly to H.264/mp4.
-        # Some source AVIs fail to reopen if left to ffmpeg's default codec
-        # for the AVI muxer, so always normalize to a known-good format
-        # (mirroring the codec choice in images_to_video above). libx264
-        # requires even dimensions, so pad odd width/height up by 1px.
-        ffmpeg_cmd = [
-            ffmpeg_exe,
-            "-y",
-            "-i",
-            str(p),
-            "-vf",
-            f"fps={expected_fps},pad=ceil(iw/2)*2:ceil(ih/2)*2",
-            "-frames:v",
-            str(max_frames),
-            "-vcodec",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-an",
-            str(out_path),
-        ]
-        result = subprocess.run(ffmpeg_cmd, capture_output=True)
+        result = standardize_video(p, out_path, fps=expected_fps, max_frames=max_frames)
         if result.returncode != 0:
             print(f"{p}: ffmpeg failed - {result.stderr.decode(errors='replace')}")
