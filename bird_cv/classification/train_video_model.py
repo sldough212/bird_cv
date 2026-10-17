@@ -132,7 +132,7 @@ def train_video_model(
     device: str = "cuda",
     freeze_encoder: bool = True,
     *,
-    selection_metric: Literal["accuracy", "macro_f1"] = "accuracy",
+    selection_metric: Literal["accuracy", "macro_f1"] = "macro_f1",
     weight_decay: float = 0.01,
     class_weighted_loss: bool = False,
     save_checkpoint: bool = True,
@@ -143,7 +143,7 @@ def train_video_model(
     Loads the train and val splits from ``clips_root``, fine-tunes a
     VideoMAE classification head (and optionally the full encoder), and
     saves the best checkpoint by validation ``selection_metric``
-    (accuracy by default).
+    (window macro-F1 by default).
 
     Args:
         clips_root: Root directory containing ``train/`` and ``val/``
@@ -162,7 +162,7 @@ def train_video_model(
         freeze_encoder: If ``True``, freeze the VideoMAE encoder and only
             train the classification head. Defaults to ``True``.
         selection_metric: Validation metric that picks the saved epoch:
-            ``"accuracy"`` (default) or window ``"macro_f1"`` (ADR 0005).
+            window ``"macro_f1"`` (default, per ADR 0005) or ``"accuracy"``.
             Either way the val split is indexed by the train split's
             labels, so a val split missing a class is scored correctly;
             val clips with labels train lacks are skipped and counted.
