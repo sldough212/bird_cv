@@ -17,7 +17,8 @@ path_to_segmentation_configs = "/gscratch/pdoughe1/segmentation_configs/configs"
 sam_model_id = "facebook/sam2.1-hiera-large"
 
 # ---- Label Studio (required) ----
-api_key = "FILL"
+# api_key is read from the LABEL_STUDIO_API_KEY environment variable.
+# A value here still works as a fallback, but never commit one.
 detect_project_name = "Detect"
 classify_project_name = "Classify"
 

@@ -24,7 +24,7 @@ class FramePrediction:
         frame: 0-indexed frame number within the video.
         label: Predicted behavior label, or ``None`` if the model made no
             prediction for this frame (e.g. no window covers it). The
-            single-video pipeline overwrites this with ``"no_detection"``
+            single-video pipeline overwrites this with ``"no_bird"``
             for frames that never had a bounding box to crop in the first
             place -- a fact the classifier itself has no way to know,
             since by the time it sees the video those frames are already

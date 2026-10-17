@@ -3,10 +3,13 @@
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from datetime import datetime
+import os
 import msgspec
 import tomllib
 
 time = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+API_KEY_ENV_VAR = "LABEL_STUDIO_API_KEY"
 
 
 @dataclass
@@ -51,6 +54,46 @@ class ClassifyConfig:
 
 
 @dataclass
+class PrepareConfig:
+    """Configuration for snapshotting, splitting and preparing training data.
+
+    Optional ``[prepare]`` TOML table; every field has a default so configs
+    written before it existed still load.
+    """
+
+    split_ratio: dict[str, float] = field(
+        default_factory=lambda: {"train": 0.70, "val": 0.15, "test": 0.15}
+    )
+    split_seed: int = 42
+    cv_folds: int = 3
+    # Every k-th frame for Detect videos that have no Classify labels yet.
+    yolo_uniform_stride: int = 5
+
+
+@dataclass
+class InferConfig:
+    """Configuration for end-to-end inference. Optional ``[infer]`` TOML table."""
+
+    chunk_frames: int = 900
+    # Frames of overlap between consecutive VideoMAE chunks.
+    chunk_overlap: int = 16
+    # Carry the last box forward through gaps of at most this many frames.
+    gap_fill_frames: int = 8
+    # Detection confidence threshold for e2e output (not Label Studio pre-labels).
+    det_conf: float = 0.25
+    crop_size: int = 224
+
+
+@dataclass
+class EvaluateConfig:
+    """Configuration for evaluation. Optional ``[evaluate]`` TOML table."""
+
+    iou_threshold: float = 0.5
+    sweep_gap_fill_frames: list[int] = field(default_factory=lambda: [0, 8, 16])
+    sweep_det_conf: list[float] = field(default_factory=lambda: [0.05, 0.25, 0.5])
+
+
+@dataclass
 class BirdCVConfig:
     # Core paths
     path_to_base_output: Path
@@ -66,6 +109,10 @@ class BirdCVConfig:
     # Sub-configs (filled from TOML then resolved here)
     detect: DetectConfig
     classify: ClassifyConfig
+    # Optional sub-configs for the new pipelines
+    prepare: PrepareConfig = field(default_factory=PrepareConfig)
+    infer: InferConfig = field(default_factory=InferConfig)
+    evaluate: EvaluateConfig = field(default_factory=EvaluateConfig)
     # Derived paths
     path_to_cage_videos: Path = field(init=False)
     path_to_bbox_videos: Path = field(init=False)
@@ -121,7 +168,12 @@ class BirdCVConfig:
         self.classify.path_to_output = self.path_to_base_output / "classify" / "output"
 
 
-def load_config(config_path: Path, config_type: type = BirdCVConfig):
+def load_config(
+    config_path: Path,
+    config_type: type = BirdCVConfig,
+    *,
+    require_api_key: bool = True,
+):
     """Load and decode a TOML config file into a typed config object.
 
     BirdCVConfig.detect and .classify are required nested dataclasses
@@ -133,6 +185,9 @@ def load_config(config_path: Path, config_type: type = BirdCVConfig):
     Args:
         config_path: Path to the TOML file.
         config_type: The top-level config class to build (BirdCVConfig).
+        require_api_key: If False (pipelines that never talk to Label
+            Studio, e.g. inference), a missing API key is allowed and left
+            empty instead of raising.
 
     Returns:
         A fully constructed config_type instance.
@@ -152,12 +207,38 @@ def load_config(config_path: Path, config_type: type = BirdCVConfig):
     classify_cfg = msgspec.convert(
         classify_data, type=ClassifyConfig, dec_hook=str_to_path
     )
+    # Optional tables for the new pipelines; absent means all defaults.
+    # Unknown keys raise, so a typo can't silently fall back to a default.
+    optional_cfgs = {}
+    for name, typ in (
+        ("prepare", PrepareConfig),
+        ("infer", InferConfig),
+        ("evaluate", EvaluateConfig),
+    ):
+        table = raw.pop(name, {})
+        unknown = set(table) - {f.name for f in fields(typ)}
+        if unknown:
+            raise ValueError(f"Unknown keys in [{name}]: {sorted(unknown)}")
+        optional_cfgs[name] = msgspec.convert(table, type=typ, dec_hook=str_to_path)
+
+    # The Label Studio key comes from the environment when set, so it never
+    # has to live in a committed TOML; a TOML value still works as a fallback.
+    env_api_key = os.environ.get(API_KEY_ENV_VAR)
+    if env_api_key:
+        raw["api_key"] = env_api_key
+    elif not raw.get("api_key") and not require_api_key:
+        raw["api_key"] = ""
+    elif not raw.get("api_key"):
+        raise ValueError(
+            f"No Label Studio API key: set {API_KEY_ENV_VAR} or api_key in {config_path}"
+        )
+
     top_level_types = {f.name: f.type for f in fields(config_type)}
     raw = {
         key: str_to_path(top_level_types.get(key), value) for key, value in raw.items()
     }
 
-    return config_type(**raw, detect=detect_cfg, classify=classify_cfg)
+    return config_type(**raw, detect=detect_cfg, classify=classify_cfg, **optional_cfgs)
 
 
 def save_config(config: msgspec.Struct, config_path: Path) -> None:
