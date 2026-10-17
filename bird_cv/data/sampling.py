@@ -1,0 +1,189 @@
+"""Balanced frame selection for YOLO and clip selection for VideoMAE.
+
+Resting is 87% of labeled frames, so train and val keep every active
+(non-resting) frame and cap resting: YOLO per cage video (resting and
+``no_bird`` at the video's most common active behavior count), VideoMAE per
+split (resting clips at the split's most common active behavior clip count).
+Test keeps everything.
+"""
+
+import polars as pl
+
+from bird_cv.core.labels import ACTIVE_BEHAVIORS, BEHAVIORS, NO_BIRD, RESTING
+from bird_cv.core.schemas import VIDEOMAE_CLIPS_SCHEMA, YOLO_FRAMES_SCHEMA
+
+CAGE = ["camera_id", "video_id", "cage_id"]
+
+
+def _active_cap(counts: pl.Expr) -> pl.Expr:
+    """Per-cage max of ``counts`` over active-behavior rows (0 if there are none)."""
+    return (
+        counts.filter(pl.col("label").is_in(ACTIVE_BEHAVIORS))
+        .max()
+        .over(CAGE)
+        .fill_null(0)
+    )
+
+
+def select_yolo_frames(frames: pl.DataFrame, stride: int, seed: int) -> pl.DataFrame:
+    """Select YOLO frames from ground truth with a ``split`` column.
+
+    Train and val, per cage video: every active-behavior frame; resting and
+    ``no_bird`` each randomly capped at the video's most common active
+    behavior count; labeling holes dropped. A cage video with no active
+    behavior (unlabeled, or resting only) gets every ``stride``-th canonical
+    frame instead, whatever its labels. Test keeps every frame.
+
+    Args:
+        frames: Ground truth rows with a ``split`` column.
+        stride: Frame stride for cage videos with no active behavior.
+        seed: Random seed for the capped samples.
+
+    Returns:
+        Selected frames in :data:`YOLO_FRAMES_SCHEMA`.
+    """
+    frames = frames.sort([*CAGE, "frame"])
+    test = frames.filter(pl.col("split") == "test")
+    fit = frames.filter(pl.col("split") != "test").with_columns(
+        active=pl.col("label").is_in(ACTIVE_BEHAVIORS).any().over(CAGE),
+        count=pl.len().over([*CAGE, "label"]),
+        rank=pl.int_range(pl.len()).shuffle(seed=seed).over([*CAGE, "label"]),
+    )
+    fit = fit.with_columns(cap=_active_cap(pl.col("count")))
+    keep = pl.when(~pl.col("active")).then(pl.col("frame") % stride == 0)
+    keep = keep.when(pl.col("label").is_in(ACTIVE_BEHAVIORS)).then(True)
+    keep = keep.when(pl.col("label").is_in([RESTING, NO_BIRD])).then(
+        pl.col("rank") < pl.col("cap")
+    )
+    selected = fit.filter(keep.otherwise(False))
+    return (
+        pl.concat(
+            [
+                selected.select(list(YOLO_FRAMES_SCHEMA)),
+                test.select(list(YOLO_FRAMES_SCHEMA)),
+            ]
+        )
+        .sort([*CAGE, "frame"])
+        .cast(YOLO_FRAMES_SCHEMA)
+    )
+
+
+def labeled_stretches(frames: pl.DataFrame) -> pl.DataFrame:
+    """Contiguous same-behavior runs of canonical frames on each cage.
+
+    Args:
+        frames: Ground truth rows with a ``split`` column.
+
+    Returns:
+        One row per stretch of a behavior (``no_bird`` and holes excluded),
+        with ``frame_begin`` and ``frame_end`` inclusive.
+    """
+    runs = frames.sort([*CAGE, "frame"]).with_columns(
+        run=(
+            (pl.col("frame").diff() != 1)
+            | pl.col("label").ne_missing(pl.col("label").shift())
+        )
+        .fill_null(True)
+        .cum_sum()
+        .over(CAGE)
+    )
+    return (
+        runs.filter(pl.col("label").is_in(BEHAVIORS))
+        .group_by([*CAGE, "run"])
+        .agg(
+            pl.col("label").first(),
+            pl.col("split").first(),
+            frame_begin=pl.col("frame").min(),
+            frame_end=pl.col("frame").max(),
+        )
+        .drop("run")
+    )
+
+
+def select_videomae_clips(
+    frames: pl.DataFrame, num_frames: int, stride: int, seed: int
+) -> pl.DataFrame:
+    """Slice labeled stretches into VideoMAE clips, capping resting in train/val.
+
+    Each stretch yields windows of ``num_frames`` starting every ``stride``
+    frames (as in :func:`bird_cv.preprocessing.annotations_to_mae.process_item`);
+    a stretch shorter than ``num_frames`` yields one clip covering it. In
+    train and val, resting clips are capped per split at the split's most
+    common active behavior's clip count, taken round-robin across cage
+    videos (each video's clips in seeded random order) so every video
+    contributes evenly.
+
+    Args:
+        frames: Ground truth rows with a ``split`` column.
+        num_frames: Frames per clip.
+        stride: Frames between consecutive clip starts.
+        seed: Random seed for the resting cap.
+
+    Returns:
+        Selected clips in :data:`VIDEOMAE_CLIPS_SCHEMA`.
+    """
+    clips = (
+        labeled_stretches(frames)
+        .with_columns(
+            frame_begin=pl.int_ranges(
+                pl.col("frame_begin"),
+                pl.max_horizontal(
+                    pl.col("frame_end") - num_frames + 2, pl.col("frame_begin") + 1
+                ),
+                stride,
+            )
+        )
+        .explode("frame_begin")
+        .with_columns(
+            frame_end=pl.min_horizontal(
+                pl.col("frame_begin") + num_frames - 1, pl.col("frame_end")
+            )
+        )
+        .sort([*CAGE, "frame_begin"])
+        .with_columns(
+            rank=pl.int_range(pl.len()).shuffle(seed=seed).over([*CAGE, "label"])
+        )
+    )
+    capped = (pl.col("label") == RESTING) & (pl.col("split") != "test")
+    caps = (
+        clips.filter(pl.col("label").is_in(ACTIVE_BEHAVIORS))
+        .group_by("split", "label")
+        .len()
+        .group_by("split")
+        .agg(cap=pl.col("len").max())
+    )
+    resting = (
+        clips.filter(capped)
+        .join(caps, on="split", how="left")
+        .with_columns(pl.col("cap").fill_null(0))
+        .sort(["split", "rank", *CAGE])
+        .filter(pl.int_range(pl.len()).over("split") < pl.col("cap"))
+    )
+    return (
+        pl.concat(
+            [
+                clips.filter(~capped).select(list(VIDEOMAE_CLIPS_SCHEMA)),
+                resting.select(list(VIDEOMAE_CLIPS_SCHEMA)),
+            ]
+        )
+        .sort([*CAGE, "frame_begin"])
+        .cast(VIDEOMAE_CLIPS_SCHEMA)
+    )
+
+
+def clip_frames(clips: pl.DataFrame) -> pl.DataFrame:
+    """Unique canonical frames covered by clips, with their label and split.
+
+    Args:
+        clips: Clips in :data:`~bird_cv.core.schemas.VIDEOMAE_CLIPS_SCHEMA`.
+
+    Returns:
+        One row per covered (cage, frame) with ``label`` and ``split``, for
+        summarizing clip selections like frame selections.
+    """
+    return (
+        clips.with_columns(frame=pl.int_ranges("frame_begin", pl.col("frame_end") + 1))
+        .explode("frame")
+        .select(*CAGE, "frame", "label", "split")
+        .unique()
+    )
