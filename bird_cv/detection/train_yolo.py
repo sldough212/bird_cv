@@ -97,14 +97,6 @@ def train_yolo(
     return model.train(**shared_kwargs)
 
 
-# Ultralytics args that describe where/what a run trains, not how; dropped
-# when reusing a selected run's hyperparameters on another dataset.
-RUN_SPECIFIC_ARGS = frozenset(
-    {"data", "project", "name", "device", "model", "save_dir", "resume"}
-    | {"exist_ok", "mode", "task", "source", "tracker", "pretrained"}
-)
-
-
 def write_dataset_yaml(dataset_root: Path, path: Path) -> Path:
     """Write an Ultralytics dataset YAML for a ``train``/``val`` dataset root.
 
@@ -128,6 +120,20 @@ def write_dataset_yaml(dataset_root: Path, path: Path) -> Path:
     return path
 
 
+def _trial_hyperparameters(results: "ResultGrid", run_name: str) -> dict[str, dict]:
+    """Sampled hyperparameters per tuning run directory name.
+
+    Ultralytics names each trial's run ``{run_name}_{last part of trial id}``
+    and adds ``data`` to every config; that key is dropped.
+    """
+    by_run = {}
+    for result in results:
+        suffix = Path(result.path).name.split("_")[-1]
+        config = {k: v for k, v in (result.config or {}).items() if k != "data"}
+        by_run[f"{run_name}_{suffix}"] = config
+    return by_run
+
+
 def train_select_yolo(
     dataset_root: Path,
     run_dir: Path,
@@ -140,6 +146,8 @@ def train_select_yolo(
     hyperparameters: dict[str, Any] | None = None,
     select_conf: float = 0.25,
     iou_threshold: float = 0.5,
+    search_space: dict[str, Any] | None = None,
+    tune_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Train (or Ray-tune) YOLO from generic weights and select on val presence F1.
 
@@ -150,12 +158,12 @@ def train_select_yolo(
     ``best.pt`` is scored with
     :func:`bird_cv.detection.evaluate_yolo.yolo_presence_metrics` on the
     val split, and the highest presence F1 wins. The winner is copied to
-    ``run_dir/best.pt`` and its training arguments, minus
-    :data:`RUN_SPECIFIC_ARGS`, go to ``run_dir/best_hyperparameters.json``
-    so cross-validation folds can retrain with the same hyperparameters.
-    Every run's scores go to ``run_dir/selection.parquet``, with
-    ``within_run_selection`` and ``between_run_selection`` columns that
-    record both criteria.
+    ``run_dir/best.pt`` and its hyperparameters (the tuned values sampled
+    for that trial, or the fixed ``hyperparameters`` given) go to
+    ``run_dir/best_hyperparameters.json`` so cross-validation folds can
+    retrain with the same hyperparameters. Every run's scores go to
+    ``run_dir/selection.parquet``, with ``within_run_selection`` and
+    ``between_run_selection`` columns that record both criteria.
 
     Args:
         dataset_root: YOLO dataset root with ``train`` and ``val`` splits.
@@ -172,10 +180,14 @@ def train_select_yolo(
             ``epochs``.
         select_conf: Detection confidence used when scoring candidates.
         iou_threshold: Minimum IoU for a presence hit.
+        search_space: Ray Tune search space for tuning; ``None`` or empty
+            uses Ultralytics' default space.
+        tune_options: Extra Ultralytics ``run_ray_tune`` arguments (e.g.
+            ``grace_period``).
 
     Returns:
-        ``best_checkpoint``, ``candidate`` (run directory name) and the
-        best candidate's val presence metrics.
+        ``best_checkpoint``, ``candidate`` (run directory name),
+        ``hyperparameters`` and the best candidate's val presence metrics.
 
     Raises:
         ValueError: If ``tune`` and ``hyperparameters`` are both given, or
@@ -191,7 +203,7 @@ def train_select_yolo(
         )
 
     model_config = write_dataset_yaml(dataset_root, run_dir / "model_config.yaml")
-    train_yolo(
+    outcome = train_yolo(
         output_root=run_dir,
         output_name=run_name,
         model_config=str(model_config),
@@ -200,7 +212,8 @@ def train_select_yolo(
         tune=tune,
         iterations=iterations,
         frozen_parameters={"epochs": epochs} | (hyperparameters or {}),
-        tune_kwargs={"gpu_per_trial": 1},
+        tune_kwargs={"gpu_per_trial": 1, "space": search_space or {}}
+        | (tune_options or {}),
     )
 
     rows = []
@@ -231,14 +244,23 @@ def train_select_yolo(
     best = selection.row(0, named=True)
 
     shutil.copy2(best["checkpoint"], run_dir / "best.pt")
-    with (Path(best["checkpoint"]).parents[1] / "args.yaml").open() as f:
-        args = yaml.safe_load(f)
-    best_hyperparameters = {k: v for k, v in args.items() if k not in RUN_SPECIFIC_ARGS}
+    if tune:
+        trials = _trial_hyperparameters(outcome, run_name)  # type: ignore[arg-type]
+        if best["candidate"] not in trials:
+            raise RuntimeError(
+                f"No tuning config found for {best['candidate']}; known: {sorted(trials)}"
+            )
+        best_hyperparameters = trials[best["candidate"]]
+    else:
+        best_hyperparameters = dict(hyperparameters or {})
     (run_dir / "best_hyperparameters.json").write_text(
-        json.dumps(best_hyperparameters, indent=2)
+        json.dumps(best_hyperparameters, indent=2, default=float)
     )
     print(f"Selected {best['candidate']} (val presence F1={best['f1']:.4f})")
-    return best | {"best_checkpoint": str(run_dir / "best.pt")}
+    return best | {
+        "best_checkpoint": str(run_dir / "best.pt"),
+        "hyperparameters": best_hyperparameters,
+    }
 
 
 def update_train_yolo(

@@ -109,30 +109,119 @@ class EvaluateConfig:
 
 
 @dataclass
-class TrainConfig:
-    """Training from generic pretrained weights (ADR 0004). Optional ``[train]`` table."""
+class ModelSpec:
+    """Which model fills a pipeline role and how to train it.
 
-    # Paths are relative to path_to_base_output unless absolute.
-    # YOLO dataset root (images/{train,val}, labels/{train,val}); CV folds
-    # read {yolo_dataset}/fold{k}.
-    yolo_dataset: Path = Path("datasets/yolo")
-    # VideoMAE clip root ({train,val}/{label}/{clip}/); CV folds read
-    # {mae_clips}/fold{k}.
-    mae_clips: Path = Path("datasets/videomae_clips")
+    ``kind`` picks the trainer in ``bird_cv.training.registry``; nothing
+    else in the pipelines names a model. A ``[train.detector]`` or
+    ``[train.classifier]`` table overrides only the keys it sets.
+
+    Attributes:
+        kind: Registry key, e.g. ``"yolo"`` or ``"videomae"``.
+        pretrained: Generic pretrained weights to start from (ADR 0004).
+        dataset: Training data root, relative to ``path_to_base_output``
+            unless absolute; CV folds read ``{dataset}/fold{k}``.
+        epochs: Epochs per training run or tuning trial.
+        tune: Tune hyperparameters on the frozen split before training.
+        tune_trials: Number of tuning trials.
+        search_space: Parameter name to distribution spec, e.g.
+            ``{type = "loguniform", lower = 1e-5, upper = 1e-3}`` or
+            ``{type = "choice", values = [true, false]}`` (types:
+            ``uniform``, ``loguniform``, ``choice``, ``randint``). Names are
+            the trainer's training arguments. Empty means the trainer's
+            own default space, if it has one.
+        options: Kind-specific training options (e.g. ``batch_size``).
+    """
+
+    kind: str
+    pretrained: str
+    dataset: Path
+    epochs: int = 10
+    tune: bool = True
+    tune_trials: int = 20
+    search_space: dict[str, dict] = field(default_factory=dict)
+    options: dict = field(default_factory=dict)
+
+
+@dataclass
+class TrainConfig:
+    """Training from generic pretrained weights (ADR 0004). Optional ``[train]`` table.
+
+    Holds one :class:`ModelSpec` per role, as the optional tables
+    ``[train.detector]`` and ``[train.classifier]``.
+    """
+
+    # Relative to path_to_base_output unless absolute; runs go to
+    # {output}/{role}/{run_id}.
     output: Path = Path("train")
     device: int = 0
-    yolo_pretrained: str = "yolo11n.pt"
-    yolo_epochs: int = 60
-    yolo_tune: bool = True
-    yolo_tune_iterations: int = 30
-    mae_pretrained: str = "MCG-NJU/videomae-base"
-    mae_num_frames: int = 16
-    mae_epochs: int = 10
-    mae_batch_size: int = 8
-    mae_tune: bool = True
-    mae_tune_trials: int = 20
-    mae_tune_grace_period: int = 2
-    mae_cpus_per_trial: int = 8
+    detector: ModelSpec = field(
+        default_factory=lambda: ModelSpec(
+            kind="yolo",
+            pretrained="yolo11n.pt",
+            # images/{train,val}, labels/{train,val}
+            dataset=Path("datasets/yolo"),
+            epochs=60,
+            tune_trials=30,
+            # Empty: Ultralytics' default Ray Tune space.
+            search_space={},
+        )
+    )
+    classifier: ModelSpec = field(
+        default_factory=lambda: ModelSpec(
+            kind="videomae",
+            pretrained="MCG-NJU/videomae-base",
+            # {train,val}/{label}/{clip}/
+            dataset=Path("datasets/videomae_clips"),
+            epochs=10,
+            tune_trials=20,
+            search_space={
+                "lr": {"type": "loguniform", "lower": 1e-5, "upper": 1e-3},
+                "freeze_encoder": {"type": "choice", "values": [True, False]},
+                "weight_decay": {"type": "loguniform", "lower": 1e-4, "upper": 1e-1},
+                "class_weighted_loss": {"type": "choice", "values": [True, False]},
+            },
+            options={
+                "num_frames": 16,
+                "batch_size": 8,
+                "cpus_per_trial": 8,
+                "grace_period": 2,
+            },
+        )
+    )
+
+    def roles(self) -> dict[str, ModelSpec]:
+        """Every role (a :class:`ModelSpec` field), by name."""
+        return {
+            f.name: getattr(self, f.name)
+            for f in fields(self)
+            if isinstance(getattr(self, f.name), ModelSpec)
+        }
+
+
+def _convert_train_config(table: dict, dec_hook) -> TrainConfig:
+    """Build :class:`TrainConfig`, merging role tables onto their defaults.
+
+    Raises:
+        ValueError: On unknown keys in ``[train]`` or a role table.
+    """
+    defaults = TrainConfig()
+    known = {f.name for f in fields(TrainConfig)}
+    unknown = set(table) - known
+    if unknown:
+        raise ValueError(f"Unknown keys in [train]: {sorted(unknown)}")
+    spec_keys = {f.name for f in fields(ModelSpec)}
+    merged = dict(table)
+    for role in ("detector", "classifier"):
+        role_table = table.get(role, {})
+        unknown = set(role_table) - spec_keys
+        if unknown:
+            raise ValueError(f"Unknown keys in [train.{role}]: {sorted(unknown)}")
+        default_spec = msgspec.to_builtins(
+            getattr(defaults, role), enc_hook=lambda p: str(p)
+        )
+        merged[role] = default_spec | role_table
+    return msgspec.convert(merged, type=TrainConfig, dec_hook=dec_hook)
 
 
 @dataclass
@@ -257,13 +346,16 @@ def load_config(
         ("prepare", PrepareConfig),
         ("infer", InferConfig),
         ("evaluate", EvaluateConfig),
-        ("train", TrainConfig),
     ):
         table = raw.pop(name, {})
         unknown = set(table) - {f.name for f in fields(typ)}
         if unknown:
             raise ValueError(f"Unknown keys in [{name}]: {sorted(unknown)}")
         optional_cfgs[name] = msgspec.convert(table, type=typ, dec_hook=str_to_path)
+    # [train] nests per-role tables merged onto role defaults (same check).
+    optional_cfgs["train"] = _convert_train_config(
+        raw.pop("train", {}), dec_hook=str_to_path
+    )
 
     # The Label Studio key comes from the environment when set, so it never
     # has to live in a committed TOML; a TOML value still works as a fallback.

@@ -48,3 +48,40 @@ batch_size = 8
 lr = 1e-4
 device = "cuda"
 freeze_encoder = true
+
+
+# ---- Training from generic weights (optional; defaults shown) ----
+# Each role table picks a model by `kind` (see bird_cv/training/registry.py)
+# and overrides only the keys it sets. Paths are relative to
+# path_to_base_output unless absolute.
+#
+# [train]
+# output = "train"
+# device = 0
+#
+# [train.detector]
+# kind = "yolo"
+# pretrained = "yolo11n.pt"
+# dataset = "datasets/yolo"
+# epochs = 60
+# tune = true
+# tune_trials = 30
+# # Empty means Ultralytics' default Ray Tune space.
+# search_space = {}
+# # e.g. options = { grace_period = 10 }
+# options = {}
+#
+# [train.classifier]
+# kind = "videomae"
+# pretrained = "MCG-NJU/videomae-base"
+# dataset = "datasets/videomae_clips"
+# epochs = 10
+# tune = true
+# tune_trials = 20
+# options = { num_frames = 16, batch_size = 8, cpus_per_trial = 8, grace_period = 2 }
+#
+# [train.classifier.search_space]
+# lr = { type = "loguniform", lower = 1e-5, upper = 1e-3 }
+# freeze_encoder = { type = "choice", values = [true, false] }
+# weight_decay = { type = "loguniform", lower = 1e-4, upper = 1e-1 }
+# class_weighted_loss = { type = "choice", values = [true, false] }

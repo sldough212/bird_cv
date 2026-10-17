@@ -9,13 +9,15 @@ Modes:
 - ``test``: frozen-split test cameras, predictions from ``{predictions}/test/``.
 - ``cv``: 3-fold camera CV, predictions from ``{predictions}/cv/fold{k}/``;
   pooled, per-camera and per-fold results.
-- ``windows``: VideoMAE window macro-F1 on the val and test clips of
-  ``[train] mae_clips`` for ``--mae-model``.
+- ``model``: one role's model-level metrics (e.g. window macro-F1 for a
+  clip classifier, presence F1 for a detector) on the val and test splits
+  of its ``[train.{role}] dataset``, for ``--role`` and ``--checkpoint``.
 
 Usage::
 
-    python bird_cv/pipelines/evaluate.py CONFIG {sweep,test,cv,windows} \\
-        [--run-id ID] [--mae-model DIR]
+    python bird_cv/pipelines/evaluate.py CONFIG {sweep,test,cv} [--run-id ID]
+    python bird_cv/pipelines/evaluate.py CONFIG model --role ROLE \\
+        --checkpoint PATH [--run-id ID]
 """
 
 import argparse
@@ -39,18 +41,26 @@ from bird_cv.evaluation.e2e import (
 )
 from bird_cv.pipelines.config import BirdCVConfig, load_config, resolve_run_dir
 
-MODES = ("sweep", "test", "cv", "windows")
 
+def latest_split(
+    splits_dir: Path, pattern: str = r"^split_v(\d+)\.parquet$"
+) -> tuple[pl.DataFrame, int]:
+    """The highest-numbered split file in ``splits_dir`` and its version.
 
-SPLIT_FILE_RE = re.compile(r"^split_v(\d+)\.parquet$")
+    Args:
+        splits_dir: Directory of split files.
+        pattern: File-name regex whose first group is the version number.
 
+    Returns:
+        The split (``SPLIT_SCHEMA``) and its version.
 
-def latest_split(splits_dir: Path) -> tuple[pl.DataFrame, int]:
-    """The highest-numbered ``split_v{n}.parquet`` in ``splits_dir`` and its ``n``."""
+    Raises:
+        FileNotFoundError: If no file matches.
+    """
     versions = {
         int(m.group(1)): p
         for p in splits_dir.iterdir()
-        if (m := SPLIT_FILE_RE.match(p.name))
+        if (m := re.match(pattern, p.name))
     }
     if not versions:
         raise FileNotFoundError(f"No split_v{{n}}.parquet in {splits_dir}")
@@ -70,16 +80,18 @@ def run_evaluate(
     cfg: BirdCVConfig,
     mode: str,
     run_id: str | None = None,
-    mae_model: Path | None = None,
+    role: str | None = None,
+    checkpoint: Path | None = None,
 ) -> Path:
     """Run one evaluation mode and write its outputs and manifest.
 
     Args:
         cfg: Pipeline config; uses ``[evaluate]`` (and ``[train]`` for
-            ``windows``).
-        mode: One of :data:`MODES`.
+            ``model``).
+        mode: ``"sweep"``, ``"test"``, ``"cv"`` or ``"model"``.
         run_id: Fixed output directory name; timestamped if ``None``.
-        mae_model: VideoMAE checkpoint directory, for ``windows``.
+        role: A ``[train]`` role, for ``model``.
+        checkpoint: That role's checkpoint, for ``model``.
 
     Returns:
         The output directory.
@@ -91,30 +103,31 @@ def run_evaluate(
     inputs: dict[str, str] = {}
     split_version = None
 
-    if mode == "windows":
-        from bird_cv.classification.evaluate_video_model import evaluate_video_model
+    if mode == "model":
+        from bird_cv.training.registry import TrainContext, get_trainer
 
-        if mae_model is None:
-            raise ValueError("windows mode needs --mae-model")
-        clips = base / cfg.train.mae_clips
-        scores = {}
-        for split_name in ("val", "test"):
-            window_result = evaluate_video_model(
-                clips_root=clips,
-                model_path=mae_model,
-                output_path=out / split_name,
-                num_frames=cfg.train.mae_num_frames,
-                split=split_name,
-                window_macro_f1=True,
+        if role is None or checkpoint is None:
+            raise ValueError("model mode needs --role and --checkpoint")
+        spec = cfg.train.roles()[role]
+        dataset = base / spec.dataset
+        context = TrainContext(
+            device=cfg.train.device,
+            select_conf=cfg.infer.det_conf,
+            iou_threshold=ev.iou_threshold,
+        )
+        scores = {
+            split_name: get_trainer(spec.kind).evaluate(
+                checkpoint, spec, dataset, split_name, out / split_name, context
             )
-            scores[split_name] = {
-                "macro_f1": window_result["macro_f1"],
-                "n_skipped_out_of_vocabulary": window_result[
-                    "n_skipped_out_of_vocabulary"
-                ],
-            }
-        (out / "window_macro_f1.json").write_text(json.dumps(scores, indent=2))
-        inputs = {"clips": str(clips), "model": str(mae_model)}
+            for split_name in ("val", "test")
+        }
+        print(json.dumps(scores, indent=2, default=float))
+        (out / "model_metrics.json").write_text(
+            json.dumps(
+                {"role": role, "kind": spec.kind} | scores, indent=2, default=float
+            )
+        )
+        inputs = {"dataset": str(dataset), "checkpoint": str(checkpoint)}
     else:
         truth_path = base / ev.ground_truth
         truth = load_ground_truth(truth_path)
@@ -186,9 +199,9 @@ def run_evaluate(
                         ),
                         "tuning_and_sweep_split_version": split_version,
                         "note": (
-                            "Hyperparameters (YOLO, VideoMAE) and the gap-fill/"
-                            "det_conf sweep were selected on the frozen split's "
-                            "val cameras; every fold reuses them."
+                            "Model hyperparameters and the gap-fill/det_conf "
+                            "sweep were selected on the frozen split's val "
+                            "cameras; every fold reuses them."
                         ),
                     },
                     indent=2,
@@ -200,7 +213,7 @@ def run_evaluate(
                 "predictions": str(predictions_root / "cv"),
             }
         else:
-            raise ValueError(f"Unknown mode {mode!r}; expected one of {MODES}")
+            raise ValueError(f"Unknown mode {mode!r}")
 
     write_manifest(
         new_manifest(
@@ -217,16 +230,18 @@ def run_evaluate(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("config_path", type=Path, help="Path to the TOML config")
-    parser.add_argument("mode", choices=MODES)
+    parser.add_argument("mode", choices=("sweep", "test", "cv", "model"))
     parser.add_argument("--run-id", default=None, help="Output directory name")
-    parser.add_argument("--mae-model", type=Path, default=None)
+    parser.add_argument("--role", default=None, help="[train] role, for model")
+    parser.add_argument("--checkpoint", type=Path, default=None)
     args = parser.parse_args()
 
     out = run_evaluate(
         load_config(args.config_path, require_api_key=False),
         args.mode,
         args.run_id,
-        args.mae_model,
+        args.role,
+        args.checkpoint,
     )
     print(f"Done: {out}")
 

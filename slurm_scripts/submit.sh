@@ -3,7 +3,9 @@
 #
 #   bash slurm_scripts/submit.sh [--smoke]
 #
-# --smoke (or SMOKE=1) runs 2 tuning trials and 2 epochs per model, for a
+# Trains every [train] role (detector, classifier) with the model its config
+# table names, then scores each role's model on val/test.
+# --smoke (or SMOKE=1) runs 2 tuning trials and 2 epochs per role, for a
 # first cluster run; it is a smoke test, never report its scores.
 # Override CONFIG or RUN_ID in the environment. Output paths come from the
 # config ([train] output, path_to_base_output) and are printed below.
@@ -30,23 +32,27 @@ eval "$PATHS"
 echo "RUN_ID=$RUN_ID CONFIG=$CONFIG SMOKE=$SMOKE"
 echo "$PATHS"
 
-yolo=$(sbatch --parsable slurm_scripts/run_train_yolo.sh "${TRAIN_ARGS[@]}")
-mae=$(sbatch --parsable slurm_scripts/run_train_mae.sh "${TRAIN_ARGS[@]}")
-echo "train_yolo=$yolo train_mae=$mae"
+GPU=(--gres=gpu:1 --partition=mb-l40s,mb-a30,mb-h100,mb-a6000,mb-r6000)
+TRAIN_JOBS=()
+for role in detector classifier; do
+    job=$(sbatch --parsable slurm_scripts/run_train.sh "$role" "${TRAIN_ARGS[@]}")
+    best_var="${role^^}_BEST"
+    eval_job=$(sbatch --parsable --dependency=afterok:$job "${GPU[@]}" \
+        slurm_scripts/run_evaluate.sh model --role "$role" \
+        --checkpoint "${!best_var}" --run-id "${RUN_ID}_${role}")
+    echo "train_${role}=$job evaluate_${role}=$eval_job"
+    TRAIN_JOBS+=("$job")
+done
 
-windows=$(sbatch --parsable --dependency=afterok:$mae \
-    --gres=gpu:1 --partition=mb-l40s,mb-a30,mb-h100,mb-a6000,mb-r6000 \
-    slurm_scripts/run_evaluate.sh windows --run-id "$RUN_ID" --mae-model "$MAE_BEST")
-echo "evaluate_windows=$windows"
-
-# End-to-end evaluation needs predictions from the inference pipeline (#39)
-# under {path_to_base_output}/predictions/{val_sweep/gap{g}_conf{c},test}/,
-# made with $YOLO_BEST and $MAE_BEST.
-# TODO(#39): once its CLI is merged, submit val-sweep inference with
-# --dependency=afterok:$yolo:$mae, then
+# End-to-end evaluation needs predictions from the inference pipeline under
+# {path_to_base_output}/predictions/{val_sweep/gap{g}_conf{c},test}/, made
+# with $DETECTOR_BEST and $CLASSIFIER_BEST.
+# TODO(integration): run_infer_array.sh reads models and gap-fill settings
+# from the config only; once it can take them per run, submit val-sweep
+# inference with --dependency=afterok:$(IFS=:; echo "${TRAIN_JOBS[*]}"), then
 #   sbatch --dependency=afterok:$infer_val slurm_scripts/run_evaluate.sh sweep --run-id "$RUN_ID"
 # then test inference with best_setting.json, then
 #   sbatch --dependency=afterok:$infer_test slurm_scripts/run_evaluate.sh test --run-id "$RUN_ID"
-echo "Inference (#39) is not chained yet; after predictions exist run:"
+echo "Inference is not chained yet; after predictions exist run:"
 echo "  sbatch slurm_scripts/run_evaluate.sh sweep --run-id $RUN_ID"
 echo "  sbatch slurm_scripts/run_evaluate.sh test --run-id $RUN_ID"

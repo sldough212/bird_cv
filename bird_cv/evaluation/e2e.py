@@ -19,15 +19,13 @@ import polars as pl
 
 from bird_cv.core.schemas import GROUND_TRUTH_SCHEMA, KEY_COLUMNS, PREDICTION_SCHEMA
 from bird_cv.evaluation.metrics import (
-    BOX_COLUMNS,
+    box_columns,
     ClassificationMetrics,
     detection_presence_metrics,
     frame_metrics,
     mot_metrics,
     per_camera_frame_metrics,
 )
-
-PRED_PREFIX = "pred_"
 
 
 def load_predictions(
@@ -80,16 +78,19 @@ def load_ground_truth(path: Path) -> pl.DataFrame:
     )
 
 
-def join_predictions(truth: pl.DataFrame, pred: pl.DataFrame) -> pl.DataFrame:
+def join_predictions(
+    truth: pl.DataFrame, pred: pl.DataFrame, prefix: str = "pred_"
+) -> pl.DataFrame:
     """Left-join predictions onto ground truth on ``KEY_COLUMNS``.
 
     Args:
         truth: ``GROUND_TRUTH_SCHEMA`` rows; these define the scored frames.
         pred: ``PREDICTION_SCHEMA`` rows.
+        prefix: Prefix for prediction columns. Defaults to ``"pred_"``.
 
     Returns:
-        ``truth`` plus every prediction column prefixed ``pred_`` (null
-        where a frame has no prediction).
+        ``truth`` plus every prediction column prefixed with ``prefix``
+        (null where a frame has no prediction).
 
     Raises:
         ValueError: If ``pred`` has more than one row per key.
@@ -97,7 +98,7 @@ def join_predictions(truth: pl.DataFrame, pred: pl.DataFrame) -> pl.DataFrame:
     if pred.select(KEY_COLUMNS).is_duplicated().any():
         raise ValueError("Predictions have duplicate rows for some KEY_COLUMNS")
     renamed = pred.rename(
-        {c: f"{PRED_PREFIX}{c}" for c in pred.columns if c not in KEY_COLUMNS}
+        {c: f"{prefix}{c}" for c in pred.columns if c not in KEY_COLUMNS}
     )
     return truth.join(renamed, on=list(KEY_COLUMNS), how="left")
 
@@ -155,18 +156,20 @@ def evaluate_e2e(
     Returns:
         The scores, see :class:`E2EResult`.
     """
-    joined = join_predictions(truth, pred)
+    prefix = "pred_"
+    joined = join_predictions(truth, pred, prefix=prefix)
     pred_boxes = joined.select(
-        *KEY_COLUMNS, *[pl.col(f"{PRED_PREFIX}{c}").alias(c) for c in BOX_COLUMNS]
+        *KEY_COLUMNS, *[pl.col(f"{prefix}{c}").alias(c) for c in box_columns()]
     )
+    pred_label = f"{prefix}label"
     return E2EResult(
-        frame=frame_metrics(joined, pred_col=f"{PRED_PREFIX}label"),
-        per_camera=per_camera_frame_metrics(joined, pred_col=f"{PRED_PREFIX}label"),
+        frame=frame_metrics(joined, pred_col=pred_label),
+        per_camera=per_camera_frame_metrics(joined, pred_col=pred_label),
         detection=detection_presence_metrics(
             truth, pred_boxes, iou_threshold=iou_threshold
         ),
         mot=mot_metrics(truth, pred_boxes) if with_mot else pl.DataFrame(),
-        n_frames_without_prediction=int(joined[f"{PRED_PREFIX}label"].null_count()),
+        n_frames_without_prediction=int(joined[pred_label].null_count()),
     )
 
 

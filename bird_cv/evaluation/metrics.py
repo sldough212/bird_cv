@@ -19,11 +19,13 @@ from bird_cv.core.labels import CLASSES
 from bird_cv.core.schemas import KEY_COLUMNS
 from bird_cv.detection.mot_evaluate import compute_mot_metrics
 
-BOX_COLUMNS = ("bbox_left", "bbox_top", "bbox_width", "bbox_height")
-"""Normalized top-left + size box columns, as in ``PREDICTION_SCHEMA``.
-A null ``bbox_left`` means no box on that frame."""
 
-CAGE_COLUMNS = ("camera_id", "video_id", "cage_id")
+def box_columns() -> tuple[str, ...]:
+    """Normalized top-left + size box columns, as in the core schemas.
+
+    A null ``bbox_left`` means no box on that frame.
+    """
+    return ("bbox_left", "bbox_top", "bbox_width", "bbox_height")
 
 
 @dataclass(frozen=True)
@@ -243,7 +245,7 @@ def box_iou(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 def _with_presence(df: pl.DataFrame, on: Sequence[str], prefix: str) -> pl.DataFrame:
     return df.select(
-        *on, *[pl.col(c).alias(f"{prefix}{c}") for c in BOX_COLUMNS]
+        *on, *[pl.col(c).alias(f"{prefix}{c}") for c in box_columns()]
     ).unique(subset=list(on), keep="first")
 
 
@@ -262,7 +264,7 @@ def detection_presence_metrics(
     ``pred`` has no predicted box.
 
     Args:
-        truth: ``on`` columns plus :data:`BOX_COLUMNS`; null ``bbox_left``
+        truth: ``on`` columns plus :func:`box_columns`; null ``bbox_left``
             means no bird.
         pred: Same columns for the predictions.
         iou_threshold: Minimum IoU for a hit. Defaults to 0.5.
@@ -279,8 +281,8 @@ def detection_presence_metrics(
     has_p = joined["p_bbox_left"].is_not_null().to_numpy()
     both = has_t & has_p
 
-    t_boxes = joined.select([f"t_{c}" for c in BOX_COLUMNS]).to_numpy()[both]
-    p_boxes = joined.select([f"p_{c}" for c in BOX_COLUMNS]).to_numpy()[both]
+    t_boxes = joined.select([f"t_{c}" for c in box_columns()]).to_numpy()[both]
+    p_boxes = joined.select([f"p_{c}" for c in box_columns()]).to_numpy()[both]
     ious = box_iou(t_boxes.astype(float), p_boxes.astype(float))
     hit = ious >= iou_threshold
 
@@ -312,7 +314,7 @@ def _to_mot(df: pl.DataFrame, frame_offset: int, track_id: int) -> np.ndarray:
     out = np.full((n, 10), -1.0)
     out[:, 0] = boxed["frame"].to_numpy() + frame_offset
     out[:, 1] = track_id
-    out[:, 2:6] = boxed.select(BOX_COLUMNS).to_numpy()
+    out[:, 2:6] = boxed.select(box_columns()).to_numpy()
     out[:, 6] = 1.0
     return out
 
@@ -328,7 +330,7 @@ def mot_metrics(truth: pl.DataFrame, pred: pl.DataFrame) -> pl.DataFrame:
     pooled counts rather than an average of per-cage ratios.
 
     Args:
-        truth: ``KEY_COLUMNS`` plus :data:`BOX_COLUMNS`; null ``bbox_left``
+        truth: ``KEY_COLUMNS`` plus :func:`box_columns`; null ``bbox_left``
             means no bird.
         pred: Same columns for the predictions.
 
@@ -336,7 +338,8 @@ def mot_metrics(truth: pl.DataFrame, pred: pl.DataFrame) -> pl.DataFrame:
         One row per cage plus the pooled row: ``camera_id``, ``video_id``,
         ``cage_id`` and one column per metric.
     """
-    cages = truth.select(CAGE_COLUMNS).unique().sort(CAGE_COLUMNS).rows()
+    cage_columns = ["camera_id", "video_id", "cage_id"]
+    cages = truth.select(cage_columns).unique().sort(cage_columns).rows()
     records = []
     gt_all, pred_all = [], []
     offset = 0

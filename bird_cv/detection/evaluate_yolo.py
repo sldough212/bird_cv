@@ -3,7 +3,7 @@ from pathlib import Path
 import polars as pl
 from ultralytics import YOLO
 
-from bird_cv.evaluation.metrics import BOX_COLUMNS, detection_presence_metrics
+from bird_cv.evaluation.metrics import box_columns, detection_presence_metrics
 
 TRACKER_CONFIG = Path(__file__).parent / "tracker.yaml"
 
@@ -89,10 +89,10 @@ def _yolo_label_box(label_file: Path) -> tuple[float, ...] | None:
 
 def _boxes_frame(rows: list[tuple[str, tuple[float, ...] | None]]) -> pl.DataFrame:
     data: dict[str, list] = {"image": [r[0] for r in rows]}
-    for i, col in enumerate(BOX_COLUMNS):
+    for i, col in enumerate(box_columns()):
         data[col] = [r[1][i] if r[1] else None for r in rows]
     return pl.DataFrame(
-        data, schema={"image": pl.String} | {c: pl.Float64 for c in BOX_COLUMNS}
+        data, schema={"image": pl.String} | {c: pl.Float64 for c in box_columns()}
     )
 
 
@@ -124,7 +124,7 @@ def yolo_split_boxes(
     Returns:
         ``(truth, pred)``: one row per image keyed by ``image`` (path
         relative to the split directory) with
-        :data:`bird_cv.evaluation.metrics.BOX_COLUMNS`, null when no box.
+        :func:`bird_cv.evaluation.metrics.box_columns`, null when no box.
     """
     images_dir = dataset_root / "images" / split
     labels_dir = dataset_root / "labels" / split

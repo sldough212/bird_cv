@@ -20,8 +20,6 @@ from transformers import (
 from bird_cv.evaluation.metrics import window_macro_f1
 from bird_cv.pipelines.config import resolve_run_dir
 
-SelectionMetric = Literal["accuracy", "macro_f1"]
-
 
 class Paths(msgspec.Struct):
     base_path: Path
@@ -134,7 +132,7 @@ def train_video_model(
     device: str = "cuda",
     freeze_encoder: bool = True,
     *,
-    selection_metric: SelectionMetric = "accuracy",
+    selection_metric: Literal["accuracy", "macro_f1"] = "accuracy",
     weight_decay: float = 0.01,
     class_weighted_loss: bool = False,
     save_checkpoint: bool = True,

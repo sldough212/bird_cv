@@ -1,8 +1,8 @@
 #!/bin/bash
-# Evaluate predictions: first argument is the mode (sweep, test, cv, windows),
-# the rest go to evaluate.py, e.g.
+# Evaluate: first argument is the mode (sweep, test, cv, model), the rest go
+# to evaluate.py, e.g.
 #   sbatch slurm_scripts/run_evaluate.sh test --run-id ID
-#   sbatch --gres=gpu:1 --partition=mb-l40s slurm_scripts/run_evaluate.sh windows --mae-model DIR
+#   sbatch --gres=gpu:1 --partition=mb-l40s slurm_scripts/run_evaluate.sh model --role classifier --checkpoint PATH
 #SBATCH --account=passerinagenome
 #SBATCH --time=6:00:00
 #SBATCH --mem=64G

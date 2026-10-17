@@ -1,7 +1,9 @@
 #!/bin/bash
-# Train (Ray-tune) YOLO from yolo11n.pt and select on val presence F1.
-# Extra arguments go to train.py, e.g. --run-id ID, or for a CV fold:
-#   sbatch slurm_scripts/run_train_yolo.sh --fold 0 --hyperparameters RUN_DIR/best_hyperparameters.json
+# Train one pipeline role's model from its [train.{role}] config table:
+# first argument is the role (detector, classifier), the rest go to train.py,
+# e.g.
+#   sbatch slurm_scripts/run_train.sh detector --run-id ID
+#   sbatch slurm_scripts/run_train.sh classifier --fold 0 --hyperparameters RUN_DIR/best_hyperparameters.json
 #SBATCH --account=passerinagenome
 #SBATCH --time=48:00:00
 #SBATCH --mem=64G
@@ -22,6 +24,6 @@ source .venv/bin/activate
 export PYTHONUNBUFFERED=1
 
 CONFIG=${CONFIG:-bird_cv/pipelines/configs/config.toml}
-python3 bird_cv/pipelines/train.py $CONFIG yolo "$@"
+python3 bird_cv/pipelines/train.py $CONFIG "$@"
 end=$(date +'%D %T')
 echo "End:" $end
