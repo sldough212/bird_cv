@@ -6,7 +6,7 @@ import polars as pl
 import pytest
 
 from bird_cv.core.labels import CLASSES, NO_BIRD
-from bird_cv.core.schemas import PREDICTION_SCHEMA
+from bird_cv.core.schemas import DETECTION_SCHEMA, PREDICTION_SCHEMA
 from bird_cv.core.timing import StageTimer
 from bird_cv.pipelines.config import InferConfig
 
@@ -49,6 +49,8 @@ def test_e2e_smoke_on_single_cage_clip(tmp_path: Path) -> None:
     )
 
     assert df.schema == pl.Schema(PREDICTION_SCHEMA)
+    dets = pl.read_parquet(tmp_path / "run" / "detections" / "H7,I22" / "54.parquet")
+    assert dets.schema == pl.Schema(DETECTION_SCHEMA) and dets.height > 0
     assert df["frame"].to_list() == list(range(N_FRAMES))
     assert set(df["cage_id"]) == {"0"} and set(df["camera_id"]) == {"H7,I22"}
     assert set(df["label"]) <= set(CLASSES)

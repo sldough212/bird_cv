@@ -16,8 +16,8 @@ frame; frames with no usable box are ``no_bird``.
 
 import json
 import traceback
-from collections.abc import Sequence
-from dataclasses import asdict
+from collections.abc import Iterable, Sequence
+from dataclasses import asdict, fields
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +34,7 @@ from bird_cv.classification.types import FramePrediction
 from bird_cv.core.frames import STANDARD_FPS
 from bird_cv.core.ids import parse_raw_video_path
 from bird_cv.core.manifest import new_manifest
-from bird_cv.core.schemas import PREDICTION_SCHEMA
+from bird_cv.core.schemas import DETECTION_SCHEMA, PREDICTION_SCHEMA
 from bird_cv.core.timing import StageTimer
 from bird_cv.detection.track import YoloDetector
 from bird_cv.detection.types import Detection
@@ -60,22 +60,6 @@ from bird_cv.inference.protocols import (
 )
 from bird_cv.preprocessing.standardize import standardize_video
 from bird_cv.pipelines.config import InferConfig
-
-VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv"}
-
-DETECTION_SCHEMA = {
-    "camera_id": pl.String,
-    "video_id": pl.String,
-    "cage_id": pl.String,
-    "frame": pl.Int64,
-    "track_id": pl.Int64,
-    "bbox_left": pl.Float64,
-    "bbox_top": pl.Float64,
-    "bbox_width": pl.Float64,
-    "bbox_height": pl.Float64,
-    "det_conf": pl.Float64,
-}
-"""Raw tracker output before confidence filter and gap fill (``detections/``)."""
 
 
 def infer_video(
@@ -254,6 +238,23 @@ def _write_parquet(df: pl.DataFrame, path: Path) -> None:
     df.write_parquet(path)
 
 
+def detection_rows(
+    detections: Iterable[Detection], camera_id: str, video_id: str, cage_id: str
+) -> list[dict[str, Any]]:
+    """:data:`DETECTION_SCHEMA` rows: each ``Detection``'s fields plus the ids.
+
+    Raises:
+        TypeError: If ``Detection``'s fields no longer match the schema.
+    """
+    columns = ("camera_id", "video_id", "cage_id") + tuple(
+        f.name for f in fields(Detection)
+    )
+    if columns != tuple(DETECTION_SCHEMA):
+        raise TypeError("Detection fields and DETECTION_SCHEMA have drifted apart")
+    ids = {"camera_id": camera_id, "video_id": video_id, "cage_id": cage_id}
+    return [{**ids, **asdict(d)} for d in detections]
+
+
 def _write_detections(
     detections: dict[str, list[Detection]],
     camera_id: str,
@@ -270,20 +271,9 @@ def _write_detections(
             with :data:`DETECTION_SCHEMA`.
     """
     rows = [
-        {
-            "camera_id": camera_id,
-            "video_id": video_id,
-            "cage_id": cage_id,
-            "frame": d.frame,
-            "track_id": d.track_id,
-            "bbox_left": d.left,
-            "bbox_top": d.top,
-            "bbox_width": d.width,
-            "bbox_height": d.height,
-            "det_conf": d.conf,
-        }
+        row
         for cage_id, dets in detections.items()
-        for d in dets
+        for row in detection_rows(dets, camera_id, video_id, cage_id)
     ]
     _write_parquet(
         pl.DataFrame(rows, schema=DETECTION_SCHEMA),
@@ -292,13 +282,25 @@ def _write_detections(
 
 
 def find_raw_videos(
-    raw_videos_path: Path, cameras: Sequence[str] | None = None
+    raw_videos_path: Path,
+    cameras: Sequence[str] | None = None,
+    extensions: tuple[str, ...] = (".mp4", ".avi", ".mov", ".mkv"),
 ) -> list[Path]:
-    """Raw videos under ``{raw_videos_path}/{camera_id}/``, sorted, optionally filtered."""
+    """Raw videos under ``{raw_videos_path}/{camera_id}/``, sorted, optionally filtered.
+
+    Args:
+        raw_videos_path: Root with one folder per camera.
+        cameras: Only these camera ids, if given.
+        extensions: Lower-case file suffixes counted as videos (the same set
+            ``check_video_specs`` scans).
+
+    Returns:
+        Matching video paths, sorted.
+    """
     videos = sorted(
         p
         for p in raw_videos_path.glob("*/*")
-        if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS
+        if p.is_file() and p.suffix.lower() in extensions
     )
     if cameras is not None:
         videos = [v for v in videos if parse_raw_video_path(v)[0] in cameras]

@@ -54,6 +54,23 @@ PREDICTION_SCHEMA = {
     "det_conf": pl.Float64,
 }
 
+DETECTION_SCHEMA = {
+    "camera_id": pl.String,
+    "video_id": pl.String,
+    "cage_id": pl.String,
+    # The fields of bird_cv.detection.types.Detection, same names and order.
+    "frame": pl.Int64,
+    "track_id": pl.Int64,
+    "left": pl.Float64,
+    "top": pl.Float64,
+    "width": pl.Float64,
+    "height": pl.Float64,
+    "conf": pl.Float64,
+    "label": pl.String,
+}
+"""Raw tracker output before confidence filter and gap fill (inference
+``detections/``): one row per tracked box per canonical frame of a cage."""
+
 SPLIT_SCHEMA = {
     "camera_id": pl.String,
     # "train", "val" or "test".
