@@ -60,3 +60,10 @@ def test_optional_config_table_rejects_typos(
     cfg_path.write_text(CONFIG.read_text() + "\n[infer]\ngap_fil_frames = 3\n")
     with pytest.raises(ValueError, match="gap_fil_frames"):
         load_config(cfg_path)
+
+
+def test_config_api_key_optional_when_not_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(API_KEY_ENV_VAR, raising=False)
+    assert load_config(CONFIG, require_api_key=False).api_key == ""

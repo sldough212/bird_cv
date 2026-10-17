@@ -84,6 +84,7 @@ SPLIT_SUMMARY_SCHEMA = {
 }
 
 TIMINGS_SCHEMA = {
+    "camera_id": pl.String,
     "video_id": pl.String,
     "stage": pl.String,
     "seconds": pl.Float64,

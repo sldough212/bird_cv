@@ -29,7 +29,7 @@ class StageTimer:
     Example::
 
         timer = StageTimer()
-        with timer.stage("IMG_0016", "sam2", frames=900):
+        with timer.stage("L25", "IMG_0016", "sam2", frames=900):
             run_sam2(...)
         timer.write(run_dir / "timings.parquet")
     """
@@ -39,7 +39,9 @@ class StageTimer:
         self.gpu = _gpu_name()
 
     @contextmanager
-    def stage(self, video_id: str, stage: str, frames: int) -> Iterator[None]:
+    def stage(
+        self, camera_id: str, video_id: str, stage: str, frames: int
+    ) -> Iterator[None]:
         """Time the enclosed block and record it as one row."""
         start = time.perf_counter()
         try:
@@ -47,6 +49,7 @@ class StageTimer:
         finally:
             self.rows.append(
                 {
+                    "camera_id": camera_id,
                     "video_id": video_id,
                     "stage": stage,
                     "seconds": time.perf_counter() - start,

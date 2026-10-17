@@ -168,7 +168,12 @@ class BirdCVConfig:
         self.classify.path_to_output = self.path_to_base_output / "classify" / "output"
 
 
-def load_config(config_path: Path, config_type: type = BirdCVConfig):
+def load_config(
+    config_path: Path,
+    config_type: type = BirdCVConfig,
+    *,
+    require_api_key: bool = True,
+):
     """Load and decode a TOML config file into a typed config object.
 
     BirdCVConfig.detect and .classify are required nested dataclasses
@@ -180,6 +185,9 @@ def load_config(config_path: Path, config_type: type = BirdCVConfig):
     Args:
         config_path: Path to the TOML file.
         config_type: The top-level config class to build (BirdCVConfig).
+        require_api_key: If False (pipelines that never talk to Label
+            Studio, e.g. inference), a missing API key is allowed and left
+            empty instead of raising.
 
     Returns:
         A fully constructed config_type instance.
@@ -218,6 +226,8 @@ def load_config(config_path: Path, config_type: type = BirdCVConfig):
     env_api_key = os.environ.get(API_KEY_ENV_VAR)
     if env_api_key:
         raw["api_key"] = env_api_key
+    elif not raw.get("api_key") and not require_api_key:
+        raw["api_key"] = ""
     elif not raw.get("api_key"):
         raise ValueError(
             f"No Label Studio API key: set {API_KEY_ENV_VAR} or api_key in {config_path}"
