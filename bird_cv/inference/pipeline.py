@@ -371,6 +371,7 @@ def run_infer(
         "models": models.kinds(),
         "train_run_id": models.train_run_id,
         "fold": models.fold,
+        "prepared": models.prepared,
         "sam_model_id": models.context.sam_model_id,
         "task_index": task_index,
         "num_tasks": num_tasks,

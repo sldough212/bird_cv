@@ -9,7 +9,7 @@ a path changes here or nowhere::
     splits/split_v{n}.parquet                 SPLIT_SCHEMA
     splits/split_v{n}/manifest.json
     splits/cv_folds_v{n}.parquet              CV_FOLD_SCHEMA
-    prepared/current.json                     the prepared data later stages use
+    prepared/current.json                     the last prepare output (fallback only)
     prepared/{snapshot_hash}/gt_v{g}/         ground_truth.parquet, ground_truth_stats.json
         split_v{n}/sampling_{cfghash}/        split_summary, yolo_frames, videomae_clips
                                               (.parquet), manifest.json
@@ -23,15 +23,20 @@ a path changes here or nowhere::
         cv/fold{k}/                           one CV fold's test cameras
     evaluation/{mode}/{run_id}/[{role}/]
 
-Every inference run directory has the layout of :class:`InferRun`. The
-legacy Label Studio pipelines keep their own paths
-(``BirdCVConfig.__post_init__``).
+Files inside run directories are named by :class:`TrainRun`,
+:class:`InferRun` and :class:`EvalRun`. Later stages name their prepared
+data by :attr:`Prepared.id` (printed by prepare); ``prepared/current.json``
+is only a logged fallback. The legacy Label Studio pipelines keep their own
+paths (``BirdCVConfig.__post_init__``).
 """
 
 import json
+import logging
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def split_file(splits_dir: Path, version: int) -> Path:
@@ -55,6 +60,11 @@ def cv_folds_file(splits_dir: Path, version: int) -> Path:
     return splits_dir / f"cv_folds_v{version}.parquet"
 
 
+def snapshot_files(directory: Path) -> tuple[Path, Path]:
+    """The Detect and Classify exports in a snapshot or export directory."""
+    return directory / "detect.json", directory / "classify.json"
+
+
 def sweep_setting_name(gap_fill_frames: int, det_conf: float) -> str:
     """Directory name of one val-sweep setting, e.g. ``gap8_conf0.25``."""
     return f"gap{gap_fill_frames}_conf{det_conf:g}"
@@ -76,6 +86,128 @@ class Prepared:
     gt_version: int
     split_version: int
     sampling_hash: str
+
+    @property
+    def id(self) -> str:
+        """``{snapshot_hash}/gt_v{g}/split_v{n}/sampling_{hash}``, the sampling
+        directory relative to ``prepared/``; :meth:`parse` reads it back."""
+        return (
+            f"{self.snapshot_hash}/gt_v{self.gt_version}"
+            f"/split_v{self.split_version}/sampling_{self.sampling_hash}"
+        )
+
+    @classmethod
+    def parse(cls, prepared_id: str) -> "Prepared":
+        """The :class:`Prepared` an :attr:`id` names.
+
+        Raises:
+            ValueError: If ``prepared_id`` isn't of that form.
+        """
+        m = re.fullmatch(
+            r"([^/]+)/gt_v(\d+)/split_v(\d+)/sampling_([^/]+)", prepared_id.strip()
+        )
+        if not m:
+            raise ValueError(
+                f"Not a prepared-data id: {prepared_id!r}; expected "
+                "{snapshot_hash}/gt_v{g}/split_v{n}/sampling_{hash}"
+            )
+        return cls(m.group(1), int(m.group(2)), int(m.group(3)), m.group(4))
+
+
+@dataclass(frozen=True)
+class TrainRun:
+    """Files of one training run directory.
+
+    Attributes:
+        dir: The run directory.
+    """
+
+    dir: Path
+
+    @property
+    def best_hyperparameters(self) -> Path:
+        """Selected training arguments, reusable for CV folds."""
+        return self.dir / "best_hyperparameters.json"
+
+    @property
+    def train_result(self) -> Path:
+        """Checkpoint and validation metrics of the selected model."""
+        return self.dir / "train_result.json"
+
+    @property
+    def selection(self) -> Path:
+        """Every candidate checkpoint and its selection score."""
+        return self.dir / "selection.parquet"
+
+    @property
+    def tune_dir(self) -> Path:
+        """Where a tuner keeps its trials (itself laid out as a :class:`TrainRun`)."""
+        return self.dir / "tune"
+
+    @property
+    def trials(self) -> Path:
+        """One row per tuning trial."""
+        return self.dir / "trials.csv"
+
+
+@dataclass(frozen=True)
+class EvalRun:
+    """Files of one evaluation output directory.
+
+    Attributes:
+        dir: The output directory.
+    """
+
+    dir: Path
+
+    @property
+    def metrics(self) -> Path:
+        """Headline end-to-end scores."""
+        return self.dir / "metrics.json"
+
+    @property
+    def per_class(self) -> Path:
+        return self.dir / "per_class.parquet"
+
+    @property
+    def confusion(self) -> Path:
+        return self.dir / "confusion.parquet"
+
+    @property
+    def per_camera(self) -> Path:
+        return self.dir / "per_camera.parquet"
+
+    @property
+    def mot(self) -> Path:
+        return self.dir / "mot.parquet"
+
+    @property
+    def sweep(self) -> Path:
+        """One row per val-sweep setting, best first."""
+        return self.dir / "sweep.parquet"
+
+    @property
+    def best_setting(self) -> Path:
+        """The (gap fill, det_conf) setting chosen on val."""
+        return self.dir / "best_setting.json"
+
+    @property
+    def per_fold(self) -> Path:
+        return self.dir / "per_fold.parquet"
+
+    @property
+    def cv_summary(self) -> Path:
+        """Pooled CV scores and which cameras tuning saw."""
+        return self.dir / "cv.json"
+
+    @property
+    def model_metrics(self) -> Path:
+        """One role's model-level scores on val and test."""
+        return self.dir / "model_metrics.json"
+
+    def model_split(self, split: str) -> Path:
+        """Where a trainer writes its model-level outputs for one split."""
+        return self.dir / split
 
 
 @dataclass(frozen=True)
@@ -114,6 +246,10 @@ class InferRun:
     def task_manifest(self, task_index: int) -> Path:
         """One task's manifest, so array tasks never overwrite each other."""
         return self.dir / f"manifest_task{task_index:03d}.json"
+
+    def task_manifests(self) -> list[Path]:
+        """Every task's manifest, sorted."""
+        return sorted(self.dir.glob("manifest_task*.json"))
 
     def failed(self, task_index: int) -> Path:
         """One task's failed videos and their errors."""
@@ -221,7 +357,7 @@ class Layout:
         return self.current_prepared
 
     def read_current(self) -> Prepared:
-        """The prepare output later stages read.
+        """The last prepare output written under this base.
 
         Raises:
             FileNotFoundError: If prepare has not run under this base.
@@ -231,6 +367,29 @@ class Layout:
                 f"No {self.current_prepared}; run bird_cv/pipelines/prepare.py first"
             )
         return Prepared(**json.loads(self.current_prepared.read_text()))
+
+    def resolve_prepared(self, prepared_id: str | None) -> Prepared:
+        """The prepared data ``prepared_id`` names, or the last one (logged loudly).
+
+        Raises:
+            FileNotFoundError: If the named or last prepared data doesn't exist.
+            ValueError: If ``prepared_id`` is malformed.
+        """
+        if prepared_id is None:
+            prepared = self.read_current()
+            logger.warning(
+                "No --prepared given; FALLING BACK to %s, which points at %s. "
+                "Pass --prepared to pin the data.",
+                self.current_prepared,
+                prepared.id,
+            )
+        else:
+            prepared = Prepared.parse(prepared_id)
+        if not self.sampling_dir(prepared).is_dir():
+            raise FileNotFoundError(
+                f"No prepared data at {self.sampling_dir(prepared)}"
+            )
+        return prepared
 
     # Training
 

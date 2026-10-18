@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from bird_cv.client.get_label_studio_annotations import get_label_studio_annotations
+from bird_cv.core.layout import snapshot_files
 from bird_cv.core.manifest import new_manifest, write_manifest
 from bird_cv.data.ground_truth import annotation_results
 
@@ -86,7 +87,7 @@ def export_annotations(
     Returns:
         Paths to the Detect and Classify exports.
     """
-    paths = (output_dir / "detect.json", output_dir / "classify.json")
+    paths = snapshot_files(output_dir)
     for project_name, path in zip((detect_project_name, classify_project_name), paths):
         get_label_studio_annotations(
             host=host,
@@ -133,8 +134,10 @@ def create_snapshot(
         return snapshot_hash, snapshot_dir
 
     snapshot_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(detect_export, snapshot_dir / "detect.json")
-    shutil.copyfile(classify_export, snapshot_dir / "classify.json")
+    for export, copy in zip(
+        (detect_export, classify_export), snapshot_files(snapshot_dir)
+    ):
+        shutil.copyfile(export, copy)
     write_manifest(
         new_manifest(
             "snapshot",

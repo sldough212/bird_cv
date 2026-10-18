@@ -10,7 +10,7 @@ from bird_cv.core.labels import CLASSES, NO_BIRD
 from bird_cv.core.layout import InferRun
 from bird_cv.core.schemas import DETECTION_SCHEMA, PREDICTION_SCHEMA
 from bird_cv.core.timing import StageTimer
-from bird_cv.pipelines.config import InferConfig, TrainConfig
+from bird_cv.pipelines.config import InferConfig, ModelsConfig
 
 ROOT = Path("/Users/sdougherty/Documents/code/bird_cv")
 CLIP = ROOT / "scratch/20260627/videos/H7,I22/54/1.mp4"
@@ -37,13 +37,13 @@ def test_e2e_smoke_on_single_cage_clip(tmp_path: Path) -> None:
     raw.symlink_to(CLIP)
     timer = StageTimer()
     # Models built the way run_infer builds them: by kind, from the default specs
-    train = TrainConfig()
+    models = ModelsConfig()
     detector_spec = dataclasses.replace(
-        train.detector, infer_options={"tracker_path": TRACKER}
+        models.detector, infer_options={"tracker_path": TRACKER}
     )
     detector = get_trainer(detector_spec.kind).load_for_inference(YOLO, detector_spec)
-    classifier = get_trainer(train.classifier.kind).load_for_inference(
-        VIDEOMAE, train.classifier
+    classifier = get_trainer(models.classifier.kind).load_for_inference(
+        VIDEOMAE, models.classifier
     )
     run = InferRun(tmp_path / "run")
 

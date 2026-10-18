@@ -18,7 +18,7 @@ from pathlib import Path
 
 import polars as pl
 
-from bird_cv.core.layout import Layout, Prepared
+from bird_cv.core.layout import Layout, Prepared, snapshot_files
 from bird_cv.core.manifest import new_manifest, write_manifest
 from bird_cv.data.ground_truth import (
     GT_VERSION,
@@ -46,9 +46,24 @@ def sampling_config(cfg: BirdCVConfig) -> dict[str, int]:
     return {
         "yolo_uniform_stride": cfg.prepare.yolo_uniform_stride,
         "videomae_clip_stride": cfg.prepare.videomae_clip_stride,
-        "num_frames": cfg.classify.num_frames,
+        "num_frames": clip_length(cfg),
         "seed": cfg.prepare.split_seed,
     }
+
+
+def clip_length(cfg: BirdCVConfig) -> int:
+    """Frames per classifier clip: ``[models.classifier] options.num_frames``.
+
+    Raises:
+        ValueError: If the classifier table doesn't set it.
+    """
+    num_frames = cfg.models.classifier.options.get("num_frames")
+    if not isinstance(num_frames, int):
+        raise ValueError(
+            "[models.classifier] options.num_frames must be set: it is the clip "
+            "length prepare samples and the classifier trains on"
+        )
+    return num_frames
 
 
 def config_hash(values: dict[str, int]) -> str:
@@ -103,9 +118,10 @@ def run_prepare(
         logger.info("Ground truth exists: %s", gt_path)
         ground_truth = pl.read_parquet(gt_path)
     else:
+        detect_path, classify_path = snapshot_files(snapshot_dir)
         result = build_ground_truth(
-            json.loads((snapshot_dir / "detect.json").read_text()),
-            json.loads((snapshot_dir / "classify.json").read_text()),
+            json.loads(detect_path.read_text()),
+            json.loads(classify_path.read_text()),
             standard_counts=standard_frame_counts(cfg.path_to_raw_videos),
         )
         ground_truth = result.table
@@ -144,7 +160,7 @@ def run_prepare(
         )
         clips = select_videomae_clips(
             frames,
-            num_frames=cfg.classify.num_frames,
+            num_frames=clip_length(cfg),
             stride=pcfg.videomae_clip_stride,
             seed=pcfg.split_seed,
         )
@@ -180,6 +196,8 @@ def run_prepare(
     )
     layout.write_current(prepared)
     logger.info("Prepared data in %s", out_dir)
+    # Last stdout line: the id later stages take as --prepared
+    print(f"PREPARED={prepared.id}")
     return out_dir
 
 

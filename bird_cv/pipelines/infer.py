@@ -1,7 +1,7 @@
 """Entry point: end-to-end inference on raw videos (no Label Studio involved).
 
 Models are the ones the config picks: ``[infer.segmenter]``, and the
-``[train.detector]`` / ``[train.classifier]`` kinds with checkpoints from
+``[models.detector]`` / ``[models.classifier]`` kinds with checkpoints from
 ``--train-run-id`` (that run's outputs) or each table's ``checkpoint``.
 Outputs go to :meth:`bird_cv.core.layout.Layout.infer_run`.
 
@@ -38,7 +38,7 @@ def main() -> None:
     parser.add_argument(
         "--train-run-id",
         default=None,
-        help="Use this training run's checkpoints (default: [train.{role}] checkpoint)",
+        help="Use this training run's checkpoints (default: [models.{role}] checkpoint)",
     )
     parser.add_argument("--task-index", type=int, default=0)
     parser.add_argument("--num-tasks", type=int, default=1)

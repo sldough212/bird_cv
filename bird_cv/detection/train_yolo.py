@@ -14,6 +14,7 @@ import yaml
 import tomli_w
 import msgspec
 
+from bird_cv.core.layout import TrainRun
 from bird_cv.detection.evaluate_yolo import yolo_presence_metrics
 from bird_cv.pipelines.config import resolve_run_dir
 
@@ -247,7 +248,7 @@ def train_select_yolo(
         )
         .sort("f1", descending=True, nulls_last=True)
     )
-    selection.write_parquet(run_dir / "selection.parquet")
+    selection.write_parquet(TrainRun(run_dir).selection)
     best = selection.row(0, named=True)
 
     shutil.copy2(best["checkpoint"], run_dir / "best.pt")
@@ -260,7 +261,7 @@ def train_select_yolo(
         best_hyperparameters = trials[best["candidate"]]
     else:
         best_hyperparameters = dict(hyperparameters or {})
-    (run_dir / "best_hyperparameters.json").write_text(
+    TrainRun(run_dir).best_hyperparameters.write_text(
         json.dumps(best_hyperparameters, indent=2, default=float)
     )
     print(f"Selected {best['candidate']} (val presence F1={best['f1']:.4f})")

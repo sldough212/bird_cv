@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from bird_cv.classification.train_video_model import train_video_model
+from bird_cv.core.layout import TrainRun
 
 
 def tune_video_model(
@@ -37,7 +38,7 @@ def tune_video_model(
         search_space: Ray Tune distributions keyed by
             :func:`train_video_model` keyword argument (e.g. ``lr``,
             ``freeze_encoder``, ``weight_decay``, ``class_weighted_loss``),
-            from ``[train.classifier] search_space``.
+            from ``[models.classifier] search_space``.
         model_checkpoint: Generic pretrained weights to start every trial
             from (ADR 0004).
         num_samples: Number of trials. Defaults to 20.
@@ -99,7 +100,7 @@ def tune_video_model(
         run_config=tune.RunConfig(storage_path=str(output_root), name="ray"),
     )
     results = tuner.fit()
-    results.get_dataframe().to_csv(output_root / "trials.csv", index=False)
+    results.get_dataframe().to_csv(TrainRun(output_root).trials, index=False)
 
     # Best epoch of any trial, not just each trial's last reported epoch.
     best = results.get_best_result(metric="val_macro_f1", mode="max", scope="all")
@@ -110,8 +111,6 @@ def tune_video_model(
         "val_macro_f1": float(best_epoch["val_macro_f1"]),
         "epoch": int(best_epoch["epoch"]),
     }
-    (output_root / "best_hyperparameters.json").write_text(
-        json.dumps(summary, indent=2)
-    )
+    TrainRun(output_root).best_hyperparameters.write_text(json.dumps(summary, indent=2))
     print(f"Best VideoMAE config: {summary}")
     return summary

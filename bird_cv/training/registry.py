@@ -2,7 +2,7 @@
 
 Pipelines only ever talk to the :class:`Trainer` protocol, so swapping in a
 different detector or classifier means writing one class here and pointing
-``[train.detector]`` or ``[train.classifier]`` at its ``kind``; training
+``[models.detector]`` or ``[models.classifier]`` at its ``kind``; training
 and inference (:meth:`Trainer.load_for_inference`) then both use it.
 :func:`_trainers` is the one place detector and classifier names live (the
 segmenter, which is never trained, is in :mod:`bird_cv.inference.registry`).
@@ -13,6 +13,8 @@ loading uses it to validate kinds and search spaces.
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
+
+from bird_cv.core.layout import TrainRun
 
 if TYPE_CHECKING:
     from bird_cv.pipelines.config import ModelSpec
@@ -124,7 +126,7 @@ def check_search_space(spec: dict[str, dict], where: str = "search_space") -> No
     Args:
         spec: Parameter name to ``{"type": ..., ...}`` (see
             :func:`build_search_space`).
-        where: Location named in error messages, e.g. ``"[train.classifier]"``.
+        where: Location named in error messages, e.g. ``"[models.classifier]"``.
 
     Raises:
         ValueError: On a non-table entry, an unknown ``type`` or a missing
@@ -314,7 +316,7 @@ class VideoMAETrainer:
 
         best = tune_video_model(
             clips_root=dataset,
-            output_root=run_dir / "tune",
+            output_root=TrainRun(run_dir).tune_dir,
             search_space=build_search_space(spec.search_space),
             model_checkpoint=spec.pretrained,
             num_samples=spec.tune_trials,
