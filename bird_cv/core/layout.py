@@ -13,8 +13,9 @@ a path changes here or nowhere::
     prepared/{snapshot_hash}/gt_v{g}/         ground_truth.parquet, ground_truth_stats.json
         split_v{n}/sampling_{cfghash}/        split_summary, yolo_frames, videomae_clips
                                               (.parquet), manifest.json
-            datasets/{role}/{kind}/frozen/    training data on the frozen split
-            datasets/{role}/{kind}/fold{k}/   one CV fold, with its split.parquet
+            datasets/{role}/{kind}/frozen/    training data on the frozen split, with
+            datasets/{role}/{kind}/fold{k}/   split, selection, split_guidance (.parquet)
+                                              and manifest.json; one dir per CV fold
     train/{role}/{run_id}/                    frozen-split training run
     train/{role}/fold{k}/{run_id}/            CV fold training run
     infer/{run_id}/                           an ad-hoc inference run, or the root of:
@@ -344,6 +345,18 @@ class Layout:
     ) -> Path:
         """The camera split a dataset was built from (``camera_id``, ``split``)."""
         return self.dataset(prepared, role, kind, fold) / "split.parquet"
+
+    def dataset_selection(
+        self, prepared: Prepared, role: str, kind: str, fold: int | None = None
+    ) -> Path:
+        """The sampled frames or clips a dataset was built from."""
+        return self.dataset(prepared, role, kind, fold) / "selection.parquet"
+
+    def dataset_guidance(
+        self, prepared: Prepared, role: str, kind: str, fold: int | None = None
+    ) -> Path:
+        """The split-guidance parquet handed to the dataset converter."""
+        return self.dataset(prepared, role, kind, fold) / "split_guidance.parquet"
 
     @property
     def current_prepared(self) -> Path:

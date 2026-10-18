@@ -20,11 +20,8 @@ import polars as pl
 
 from bird_cv.core.layout import Layout, Prepared, snapshot_files
 from bird_cv.core.manifest import new_manifest, write_manifest
-from bird_cv.data.ground_truth import (
-    GT_VERSION,
-    build_ground_truth,
-    standard_frame_counts,
-)
+from bird_cv.data.check_fps import check_frame_rates, frame_rate_table, standard_counts
+from bird_cv.data.ground_truth import GT_VERSION, build_ground_truth
 from bird_cv.data.sampling import clip_frames, select_videomae_clips, select_yolo_frames
 from bird_cv.data.snapshot import create_snapshot, export_annotations
 from bird_cv.data.splits import update_split
@@ -119,10 +116,18 @@ def run_prepare(
         ground_truth = pl.read_parquet(gt_path)
     else:
         detect_path, classify_path = snapshot_files(snapshot_dir)
+        detect_tasks = json.loads(detect_path.read_text())
+        # Expected standardized counts from raw headers; fps must all be 15
+        rates = frame_rate_table(
+            cfg.path_to_raw_videos,
+            detect_tasks,
+            max_frames=pcfg.standardized_max_frames,
+        )
+        check_frame_rates(rates)
         result = build_ground_truth(
-            json.loads(detect_path.read_text()),
+            detect_tasks,
             json.loads(classify_path.read_text()),
-            standard_counts=standard_frame_counts(cfg.path_to_raw_videos),
+            standard_counts=standard_counts(rates),
         )
         ground_truth = result.table
         gt_path.parent.mkdir(parents=True, exist_ok=True)

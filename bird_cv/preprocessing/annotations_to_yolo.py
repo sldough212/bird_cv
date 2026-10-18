@@ -129,6 +129,7 @@ def process_item(
     crop_size: int | None = None,
     *,
     frame_map_root: Path | None = None,
+    by_cage: bool = False,
 ) -> bool:
     """Process a single annotation item and write YOLO-format labels per frame.
 
@@ -167,6 +168,9 @@ def process_item(
             frame per canonical frame, nor if no frame has a box. Also
             skipped if the cage video or the guidance fps isn't aligned with
             the standardized video (``is_aligned_with_standard``).
+        by_cage: Match guidance rows on a ``cage_id`` column too, so each
+            cage video gets its own ``target_frames`` (default: one row per
+            camera video, shared by its cages).
 
     Returns:
         True if a frame map was skipped because the video isn't aligned,
@@ -212,6 +216,8 @@ def process_item(
     video_guidance = video_guidance.filter(
         (pl.col("camera_id") == camera_id) & (pl.col("video_id") == video_id)
     )
+    if by_cage:
+        video_guidance = video_guidance.filter(pl.col("cage_id") == cage)
 
     print(f"Working on {video_path}")
     if video_guidance.is_empty():
@@ -371,6 +377,7 @@ def stream_annotations_to_yolo(
     crop_size: int | None = None,
     *,
     frame_map_root: Path | None = None,
+    by_cage: bool = False,
 ) -> None:
     """Stream a large JSON annotation file and convert it to YOLO format.
 
@@ -389,6 +396,7 @@ def stream_annotations_to_yolo(
             labels (see :func:`process_item`).
         frame_map_root: Crop mode only: root under which to write a frame map
             per bird-crop video (see :func:`process_item`).
+        by_cage: Guidance has one row per cage video (see :func:`process_item`).
 
     Raises:
         ValueError: If ``frame_map_root`` is given without ``crop_size``.
@@ -420,6 +428,7 @@ def stream_annotations_to_yolo(
                     path_to_guidance=path_to_guidance,
                     crop_size=crop_size,
                     frame_map_root=frame_map_root,
+                    by_cage=by_cage,
                 )
         else:
             # Parallel execution
@@ -430,6 +439,7 @@ def stream_annotations_to_yolo(
                 path_to_guidance=path_to_guidance,
                 crop_size=crop_size,
                 frame_map_root=frame_map_root,
+                by_cage=by_cage,
             )
 
             with Pool(processes=processes) as pool:

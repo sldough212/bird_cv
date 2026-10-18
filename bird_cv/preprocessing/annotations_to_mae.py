@@ -1,6 +1,7 @@
 from functools import partial
 from multiprocessing import Pool
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, Dict, List, Tuple
 
 import cv2
@@ -106,6 +107,58 @@ def load_split_guidance(path_to_guidance: Path) -> Dict[Tuple[str, str], str]:
     return guidance
 
 
+ClipRange = Tuple[str, int, int]
+"""``(label, start, end)``: a behavior on inclusive 1-indexed video frames."""
+
+
+def _write_range_clips(
+    frames: List[np.ndarray],
+    start: int,
+    end: int,
+    num_frames: int,
+    stride: int,
+    clip_root: Path,
+    clip_stem: str,
+) -> None:
+    """Write the clips of one labeled range ``[start, end)`` (0-based frames).
+
+    Ranges shorter than ``num_frames`` are centered in real neighboring
+    frames, then padded by repeating the first/last frame if the video
+    itself is too short; windows of ``num_frames`` step by ``stride``. Each
+    clip goes to ``clip_root / f"{clip_stem}_clip{idx:03d}"``.
+    """
+    if end - start < num_frames:
+        # Prefer expanding into real neighboring frames from the
+        # source video on both sides, so the labeled behavior
+        # ends up centered in the clip.
+        start, end = _center_window(start, end, num_frames, len(frames))
+
+    candidates = frames[start:end]
+
+    if len(candidates) < num_frames:
+        # Video itself is shorter than num_frames even at full
+        # length — pad the remainder symmetrically by repeating
+        # the first/last frame.
+        remaining = num_frames - len(candidates)
+        left_pad = remaining // 2
+        right_pad = remaining - left_pad
+        candidates = (
+            [candidates[0]] * left_pad + candidates + [candidates[-1]] * right_pad
+        )
+
+    starts = range(0, len(candidates) - num_frames + 1, stride)
+    for clip_idx, clip_start in enumerate(starts):
+        window = candidates[clip_start : clip_start + num_frames]
+        clip_dir = clip_root / f"{clip_stem}_clip{clip_idx:03d}"
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        for out_idx, frame in enumerate(window):
+            cv2.imwrite(str(clip_dir / f"{out_idx:05d}.jpg"), frame)
+
+
+def _label_dir(label: str) -> str:
+    return label.replace("/", "_").replace(" ", "_").lower()
+
+
 def process_item(
     item: Dict[str, Any],
     path_to_videos: Path,
@@ -113,6 +166,8 @@ def process_item(
     guidance: Dict[Tuple[str, str], str],
     num_frames: int = 16,
     stride: int = 8,
+    *,
+    ranges_by_cage: Mapping[Tuple[str, str, str], List[ClipRange]] | None = None,
 ) -> None:
     """Convert one Label Studio behavior task into VideoMAE training clips.
 
@@ -151,6 +206,10 @@ def process_item(
             Defaults to 16.
         stride: Number of frames to advance the sliding window each step.
             Defaults to 8.
+        ranges_by_cage: If given, clip these ranges (by ``(camera_id,
+            video_id, cage)``) instead of the task's annotations; cages not
+            in it are skipped. Clip directories are named
+            ``{camera_id}_{video_id}_{cage}_s{range_idx}_clip{idx}``.
 
     Returns:
         None. Clip frames are written to disk as a side effect.
@@ -166,6 +225,8 @@ def process_item(
     video_id = dirs_names[2]
     cage = full_video_path.stem
 
+    if ranges_by_cage is not None and (camera_id, video_id, cage) not in ranges_by_cage:
+        return
     split = guidance.get((camera_id, video_id))
     if split is None:
         print(f"Video {video_path} not in split guidance, skipping.")
@@ -178,6 +239,25 @@ def process_item(
     frames = _extract_video_frames(full_video_path)
     if not frames:
         print(f"No frames read from {full_video_path}, skipping.")
+        return
+
+    if ranges_by_cage is not None:
+        for range_idx, (label, first, last) in enumerate(
+            ranges_by_cage[(camera_id, video_id, cage)]
+        ):
+            start, end = max(first - 1, 0), min(last, len(frames))
+            if end <= start:
+                print(f"Range {camera_id}/{video_id}/{cage} {first}-{last} is empty")
+                continue
+            _write_range_clips(
+                frames,
+                start,
+                end,
+                num_frames,
+                stride,
+                path_to_output / split / _label_dir(label),
+                f"{camera_id}_{video_id}_{cage}_s{range_idx}",
+            )
         return
 
     for annotation in item.get("annotations", []):
@@ -196,7 +276,7 @@ def process_item(
                 continue
 
             label = labels[0]
-            label_dir = label.replace("/", "_").replace(" ", "_").lower()
+            label_dir = _label_dir(label)
 
             for frame_range in value.get("ranges", []):
                 start = max(int(frame_range["start"]) - 1, 0)
@@ -210,42 +290,15 @@ def process_item(
                     )
                     continue
 
-                if end - start < num_frames:
-                    # Prefer expanding into real neighboring frames from the
-                    # source video on both sides, so the labeled behavior
-                    # ends up centered in the clip.
-                    start, end = _center_window(start, end, num_frames, len(frames))
-
-                candidates = frames[start:end]
-
-                if len(candidates) < num_frames:
-                    # Video itself is shorter than num_frames even at full
-                    # length — pad the remainder symmetrically by repeating
-                    # the first/last frame.
-                    remaining = num_frames - len(candidates)
-                    left_pad = remaining // 2
-                    right_pad = remaining - left_pad
-                    candidates = (
-                        [candidates[0]] * left_pad
-                        + candidates
-                        + [candidates[-1]] * right_pad
-                    )
-
-                starts = range(0, len(candidates) - num_frames + 1, stride)
-                for clip_idx, clip_start in enumerate(starts):
-                    window = candidates[clip_start : clip_start + num_frames]
-                    clip_dir = (
-                        path_to_output
-                        / split
-                        / label_dir
-                        / (
-                            f"{camera_id}_{video_id}_{cage}_a{annotation_id}"
-                            f"_r{result_idx}_clip{clip_idx:03d}"
-                        )
-                    )
-                    clip_dir.mkdir(parents=True, exist_ok=True)
-                    for out_idx, frame in enumerate(window):
-                        cv2.imwrite(str(clip_dir / f"{out_idx:05d}.jpg"), frame)
+                _write_range_clips(
+                    frames,
+                    start,
+                    end,
+                    num_frames,
+                    stride,
+                    path_to_output / split / label_dir,
+                    f"{camera_id}_{video_id}_{cage}_a{annotation_id}_r{result_idx}",
+                )
 
 
 def stream_annotations_to_mae(
@@ -256,6 +309,8 @@ def stream_annotations_to_mae(
     num_frames: int = 16,
     stride: int = 8,
     processes: int = 4,
+    *,
+    ranges_by_cage: Mapping[Tuple[str, str, str], List[ClipRange]] | None = None,
 ) -> None:
     """Stream a behavior annotation JSON and build VideoMAE train/val/test clips.
 
@@ -278,6 +333,8 @@ def stream_annotations_to_mae(
         processes: Number of worker processes to use. If set to 1, processing
             runs serially (useful for testing and debugging). Values greater
             than 1 enable multiprocessing.
+        ranges_by_cage: Clip these ranges instead of the annotations (see
+            :func:`process_item`).
 
     Returns:
         None. Clip frames are written to disk as a side effect.
@@ -298,6 +355,7 @@ def stream_annotations_to_mae(
                     guidance=guidance,
                     num_frames=num_frames,
                     stride=stride,
+                    ranges_by_cage=ranges_by_cage,
                 )
         else:
             # Parallel execution
@@ -308,6 +366,7 @@ def stream_annotations_to_mae(
                 guidance=guidance,
                 num_frames=num_frames,
                 stride=stride,
+                ranges_by_cage=ranges_by_cage,
             )
 
             with Pool(processes=processes) as pool:

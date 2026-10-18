@@ -12,6 +12,10 @@
 
 # ---- Core paths (required) ----
 path_to_base_output = "/gscratch/pdoughe1/full_pipeline/20260817"
+# Raw videos, {camera}/{video}.{ext}: inference standardizes them and prepare
+# computes expected standardized frame counts from their headers. Check with
+# `python -m bird_cv.data.check_fps CONFIG` (the value below is the 900-frame
+# standardized set, which also works: 15 fps and at most 900 frames).
 path_to_raw_videos = "/gscratch/pdoughe1/videos/2021_bunting_clips_standardized"
 path_to_segmentation_configs = "/gscratch/pdoughe1/segmentation_configs/configs"
 sam_model_id = "facebook/sam2.1-hiera-large"

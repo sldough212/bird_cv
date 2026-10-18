@@ -17,6 +17,9 @@ from typing import TYPE_CHECKING, Any, Protocol
 from bird_cv.core.layout import TrainRun
 
 if TYPE_CHECKING:
+    import polars as pl
+
+    from bird_cv.core.layout import Layout, Prepared
     from bird_cv.pipelines.config import ModelSpec
 
 
@@ -51,6 +54,25 @@ class TrainResult:
     checkpoint: Path
     hyperparameters: dict[str, Any]
     metrics: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DatasetMedia:
+    """Labeled media and exports a dataset is built from.
+
+    Attributes:
+        cage_videos: Detect media root, ``{camera_id}/{video_id}/{cage}.mp4``.
+        bird_crop_videos: Classify media root, same layout.
+        detect_export: The snapshot's interpolated Detect export.
+        classify_export: The snapshot's Classify export.
+        processes: Worker processes for the converters.
+    """
+
+    cage_videos: Path
+    bird_crop_videos: Path
+    detect_export: Path
+    classify_export: Path
+    processes: int = 4
 
 
 class Trainer(Protocol):
@@ -106,6 +128,35 @@ class Trainer(Protocol):
         A detector kind returns a
         :class:`~bird_cv.inference.protocols.StreamingDetector`, a
         classifier kind a :class:`~bird_cv.inference.protocols.FrameClassifier`.
+        """
+        ...
+
+    def prepared_selection(self, layout: "Layout", prepared: "Prepared") -> Path:
+        """The frame or clip list prepare sampled for this kind (frozen split)."""
+        ...
+
+    def select(
+        self, frames: "pl.DataFrame", sampling: dict[str, int]
+    ) -> "pl.DataFrame":
+        """Sample this kind's training data from ground truth with a ``split``
+        column, as prepare does (used for CV folds, whose splits differ).
+
+        ``sampling`` is :func:`bird_cv.pipelines.prepare.sampling_config`.
+        """
+        ...
+
+    def build_dataset(
+        self,
+        selection: "pl.DataFrame",
+        ground_truth: "pl.DataFrame",
+        spec: "ModelSpec",
+        media: DatasetMedia,
+        out_dir: Path,
+        guidance_path: Path,
+    ) -> None:
+        """Write the training data :meth:`train` reads for ``selection``.
+
+        Writes the converter's split-guidance parquet to ``guidance_path``.
         """
         ...
 
@@ -261,6 +312,52 @@ class YoloTrainer:
             raise ValueError("yolo needs infer_options.tracker_path")
         return YoloDetector(model_path=checkpoint, **spec.infer_options)
 
+    def prepared_selection(self, layout, prepared) -> Path:
+        return layout.yolo_frames(prepared)
+
+    def select(self, frames, sampling):
+        from bird_cv.data.sampling import select_yolo_frames
+
+        return select_yolo_frames(
+            frames, stride=sampling["yolo_uniform_stride"], seed=sampling["seed"]
+        )
+
+    def build_dataset(
+        self, selection, ground_truth, spec, media, out_dir, guidance_path
+    ) -> None:
+        """Full cage-video frames and labels, ``images|labels/{split}/``.
+
+        One guidance row per cage video (``by_cage``), its ``target_frames``
+        the selected canonical frames as 1-indexed video frames.
+        """
+        import polars as pl
+
+        from bird_cv.core.frames import STANDARD_FPS, canonical_to_ls
+        from bird_cv.preprocessing.annotations_to_yolo import (
+            stream_annotations_to_yolo,
+        )
+
+        guidance = (
+            selection.group_by("camera_id", "video_id", "cage_id", "split")
+            # canonical_to_ls is a fixed offset; apply it vectorized
+            .agg(target_frames=(pl.col("frame") + canonical_to_ls(0)).sort())
+            .with_columns(
+                video_path=pl.col("camera_id") + "/" + pl.col("video_id") + ".mp4",
+                # Ground truth kept only cages at 15 fps, whose Label Studio
+                # frames are canonical + 1.
+                fps=pl.lit(float(STANDARD_FPS)),
+            )
+        )
+        guidance.write_parquet(guidance_path)
+        stream_annotations_to_yolo(
+            path_to_videos=media.cage_videos,
+            path_to_annotations=media.detect_export,
+            path_to_output=out_dir,
+            path_to_guidance=guidance_path,
+            processes=media.processes,
+            by_cage=True,
+        )
+
 
 class VideoMAETrainer:
     """VideoMAE clip classifier, selected on val window macro-F1 (ADR 0005).
@@ -358,6 +455,82 @@ class VideoMAETrainer:
         trained = {k: v for k, v in spec.options.items() if k == "num_frames"}
         return VideoMAEClassifier(
             model_path=str(checkpoint), **(trained | spec.infer_options)
+        )
+
+    def prepared_selection(self, layout, prepared) -> Path:
+        return layout.videomae_clips(prepared)
+
+    def select(self, frames, sampling):
+        from bird_cv.data.sampling import select_videomae_clips
+
+        return select_videomae_clips(
+            frames,
+            num_frames=sampling["num_frames"],
+            stride=sampling["videomae_clip_stride"],
+            seed=sampling["seed"],
+        )
+
+    def build_dataset(
+        self, selection, ground_truth, spec, media, out_dir, guidance_path
+    ) -> None:
+        """Bird-crop clips, ``{split}/{label}/{clip}/``, one per selected clip.
+
+        A bird-crop video's frame ``k`` is its cage's ``k``-th boxed
+        canonical frame (ADR 0002), so each clip's canonical range maps to
+        crop frames through the ground-truth boxes.
+
+        Raises:
+            ValueError: If a clip covers a frame with no box, or boxed frames
+                that aren't contiguous in the crop.
+        """
+        import polars as pl
+
+        from bird_cv.preprocessing.annotations_to_mae import (
+            stream_annotations_to_mae,
+        )
+
+        crop_index: dict[tuple[str, str, str], dict[int, int]] = {}
+        boxed = (
+            ground_truth.filter(pl.col("bbox_left").is_not_null())
+            .sort("camera_id", "video_id", "cage_id", "frame")
+            .group_by("camera_id", "video_id", "cage_id", maintain_order=True)
+            .agg("frame")
+        )
+        for camera_id, video_id, cage_id, frames in boxed.iter_rows():
+            crop_index[(camera_id, video_id, cage_id)] = {
+                f: i for i, f in enumerate(frames)
+            }
+        ranges: dict[tuple[str, str, str], list[tuple[str, int, int]]] = {}
+        for row in selection.sort(
+            "camera_id", "video_id", "cage_id", "frame_begin"
+        ).iter_rows(named=True):
+            key = (row["camera_id"], row["video_id"], row["cage_id"])
+            index = crop_index.get(key, {})
+            begin, end = index.get(row["frame_begin"]), index.get(row["frame_end"])
+            if (
+                begin is None
+                or end is None
+                or (end - begin != row["frame_end"] - row["frame_begin"])
+            ):
+                raise ValueError(f"Clip {row} isn't a contiguous boxed range")
+            # 1-indexed inclusive crop frames, as Label Studio ranges
+            ranges.setdefault(key, []).append((row["label"], begin + 1, end + 1))
+
+        selection.select(
+            video_path=pl.col("camera_id") + "/" + pl.col("video_id") + ".mp4",
+            split="split",
+        ).unique().write_parquet(guidance_path)
+        num_frames = spec.options["num_frames"]
+        stream_annotations_to_mae(
+            path_to_videos=media.bird_crop_videos,
+            path_to_annotations=media.classify_export,
+            path_to_guidance=guidance_path,
+            path_to_output=out_dir,
+            num_frames=num_frames,
+            # Each selected clip is at most num_frames long: one clip per range
+            stride=num_frames,
+            processes=media.processes,
+            ranges_by_cage=ranges,
         )
 
 
