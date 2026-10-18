@@ -70,8 +70,8 @@ def train_yolo(
             ``model.train`` or ``model.tune``. These are not mutated during
             tuning. If ``None``, no additional parameters are fixed.
         tune_kwargs: Extra arguments for Ultralytics' ``run_ray_tune`` only
-            (e.g. ``gpu_per_trial``, ``grace_period``, ``space``). Ignored
-            when ``tune=False``.
+            (e.g. ``gpu_per_trial``, ``grace_period``, ``space``).
+            ``gpu_per_trial`` defaults to 1. Ignored when ``tune=False``.
 
     Returns:
         The Ray Tune ``ResultGrid`` when tuning, else the training metrics
@@ -92,7 +92,8 @@ def train_yolo(
             use_ray=True,
             iterations=iterations,
             **shared_kwargs,
-            **(tune_kwargs or {}),
+            # Ray gives a trial no GPU unless asked (gpu_per_trial or 0).
+            **({"gpu_per_trial": 1} | (tune_kwargs or {})),
         )
     return model.train(**shared_kwargs)
 

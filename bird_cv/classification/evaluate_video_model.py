@@ -47,15 +47,15 @@ def evaluate_video_model(
         device: Device string. Defaults to ``"cuda"``.
         split: Split subdirectory of ``clips_root`` to evaluate. Defaults to
             ``"test"``.
-        window_macro_f1: If ``True``, index clips by the model's own
-            ``label2id`` (so a split missing a class is scored correctly,
-            and clips with labels outside it are skipped and counted),
-            restrict the report and confusion matrix to classes present in
-            truth or predictions, and add the single headline number
+        window_macro_f1: If ``True``, restrict the report and confusion
+            matrix to classes present in truth or predictions, and add the
+            single headline number
             ``"macro_f1"`` from
             :func:`bird_cv.evaluation.metrics.window_macro_f1` (equal to the
-            report's macro avg F1). Defaults to ``False`` (the original
-            per-split indexing).
+            report's macro avg F1). Defaults to ``False`` (one row per
+            model class). Either way clips are indexed by the model's own
+            ``label2id``, so a split missing a class is scored correctly;
+            clips with labels outside it are skipped and counted.
 
     Returns:
         dict with keys ``"report"`` (sklearn classification report dict) and
@@ -71,26 +71,24 @@ def evaluate_video_model(
     model = model.to(dev)
     model.eval()
 
-    if window_macro_f1:
-        label_to_idx = dict(model.config.label2id)
-        test_ds = BehaviorClipDataset(
-            clips_root / split, processor, num_frames, label_to_idx=label_to_idx
-        )
-        label_names = [
-            name for name, _ in sorted(label_to_idx.items(), key=lambda kv: kv[1])
-        ]
-    else:
-        test_ds = BehaviorClipDataset(clips_root / split, processor, num_frames)
-        label_names = [
-            d.name for d in sorted((clips_root / split).iterdir()) if d.is_dir()
-        ]
+    # Index clips by the model's own vocabulary so a split missing a class
+    # is scored against the right indices; out-of-vocabulary clips are
+    # skipped and counted.
+    label_to_idx = dict(model.config.label2id)
+    test_ds = BehaviorClipDataset(
+        clips_root / split, processor, num_frames, label_to_idx=label_to_idx
+    )
+    label_names = [
+        name for name, _ in sorted(label_to_idx.items(), key=lambda kv: kv[1])
+    ]
     test_loader = DataLoader(
         test_ds, batch_size=batch_size, shuffle=False, num_workers=4
     )
 
     all_labels, all_preds = predict_clip_indices(model, test_loader, dev)
 
-    report_kwargs: dict = {}
+    # Default: one report row per model class, including absent ones.
+    report_kwargs: dict = {"labels": list(range(len(label_names)))}
     report_header = ""
     if window_macro_f1:
         # Report exactly the classes present in truth or predictions, the

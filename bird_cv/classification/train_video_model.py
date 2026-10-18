@@ -132,7 +132,7 @@ def train_video_model(
     device: str = "cuda",
     freeze_encoder: bool = True,
     *,
-    selection_metric: Literal["accuracy", "macro_f1"] = "accuracy",
+    selection_metric: Literal["accuracy", "macro_f1"] = "macro_f1",
     weight_decay: float = 0.01,
     class_weighted_loss: bool = False,
     save_checkpoint: bool = True,
@@ -143,7 +143,7 @@ def train_video_model(
     Loads the train and val splits from ``clips_root``, fine-tunes a
     VideoMAE classification head (and optionally the full encoder), and
     saves the best checkpoint by validation ``selection_metric``
-    (accuracy by default).
+    (window macro-F1 by default).
 
     Args:
         clips_root: Root directory containing ``train/`` and ``val/``
@@ -162,10 +162,10 @@ def train_video_model(
         freeze_encoder: If ``True``, freeze the VideoMAE encoder and only
             train the classification head. Defaults to ``True``.
         selection_metric: Validation metric that picks the saved epoch:
-            ``"accuracy"`` (default) or window ``"macro_f1"`` (ADR 0005).
-            With ``"macro_f1"`` the val split is indexed by the train
-            split's labels, so a val split missing a class is scored
-            correctly.
+            window ``"macro_f1"`` (default, per ADR 0005) or ``"accuracy"``.
+            Either way the val split is indexed by the train split's
+            labels, so a val split missing a class is scored correctly;
+            val clips with labels train lacks are skipped and counted.
         weight_decay: AdamW weight decay. Defaults to 0.01 (AdamW's own
             default).
         class_weighted_loss: If ``True``, weight the cross-entropy loss by
@@ -174,10 +174,7 @@ def train_video_model(
             trials). Defaults to ``True``.
         epoch_callback: Called after each epoch with that epoch's
             ``epoch``, ``train_loss``, ``val_accuracy`` and
-            ``val_macro_f1``, e.g. to report to Ray Tune. ``val_macro_f1``
-            is NaN when the val split's label directories differ from the
-            train split's, which can only happen with
-            ``selection_metric="accuracy"``.
+            ``val_macro_f1``, e.g. to report to Ray Tune.
 
     Returns:
         ``selection_metric``, ``best_score``, ``best_epoch`` (1-indexed)
@@ -204,11 +201,8 @@ def train_video_model(
         clips_root / "val",
         processor,
         num_frames,
-        label_to_idx=label_to_idx if selection_metric == "macro_f1" else None,
+        label_to_idx=label_to_idx,
     )
-    vocab_matches = val_ds.label_to_idx == label_to_idx
-    if not vocab_matches:
-        print("  Val labels differ from train labels: val_macro_f1 not reported")
 
     id2label = {v: k for k, v in label_to_idx.items()}
     num_classes = len(label_to_idx)
@@ -288,17 +282,10 @@ def train_video_model(
         )
         correct = sum(int(t == p) for t, p in zip(val_labels, val_preds))
         val_acc = correct / len(val_ds)
-        # Val indices mean train labels only when both splits share one
-        # vocabulary; otherwise (default per-split indexing with a val split
-        # missing a class) the F1 would be wrong, so it isn't reported.
-        val_f1 = (
-            window_macro_f1(
-                [id2label[i] for i in val_labels],
-                [id2label[i] for i in val_preds],
-                classes=[id2label[i] for i in range(num_classes)],
-            )
-            if vocab_matches
-            else float("nan")
+        val_f1 = window_macro_f1(
+            [id2label[i] for i in val_labels],
+            [id2label[i] for i in val_preds],
+            classes=[id2label[i] for i in range(num_classes)],
         )
         score = val_f1 if selection_metric == "macro_f1" else val_acc
         marker = " *" if score > best_val_acc else ""
