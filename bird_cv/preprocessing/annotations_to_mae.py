@@ -10,6 +10,8 @@ import numpy as np
 import polars as pl
 from tqdm import tqdm
 
+from bird_cv.core.ids import parse_media_path
+
 
 def _extract_video_frames(video_path: Path) -> List[np.ndarray]:
     """Read every frame of a video into memory, in order.
@@ -155,7 +157,8 @@ def _write_range_clips(
             cv2.imwrite(str(clip_dir / f"{out_idx:05d}.jpg"), frame)
 
 
-def _label_dir(label: str) -> str:
+def label_dir_name(label: str) -> str:
+    """Directory name clips of ``label`` go in."""
     return label.replace("/", "_").replace(" ", "_").lower()
 
 
@@ -207,9 +210,12 @@ def process_item(
         stride: Number of frames to advance the sliding window each step.
             Defaults to 8.
         ranges_by_cage: If given, clip these ranges (by ``(camera_id,
-            video_id, cage)``) instead of the task's annotations; cages not
-            in it are skipped. Clip directories are named
-            ``{camera_id}_{video_id}_{cage}_s{range_idx}_clip{idx}``.
+            video_id, cage)`` as :func:`~bird_cv.core.ids.parse_media_path`
+            reads them) instead of the task's annotations; cages not in it
+            are skipped. Clip directories are named
+            ``{camera_id}_{video_id}_{cage}_s{range_idx}_clip{idx}``. A
+            range shorter than ``num_frames`` widens into neighbouring
+            frames, as annotation ranges do.
 
     Returns:
         None. Clip frames are written to disk as a side effect.
@@ -225,8 +231,14 @@ def process_item(
     video_id = dirs_names[2]
     cage = full_video_path.stem
 
-    if ranges_by_cage is not None and (camera_id, video_id, cage) not in ranges_by_cage:
-        return
+    if ranges_by_cage is not None:
+        # Same ids as ground truth
+        camera_id, video_id, cage = parse_media_path(video_field)
+        full_video_path = (
+            path_to_videos / camera_id / video_id / f"{cage}{full_video_path.suffix}"
+        )
+        if (camera_id, video_id, cage) not in ranges_by_cage:
+            return
     split = guidance.get((camera_id, video_id))
     if split is None:
         print(f"Video {video_path} not in split guidance, skipping.")
@@ -255,7 +267,7 @@ def process_item(
                 end,
                 num_frames,
                 stride,
-                path_to_output / split / _label_dir(label),
+                path_to_output / split / label_dir_name(label),
                 f"{camera_id}_{video_id}_{cage}_s{range_idx}",
             )
         return
@@ -276,7 +288,7 @@ def process_item(
                 continue
 
             label = labels[0]
-            label_dir = _label_dir(label)
+            label_dir = label_dir_name(label)
 
             for frame_range in value.get("ranges", []):
                 start = max(int(frame_range["start"]) - 1, 0)

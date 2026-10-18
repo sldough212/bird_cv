@@ -239,13 +239,15 @@ class YoloTrainer:
         return run_dir / "best.pt"
 
     def dataset_cameras(self, dataset: Path) -> set[str]:
-        """Camera folders under ``images/{train,val}/``."""
+        """Cameras under ``images/{train,val}/``: camera folders, and the
+        ``{camera_id}_...`` prefix of flat image files (camera ids have no
+        ``_``)."""
         return {
-            d.name
+            p.name if p.is_dir() else p.name.split("_", 1)[0]
             for split in ("train", "val")
             if (dataset / "images" / split).is_dir()
-            for d in (dataset / "images" / split).iterdir()
-            if d.is_dir()
+            for p in (dataset / "images" / split).iterdir()
+            if p.is_dir() or p.suffix == ".jpg"
         }
 
     def _fit(
@@ -357,6 +359,28 @@ class YoloTrainer:
             processes=media.processes,
             by_cage=True,
         )
+        # Every selected frame must have its image and label (no silent drops)
+        expected = selection.select(
+            "split",
+            stem=pl.format(
+                "{}_{}_{}_{}",
+                "camera_id",
+                "video_id",
+                "cage_id",
+                (pl.col("frame") + canonical_to_ls(0)).cast(pl.String).str.zfill(5),
+            ),
+        )
+        missing = [
+            f"{split}/{stem}"
+            for split, stem in expected.iter_rows()
+            if not (out_dir / "images" / split / f"{stem}.jpg").exists()
+            or not (out_dir / "labels" / split / f"{stem}.txt").exists()
+        ]
+        if missing:
+            raise RuntimeError(
+                f"{len(missing)} of {expected.height} selected frames were not "
+                f"written to {out_dir}, e.g. {missing[:10]}"
+            )
 
 
 class VideoMAETrainer:
@@ -477,15 +501,20 @@ class VideoMAETrainer:
 
         A bird-crop video's frame ``k`` is its cage's ``k``-th boxed
         canonical frame (ADR 0002), so each clip's canonical range maps to
-        crop frames through the ground-truth boxes.
+        crop frames through the ground-truth boxes. A selected clip shorter
+        than ``num_frames`` (a short labeled stretch) widens into the
+        neighbouring crop frames, which may show another behavior or a gap
+        between boxes, as clips built from annotations always have.
 
         Raises:
             ValueError: If a clip covers a frame with no box, or boxed frames
                 that aren't contiguous in the crop.
+            RuntimeError: If any selected clip was not written.
         """
         import polars as pl
 
         from bird_cv.preprocessing.annotations_to_mae import (
+            label_dir_name,
             stream_annotations_to_mae,
         )
 
@@ -532,6 +561,24 @@ class VideoMAETrainer:
             processes=media.processes,
             ranges_by_cage=ranges,
         )
+        # Every selected clip must be on disk (no silent drops)
+        split_of = dict(selection.select("camera_id", "split").unique().iter_rows())
+        missing = [
+            f"{key}/{i}"
+            for key, key_ranges in ranges.items()
+            for i, (label, _, _) in enumerate(key_ranges)
+            if not (
+                out_dir
+                / split_of[key[0]]
+                / label_dir_name(label)
+                / f"{key[0]}_{key[1]}_{key[2]}_s{i}_clip000"
+            ).is_dir()
+        ]
+        if missing:
+            raise RuntimeError(
+                f"{len(missing)} of {selection.height} selected clips were not "
+                f"written to {out_dir}, e.g. {missing[:10]}"
+            )
 
 
 def _trainers() -> dict[str, type]:

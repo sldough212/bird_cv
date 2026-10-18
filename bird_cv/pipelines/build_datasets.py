@@ -23,7 +23,7 @@ import logging
 import shutil
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
@@ -34,25 +34,41 @@ from bird_cv.evaluation.cv import fold_split
 from bird_cv.pipelines.config import BirdCVConfig, load_config
 from bird_cv.pipelines.prepare import config_hash, sampling_config
 
+if TYPE_CHECKING:
+    from bird_cv.pipelines.config import ModelSpec
+    from bird_cv.training.registry import DatasetMedia
+
 logger = logging.getLogger(__name__)
 
 
 def dataset_config(
     role: str,
-    kind: str,
+    spec: "ModelSpec",
     fold: int | None,
     prepared: Prepared,
     split: pl.DataFrame,
     selection: pl.DataFrame,
+    media: "DatasetMedia",
+    builder_version: int = 2,
 ) -> dict[str, Any]:
-    """Everything a dataset depends on; equal configs mean an equal dataset."""
+    """Everything a dataset depends on; equal configs mean an equal dataset.
+
+    Bump ``builder_version`` when a kind's ``build_dataset`` output changes.
+    """
     return {
+        "builder_version": builder_version,
         "role": role,
-        "kind": kind,
+        "kind": spec.kind,
+        "num_frames": spec.options.get("num_frames"),
         "fold": fold,
         "prepared": asdict(prepared),
         "split": [list(r) for r in split.sort("camera_id").iter_rows()],
         "selection_sha256": hashlib.sha256(selection.write_csv().encode()).hexdigest(),
+        "media": {
+            k: str(v) if isinstance(v, Path) else v
+            for k, v in asdict(media).items()
+            if k != "processes"
+        },
     }
 
 
@@ -138,7 +154,7 @@ def build_datasets(
                 )
                 selection = trainer.select(with_split(ground_truth, split), sampling)
             out_dir = layout.dataset(prepared, role, spec.kind, fold)
-            config = dataset_config(role, spec.kind, fold, prepared, split, selection)
+            config = dataset_config(role, spec, fold, prepared, split, selection, media)
             name = f"{role}/{spec.kind} " + (
                 "frozen" if fold is None else f"fold{fold}"
             )

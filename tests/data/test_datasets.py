@@ -64,9 +64,10 @@ def test_build_datasets_frozen_and_fold(
     )
     cfg = load_config(config)
     cameras, n = "abcd", 20
-    detect = [detect_task(c, "v", "0", [(1, n)], n=n) for c in cameras]
+    # Boxes from LS frame 6: crop frame k is canonical k + 5, not k
+    detect = [detect_task(c, "v", "0", [(6, n)], n=n) for c in cameras]
     classify = [
-        classify_task(c, "v", "0", [("preening", 1, 10), ("resting", 11, 20)])
+        classify_task(c, "v", "0", [("preening", 1, 7), ("resting", 8, 15)])
         for c in cameras
     ]
     for kind_dir in (cfg.path_to_cage_videos, cfg.path_to_bbox_videos):
@@ -81,6 +82,14 @@ def test_build_datasets_frozen_and_fold(
     )
     layout = Layout(base)
     prepared = layout.read_current()
+    truth = pl.read_parquet(
+        layout.ground_truth(prepared.snapshot_hash, prepared.gt_version)
+    )
+    boxed = set(
+        truth.filter(pl.col("bbox_left").is_not_null())
+        .select("camera_id", "frame")
+        .iter_rows()
+    )
 
     built = build_datasets(cfg, prepared.id, folds=None, processes=1)
     assert build_datasets(cfg, prepared.id, folds=None, processes=1) == built
@@ -106,3 +115,18 @@ def test_build_datasets_frozen_and_fold(
                 seen.setdefault(f.name.split("_")[0], set()).add(split_dir)
             assert seen, (role, fold)
             assert all(dirs == {split[c]} for c, dirs in seen.items()), (seen, split)
+
+            if role == "detector":
+                # Image stem frame F is canonical F - 1; labeled iff boxed
+                selected = set(
+                    pl.read_parquet(
+                        layout.dataset_selection(prepared, role, spec.kind, fold)
+                    )
+                    .select("camera_id", "frame")
+                    .iter_rows()
+                )
+                for image in (out / "images").glob("*/*.jpg"):
+                    camera, frame = image.stem.split("_")[0], int(image.stem[-5:]) - 1
+                    assert (camera, frame) in selected
+                    label = out / "labels" / image.parent.name / f"{image.stem}.txt"
+                    assert bool(label.read_text().strip()) == ((camera, frame) in boxed)
