@@ -126,7 +126,7 @@ def run_train(
     spec = cfg.models.roles()[role]
     trainer = get_trainer(spec.kind)
     layout = Layout(cfg.path_to_base_output)
-    prepared = layout.resolve_prepared(prepared_id)
+    prepared = layout.resolve_prepared(prepared_id, run_id)
     dataset = layout.dataset(prepared, role, spec.kind, fold)
     check_fold(
         fold,
@@ -184,16 +184,25 @@ def run_train(
 
 
 def print_paths(cfg: BirdCVConfig, run_id: str) -> None:
-    """Print each role's frozen-split run dir and checkpoint as shell assignments.
+    """Print a pipeline run's paths and sizes as shell assignments.
 
     Variables are ``ROLES`` (space-separated role names), ``BASE``,
+    ``PREPARED_FILE``, ``N_SWEEP`` (val-sweep settings), ``INFER_DIR``,
+    ``SWEEP_DIR`` (sweep evaluation), ``TEST_DIR`` (test evaluation),
     ``{ROLE}_RUN_DIR`` and ``{ROLE}_BEST``.
     """
+    from bird_cv.evaluation.e2e import sweep_settings
     from bird_cv.training.registry import get_trainer
 
     layout = Layout(cfg.path_to_base_output)
+    ev = cfg.evaluate
     print(f"ROLES='{' '.join(cfg.models.roles())}'")
     print(f"BASE='{cfg.path_to_base_output}'")
+    print(f"PREPARED_FILE='{layout.run_prepared(run_id)}'")
+    print(f"N_SWEEP={len(sweep_settings(ev.sweep_gap_fill_frames, ev.sweep_det_conf))}")
+    print(f"INFER_DIR='{layout.infer_run(run_id).dir}'")
+    print(f"SWEEP_DIR='{layout.evaluation_run('sweep', run_id)}'")
+    print(f"TEST_DIR='{layout.evaluation_run('test', run_id)}'")
     for role, spec in cfg.models.roles().items():
         run_dir = layout.train_run(role, run_id)
         best = get_trainer(spec.kind).checkpoint_path(run_dir)

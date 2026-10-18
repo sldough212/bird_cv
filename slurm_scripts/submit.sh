@@ -1,17 +1,17 @@
 #!/bin/bash
-# Submit the frozen-split train -> evaluate chain with afterok dependencies.
+# Submit the whole pipeline as afterok-chained SLURM jobs:
+# prepare -> build datasets -> train each [models] role (+ model metrics)
+# -> val-sweep inference array -> evaluate sweep -> test inference at the
+# chosen setting -> evaluate test.
 #
 #   bash slurm_scripts/submit.sh [--smoke] [--prepared ID] [PREPARE_ARGS...]
 #
-# Without --prepared (or PREPARED=ID), runs prepare here first (PREPARE_ARGS go
-# to prepare.py, e.g. --detect-export F --classify-export F or --hostname IP)
-# and captures the prepared-data id it prints; every job gets that id.
-# Trains every [models] role (ROLES, printed by `train.py CONFIG paths`) with
-# the model its config table names, then scores each role's model on val/test.
-# --smoke (or SMOKE=1) runs 2 tuning trials and 2 epochs per role, for a
-# first cluster run; it is a smoke test, never report its scores.
-# Override CONFIG or RUN_ID in the environment. Output paths come from
-# bird_cv/core/layout.py under path_to_base_output and are printed below.
+# PREPARE_ARGS go to prepare.py (e.g. --detect-export F --classify-export F).
+# The prepare job writes its id to PREPARED_FILE, which later jobs read via
+# --run-id; --prepared ID (or PREPARED=ID) skips prepare and writes ID there.
+# --smoke (or SMOKE=1): 2 tuning trials and 2 epochs per role, and 2 videos
+# per inference run; a smoke test, never report its scores.
+# Override CONFIG or RUN_ID in the environment.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -33,47 +33,66 @@ if command -v module >/dev/null 2>&1; then
     module load gcc/14.2.0 python/3.12.0
 fi
 source .venv/bin/activate
-
-if [ -z "$PREPARED" ]; then
-    PREPARE_OUT=$(python3 bird_cv/pipelines/prepare.py "$CONFIG" "${PREPARE_ARGS[@]}")
-    PREPARED=$(echo "$PREPARE_OUT" | sed -n 's/^PREPARED=//p' | tail -n 1)
-    if [ -z "$PREPARED" ]; then
-        echo "prepare.py printed no PREPARED= id" >&2
-        exit 1
-    fi
-fi
-TRAIN_ARGS=(--run-id "$RUN_ID" --prepared "$PREPARED")
-[ "$SMOKE" = "1" ] && TRAIN_ARGS+=(--smoke)
-
-# Resolve paths with the same code the jobs use.
 if ! PATHS=$(python3 bird_cv/pipelines/train.py "$CONFIG" paths --run-id "$RUN_ID"); then
     echo "Could not resolve output paths from $CONFIG" >&2
     exit 1
 fi
 eval "$PATHS"
-echo "RUN_ID=$RUN_ID CONFIG=$CONFIG SMOKE=$SMOKE PREPARED=$PREPARED"
+echo "RUN_ID=$RUN_ID CONFIG=$CONFIG SMOKE=$SMOKE"
 echo "$PATHS"
 
+[ -n "$ROLES" ] || { echo "No [models] roles in $CONFIG" >&2; exit 1; }
+if [ -n "$PREPARED" ]; then
+    mkdir -p "$(dirname "$PREPARED_FILE")"
+    echo "$PREPARED" > "$PREPARED_FILE"
+fi
+RUN=(--run-id "$RUN_ID")
+INFER=("${RUN[@]}" --train-run-id "$RUN_ID")
+TRAIN=("${RUN[@]}")
+if [ "$SMOKE" = "1" ]; then
+    TRAIN+=(--smoke)
+    INFER+=(--limit 2)
+fi
 GPU=(--gres=gpu:1 --partition=mb-l40s,mb-a30,mb-h100,mb-a6000,mb-r6000)
+DEP=(--kill-on-invalid-dep=yes --dependency)
+JOBS=()
+
+after=()
+if [ -z "$PREPARED" ]; then
+    prepare=$(sbatch --parsable slurm_scripts/run_prepare.sh --run-id "$RUN_ID" \
+        ${PREPARE_ARGS[@]+"${PREPARE_ARGS[@]}"})
+    echo "prepare=$prepare"
+    JOBS+=("$prepare")
+    after=("${DEP[@]}" "afterok:$prepare")
+fi
+build=$(sbatch --parsable ${after[@]+"${after[@]}"} slurm_scripts/run_build_datasets.sh "${RUN[@]}")
+echo "build_datasets=$build"
+JOBS+=("$build")
+
 TRAIN_JOBS=()
 for role in $ROLES; do
-    job=$(sbatch --parsable slurm_scripts/run_train.sh "$role" "${TRAIN_ARGS[@]}")
-    eval_job=$(sbatch --parsable --dependency=afterok:$job "${GPU[@]}" \
-        slurm_scripts/run_evaluate.sh model --role "$role" \
-        --run-id "$RUN_ID" --prepared "$PREPARED")
+    job=$(sbatch --parsable "${DEP[@]}" "afterok:$build" \
+        slurm_scripts/run_train.sh "$role" "${TRAIN[@]}")
+    eval_job=$(sbatch --parsable "${DEP[@]}" "afterok:$job" "${GPU[@]}" \
+        slurm_scripts/run_evaluate.sh model --role "$role" "${RUN[@]}")
     echo "train_${role}=$job evaluate_${role}=$eval_job"
     TRAIN_JOBS+=("$job")
+    JOBS+=("$job" "$eval_job")
 done
+trained=$(IFS=:; echo "${TRAIN_JOBS[*]}")
 
-# End-to-end evaluation reads predictions from the inference runs that
-# bird_cv/core/layout.py places under infer/$RUN_ID/{val_sweep/gap{g}_conf{c},test}/,
-# made with this run's checkpoints (infer.py --train-run-id $RUN_ID).
-# TODO(integration, #48 part 3): submit val-sweep inference with
-# --dependency=afterok:$(IFS=:; echo "${TRAIN_JOBS[*]}"), then
-#   sbatch --dependency=afterok:$infer_val slurm_scripts/run_evaluate.sh sweep --run-id "$RUN_ID" --prepared "$PREPARED"
-# then test inference with best_setting.json, then
-#   sbatch --dependency=afterok:$infer_test slurm_scripts/run_evaluate.sh test --run-id "$RUN_ID" --prepared "$PREPARED"
-echo "Inference is not chained yet (waiting on #48 part 3). Once val-sweep and"
-echo "test predictions exist under infer/$RUN_ID/, run:"
-echo "  sbatch slurm_scripts/run_evaluate.sh sweep --run-id $RUN_ID --prepared $PREPARED"
-echo "  sbatch slurm_scripts/run_evaluate.sh test --run-id $RUN_ID --prepared $PREPARED"
+sweep=$(sbatch --parsable "${DEP[@]}" "afterok:$trained" \
+    --array=0-$((N_SWEEP - 1)) \
+    slurm_scripts/run_infer_sweep.sh "${INFER[@]}")
+eval_sweep=$(sbatch --parsable "${DEP[@]}" "afterok:$sweep" \
+    slurm_scripts/run_evaluate.sh sweep "${RUN[@]}")
+infer_test=$(sbatch --parsable "${DEP[@]}" "afterok:$eval_sweep" \
+    slurm_scripts/run_infer_array.sh --split test "${INFER[@]}")
+eval_test=$(sbatch --parsable "${DEP[@]}" "afterok:$infer_test" \
+    slurm_scripts/run_evaluate.sh test "${RUN[@]}")
+JOBS+=("$sweep" "$eval_sweep" "$infer_test" "$eval_test")
+echo "infer_sweep=$sweep ($N_SWEEP settings) evaluate_sweep=$eval_sweep"
+echo "infer_test=$infer_test evaluate_test=$eval_test"
+echo "Prepared id: $PREPARED_FILE"
+echo "Predictions: $INFER_DIR/{val_sweep,test}  Sweep: $SWEEP_DIR  Test: $TEST_DIR"
+echo "Cancel: scancel ${JOBS[*]}"

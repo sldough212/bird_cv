@@ -9,10 +9,11 @@ import bird_cv.inference.chunks as chunks
 from bird_cv.classification.types import FramePrediction
 from bird_cv.core.labels import NO_BIRD
 from bird_cv.detection.types import Detection
-from bird_cv.inference.cages import check_sam2_configs
+from bird_cv.inference.cages import CageMasks, cage_frame, check_sam2_configs
 from bird_cv.inference.chunks import iter_chunks, stitch_overlapping
 from bird_cv.inference.classify import classify_runs
 from bird_cv.inference.gap_fill import cage_predictions, fill_gaps
+from bird_cv.preprocessing.crop import crop_cage_frame
 
 
 class EchoClassifier:
@@ -132,3 +133,23 @@ def test_missing_sam2_config_fails_fast(tmp_path: Path) -> None:
     check_sam2_configs(tmp_path, ["H7,I22"])
     with pytest.raises(FileNotFoundError, match="H9, I33"):
         check_sam2_configs(tmp_path, ["H7,I22", "I33", "H9"])
+
+
+def test_cage_masks_crop_box_matches_full_frame_crop() -> None:
+    frame = np.random.default_rng(0).integers(0, 255, (40, 50, 3), dtype=np.uint8)
+    middle, edge, empty = (np.zeros((40, 50), dtype=bool) for _ in range(3))
+    middle[10:20, 15:31] = True
+    middle[25, 22] = True
+    edge[0:6, 44:50] = True  # padding clipped at the frame border
+    masks = CageMasks()
+    masks.add([(0, {"0": middle, "1": edge, "2": empty})])
+    shapes = masks.cage_frame_shapes()
+
+    for cage_id, mask in (("0", middle), ("1", edge)):
+        expected = crop_cage_frame(frame, mask)
+        got = cage_frame(frame, masks.at(0, cage_id), shapes[cage_id])
+        assert expected is not None and got is not None
+        h, w = expected.shape[:2]
+        assert np.array_equal(got[:h, :w], expected)
+        assert not got[h:].any() and not got[:, w:].any()
+    assert masks.at(0, "2") is None

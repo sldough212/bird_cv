@@ -9,11 +9,11 @@
 #SBATCH --array=0-3
 
 # End-to-end inference, videos split across array tasks; every task writes
-# into the same run directory (infer/infer_<array job id>, see
-# bird_cv/core/layout.py). Models come from the config; extra arguments go to
-# infer.py, e.g.:
+# into the same run directory: infer/infer_<array job id> by default, or the
+# layout's dir for --run-id / --split (see bird_cv/core/layout.py). Models come
+# from the config; extra arguments go to infer.py, e.g.:
 #   sbatch slurm_scripts/run_infer_array.sh --camera H7,I22 --limit 4
-#   sbatch slurm_scripts/run_infer_array.sh --train-run-id RUN_ID
+#   sbatch slurm_scripts/run_infer_array.sh --split test --run-id RUN_ID --train-run-id RUN_ID
 
 echo "SLURM_JOB_ID:" $SLURM_JOB_ID "TASK:" $SLURM_ARRAY_TASK_ID
 start=$(date +'%D %T')
@@ -27,7 +27,7 @@ source .venv/bin/activate
 
 export PYTHONUNBUFFERED=1
 
-python3 bird_cv/pipelines/infer.py bird_cv/pipelines/configs/config.toml \
+python3 bird_cv/pipelines/infer.py "${CONFIG:-bird_cv/pipelines/configs/config.toml}" \
     --run-id "infer_${SLURM_ARRAY_JOB_ID}" \
     --task-index "${SLURM_ARRAY_TASK_ID}" \
     --num-tasks "${SLURM_ARRAY_TASK_COUNT}" \

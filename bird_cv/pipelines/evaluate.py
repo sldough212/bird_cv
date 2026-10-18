@@ -120,7 +120,7 @@ def run_evaluate(
         raise ValueError(f"{mode} mode needs the scored run's --run-id")
     if mode == "model" and role not in cfg.models.roles():
         raise ValueError(f"role must be one of {sorted(cfg.models.roles())}")
-    prepared = layout.resolve_prepared(prepared_id)
+    prepared = layout.resolve_prepared(prepared_id, run_id)
     out = layout.evaluation_run(mode, run_id, role)
     out.mkdir(parents=True, exist_ok=True)
     results = EvalRun(out)
@@ -170,21 +170,24 @@ def run_evaluate(
 
         if mode == "sweep":
             val_truth = _truth_for(truth, _cameras(split, "val"))
+            runs = {
+                setting: layout.sweep_infer_run(run_id, *setting)
+                for setting in sweep_settings(
+                    ev.sweep_gap_fill_frames, ev.sweep_det_conf
+                )
+            }
+            missing = [
+                str(r.dir) for r in runs.values() if not r.predictions_dir.exists()
+            ]
+            if missing:
+                raise FileNotFoundError(f"Missing sweep settings: {missing}")
             predictions = {}
-            for gap, conf in sweep_settings(
-                ev.sweep_gap_fill_frames, ev.sweep_det_conf
-            ):
-                infer_run = layout.sweep_infer_run(run_id, gap, conf)
-                if not infer_run.predictions_dir.exists():
-                    print(f"Skipping missing sweep setting: {infer_run.dir}")
-                    continue
+            for setting, infer_run in runs.items():
                 check_prepared(
                     prepared, infer_run.task_manifests(), f"inference {infer_run.dir}"
                 )
-                predictions[(gap, conf)] = load_predictions(infer_run.predictions_dir)
+                predictions[setting] = load_predictions(infer_run.predictions_dir)
             sweep_root = layout.sweep_root(run_id)
-            if not predictions:
-                raise FileNotFoundError(f"No sweep predictions under {sweep_root}")
             sweep = run_sweep(val_truth, predictions, ev.iou_threshold)
             print(sweep)
             sweep.write_parquet(results.sweep)

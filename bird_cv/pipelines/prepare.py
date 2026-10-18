@@ -73,6 +73,7 @@ def run_prepare(
     hostname: str = "localhost",
     detect_export: Path | None = None,
     classify_export: Path | None = None,
+    run_id: str | None = None,
 ) -> Path:
     """Run every prepare stage and return the sampling output directory.
 
@@ -83,6 +84,8 @@ def run_prepare(
             exporting from Label Studio. Must be given with
             ``classify_export``.
         classify_export: Existing Classify export to snapshot.
+        run_id: Pipeline run whose jobs read the prepared id from
+            :meth:`Layout.run_prepared`.
 
     Returns:
         The sampling directory (:meth:`Layout.sampling_dir`), now also the
@@ -214,8 +217,10 @@ def run_prepare(
         out_dir,
     )
     layout.write_current(prepared)
+    if run_id:
+        layout.run_prepared(run_id).parent.mkdir(parents=True, exist_ok=True)
+        layout.run_prepared(run_id).write_text(prepared.id)
     logger.info("Prepared data in %s", out_dir)
-    # Last stdout line: the id later stages take as --prepared
     print(f"PREPARED={prepared.id}")
     return out_dir
 
@@ -238,12 +243,17 @@ if __name__ == "__main__":
         type=Path,
         help="Use this Classify export, skip Label Studio",
     )
+    parser.add_argument("--run-id", default=None, help="Pipeline run id")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     run_prepare(
-        load_config(args.config_path),
+        load_config(
+            args.config_path,
+            require_api_key=args.detect_export is None or args.classify_export is None,
+        ),
         hostname=args.hostname,
         detect_export=args.detect_export,
         classify_export=args.classify_export,
+        run_id=args.run_id,
     )
