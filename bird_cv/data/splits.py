@@ -9,7 +9,6 @@ frame counts.
 """
 
 import logging
-import re
 from collections.abc import Iterable, Mapping
 from itertools import combinations
 from pathlib import Path
@@ -18,30 +17,34 @@ import numpy as np
 import polars as pl
 
 from bird_cv.core.labels import BEHAVIORS
+from bird_cv.core.layout import (
+    cv_folds_file,
+    split_file,
+    split_manifest_dir,
+    split_version_of,
+)
 from bird_cv.core.manifest import new_manifest, write_manifest
 from bird_cv.core.schemas import CV_FOLD_SCHEMA, SPLIT_SCHEMA, SPLITS
 
 logger = logging.getLogger(__name__)
 
-_SPLIT_FILE = re.compile(r"split_v(\d+)\.parquet")
-
 
 def split_path(splits_dir: Path, version: int) -> Path:
-    """Location of split version ``version``."""
-    return splits_dir / f"split_v{version}.parquet"
+    """Location of split version ``version`` (see :mod:`bird_cv.core.layout`)."""
+    return split_file(splits_dir, version)
 
 
 def cv_folds_path(splits_dir: Path, version: int) -> Path:
     """Location of the CV folds belonging to split version ``version``."""
-    return splits_dir / f"cv_folds_v{version}.parquet"
+    return cv_folds_file(splits_dir, version)
 
 
 def latest_split_version(splits_dir: Path) -> int | None:
     """Highest split version written in ``splits_dir``, or None if there is none."""
     versions = [
-        int(m.group(1))
+        v
         for p in splits_dir.glob("split_v*.parquet")
-        if (m := _SPLIT_FILE.fullmatch(p.name))
+        if (v := split_version_of(p)) is not None
     ]
     return max(versions, default=None)
 
@@ -430,7 +433,7 @@ def update_split(
                 "split_behavior_frames": split_behavior_frames(split, behavior_frames),
             },
         ),
-        splits_dir / f"split_v{version}",
+        split_manifest_dir(splits_dir, version),
     )
     logger.info("Wrote split v%d (%d cameras)", version, split.height)
     return version

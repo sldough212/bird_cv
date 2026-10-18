@@ -102,6 +102,9 @@ def write_manifest(manifest: Manifest, output_dir: Path) -> Path:
 
 def read_manifest(output_dir: Path) -> Manifest:
     """Read the ``manifest.json`` in ``output_dir``."""
-    return msgspec.json.decode(
-        (output_dir / "manifest.json").read_bytes(), type=Manifest
-    )
+    return read_manifest_file(output_dir / "manifest.json")
+
+
+def read_manifest_file(path: Path) -> Manifest:
+    """Read a manifest file of any name (e.g. an array task's)."""
+    return msgspec.json.decode(path.read_bytes(), type=Manifest)

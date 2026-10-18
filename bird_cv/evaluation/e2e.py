@@ -17,6 +17,7 @@ from typing import Any
 
 import polars as pl
 
+from bird_cv.core.layout import EvalRun
 from bird_cv.core.schemas import GROUND_TRUTH_SCHEMA, KEY_COLUMNS, PREDICTION_SCHEMA
 from bird_cv.evaluation.metrics import (
     box_columns,
@@ -178,22 +179,22 @@ def write_e2e_result(result: E2EResult, output_dir: Path) -> None:
 
     Args:
         result: The scores to write.
-        output_dir: Created if missing. Receives ``metrics.json``
-            (:meth:`E2EResult.summary`), ``per_class.parquet``,
-            ``confusion.parquet`` (rows true, one column per predicted
-            class), ``per_camera.parquet`` and ``mot.parquet``.
+        output_dir: Created if missing. Receives, as named by
+            :class:`~bird_cv.core.layout.EvalRun`: the metrics
+            (:meth:`E2EResult.summary`), per-class scores, the confusion
+            matrix (rows true, one column per predicted class), per-camera
+            scores and MOT metrics.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "metrics.json").write_text(
-        json.dumps(result.summary(), indent=2, default=float)
-    )
-    result.frame.per_class.write_parquet(output_dir / "per_class.parquet")
+    out = EvalRun(output_dir)
+    out.metrics.write_text(json.dumps(result.summary(), indent=2, default=float))
+    result.frame.per_class.write_parquet(out.per_class)
     pl.DataFrame(
         {"label": list(result.frame.classes)}
         | {c: result.frame.confusion[:, j] for j, c in enumerate(result.frame.classes)}
-    ).write_parquet(output_dir / "confusion.parquet")
-    result.per_camera.write_parquet(output_dir / "per_camera.parquet")
-    result.mot.write_parquet(output_dir / "mot.parquet")
+    ).write_parquet(out.confusion)
+    result.per_camera.write_parquet(out.per_camera)
+    result.mot.write_parquet(out.mot)
 
 
 def sweep_settings(
@@ -201,11 +202,6 @@ def sweep_settings(
 ) -> list[tuple[int, float]]:
     """Every (gap fill, detection confidence) pair of the val sweep grid."""
     return [(g, c) for g in gap_fill_frames for c in det_conf]
-
-
-def sweep_dir_name(gap_fill_frames: int, det_conf: float) -> str:
-    """Directory name for one sweep setting's predictions, e.g. ``gap8_conf0.25``."""
-    return f"gap{gap_fill_frames}_conf{det_conf:g}"
 
 
 def run_sweep(

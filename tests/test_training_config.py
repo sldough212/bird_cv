@@ -1,10 +1,16 @@
+import dataclasses
 import re
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 import pytest
 
-from bird_cv.pipelines.config import TrainConfig, load_config
+from bird_cv.core.layout import Layout, Prepared
+from bird_cv.core.manifest import new_manifest, write_manifest
+from bird_cv.pipelines.evaluate import check_prepared
+from bird_cv.inference.registry import inference_models
+from bird_cv.pipelines.config import ModelsConfig, load_config
 from bird_cv.pipelines.train import check_fold
 from bird_cv.training.registry import (
     VideoMAETrainer,
@@ -16,36 +22,44 @@ from bird_cv.training.registry import (
 CONFIG = Path(__file__).parents[1] / "bird_cv/pipelines/configs/config.toml"
 
 
-def _config(tmp_path: Path, extra: str = "") -> Path:
+def _config(tmp_path: Path, detector: str = "") -> Path:
+    """The committed config under ``tmp_path``, ``detector`` added to
+    [models.detector]."""
     text = re.sub(
         r'^path_to_base_output = ".*"$',
         f'path_to_base_output = "{tmp_path}"',
         CONFIG.read_text(),
         flags=re.M,
     )
+    text = text.replace("\n[models.detector]\n", f"\n[models.detector]\n{detector}\n")
     path = tmp_path / "config.toml"
-    path.write_text(text + extra)
+    path.write_text(text)
     return path
 
 
+def _without_checkpoints(models: ModelsConfig) -> ModelsConfig:
+    """``train`` minus the committed checkpoints and inference options."""
+    specs: dict[str, Any] = {
+        role: dataclasses.replace(spec, checkpoint=None, infer_options={})
+        for role, spec in models.roles().items()
+    }
+    return dataclasses.replace(models, **specs)
+
+
 def test_train_tables_merge_onto_defaults(tmp_path: Path) -> None:
-    cfg = load_config(
-        _config(tmp_path, "\n[train.detector]\nepochs = 5\n"), require_api_key=False
-    )
-    defaults = TrainConfig()
-    assert cfg.train.detector.epochs == 5
-    assert cfg.train.detector.kind == defaults.detector.kind
-    assert cfg.train.detector.pretrained == defaults.detector.pretrained
-    assert cfg.train.detector.tune_trials == defaults.detector.tune_trials
-    assert cfg.train.classifier == defaults.classifier
+    cfg = load_config(_config(tmp_path, "epochs = 5"), require_api_key=False)
+    defaults = ModelsConfig()
+    assert cfg.models.detector.epochs == 5
+    assert cfg.models.detector.kind == defaults.detector.kind
+    assert cfg.models.detector.pretrained == defaults.detector.pretrained
+    assert cfg.models.detector.tune_trials == defaults.detector.tune_trials
+    assert _without_checkpoints(cfg.models).classifier == defaults.classifier
 
-    with pytest.raises(ValueError, match="train.detector"):
-        load_config(
-            _config(tmp_path, "\n[train.detector]\nepoch = 5\n"),
-            require_api_key=False,
-        )
+    with pytest.raises(ValueError, match="models.detector"):
+        load_config(_config(tmp_path, "epoch = 5"), require_api_key=False)
 
-    assert load_config(_config(tmp_path), require_api_key=False).train == defaults
+    models = load_config(_config(tmp_path), require_api_key=False).models
+    assert _without_checkpoints(models) == defaults
 
 
 def test_registry_and_search_space() -> None:
@@ -72,16 +86,66 @@ def test_registry_and_search_space() -> None:
 
 
 def test_fold_check_sees_test_camera_in_yolo_layout(tmp_path: Path) -> None:
-    cfg = load_config(_config(tmp_path), require_api_key=False)
-    folds_path = tmp_path / cfg.evaluate.cv_folds
-    folds_path.parent.mkdir(parents=True)
+    folds_path = tmp_path / "cv_folds.parquet"
     pl.DataFrame({"camera_id": ["A", "C"], "fold": [0, 1]}).write_parquet(folds_path)
 
     dataset = tmp_path / "fold1"
     (dataset / "images" / "train" / "C").mkdir(parents=True)  # fold 1's test camera
-    pl.DataFrame({"camera_id": ["A"], "split": ["train"]}).write_parquet(
-        dataset / "split.parquet"
-    )
+    split_path = dataset / "split.parquet"
+    pl.DataFrame({"camera_id": ["A"], "split": ["train"]}).write_parquet(split_path)
 
     with pytest.raises(ValueError, match="C"):
-        check_fold(cfg, 1, {}, dataset, YoloTrainer())
+        check_fold(
+            1,
+            {},
+            dataset,
+            YoloTrainer(),
+            split_path=split_path,
+            cv_folds_path=folds_path,
+        )
+
+
+def test_inference_models_come_from_config(tmp_path: Path) -> None:
+    cfg = load_config(_config(tmp_path), require_api_key=False)
+    with pytest.raises(FileNotFoundError, match="detector.*'r1'"):
+        inference_models(cfg, train_run_id="r1")
+    layout = Layout(tmp_path)
+    for role, trainer in (
+        ("detector", YoloTrainer()),
+        ("classifier", VideoMAETrainer()),
+    ):
+        checkpoint = trainer.checkpoint_path(layout.train_run(role, "r1"))
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.touch()
+    models = inference_models(cfg, train_run_id="r1")
+    assert models.kinds() == {
+        "segmenter": "sam2",
+        "detector": "yolo",
+        "classifier": "videomae",
+    }
+    assert models.checkpoints["detector"] == tmp_path / "train/detector/r1/best.pt"
+
+    edits = (
+        ("[infer.segmenter]\n", '[infer.segmenter]\nkind = "nope"\n', "nope"),
+        ("[infer.segmenter]\n", "[infer.segmenter]\noptions = { iou = 1 }\n", "iou"),
+        ("{ tracker_path", "{ trackr_path", "trackr_path"),
+        ('checkpoint = "/gscratch', 'checkpoint = "gscratch', "absolute"),
+    )
+    for old, new, match in edits:
+        path = _config(tmp_path)
+        path.write_text(path.read_text().replace(old, new, 1))
+        with pytest.raises(ValueError, match=match):
+            load_config(path, require_api_key=False)
+
+
+def test_prepared_id_round_trips_and_evaluate_rejects_other_data(
+    tmp_path: Path,
+) -> None:
+    used = Prepared("abc", 1, 2, "deadbeef")
+    assert Prepared.parse(used.id) == used
+    other = Prepared("abc", 1, 3, "deadbeef")
+    manifest = new_manifest("infer", config={"prepared": dataclasses.asdict(other)})
+    path = write_manifest(manifest, tmp_path)
+    check_prepared(other, [path], "run")
+    with pytest.raises(ValueError, match="split_v3"):
+        check_prepared(used, [path], "run")

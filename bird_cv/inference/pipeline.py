@@ -25,27 +25,21 @@ import cv2
 import msgspec
 import numpy as np
 import polars as pl
-import torch
-from sam2.build_sam import build_sam2_video_predictor_hf
 
-from bird_cv.classification.predict_video_model import VideoMAEClassifier
 from bird_cv.classification.types import FramePrediction
 
 from bird_cv.core.frames import STANDARD_FPS
 from bird_cv.core.ids import parse_raw_video_path
+from bird_cv.core.layout import InferRun
 from bird_cv.core.manifest import new_manifest
-from bird_cv.core.schemas import DETECTION_SCHEMA, PREDICTION_SCHEMA
-from bird_cv.core.timing import StageTimer
-from bird_cv.detection.track import YoloDetector
-from bird_cv.detection.types import Detection
-from bird_cv.inference.cages import (
-    CageMasks,
-    Sam2CageSegmenter,
-    cage_frame,
-    check_sam2_configs,
-    sam2_config_path,
-    sam2_reference_frame,
+from bird_cv.core.schemas import (
+    DETECTION_SCHEMA,
+    PREDICTION_SCHEMA,
+    detection_columns,
 )
+from bird_cv.core.timing import StageTimer
+from bird_cv.detection.types import Detection
+from bird_cv.inference.cages import CageMasks, cage_frame
 from bird_cv.inference.chunks import iter_chunks, stitch_overlapping
 from bird_cv.inference.classify import (
     bird_crop_rgb,
@@ -58,6 +52,7 @@ from bird_cv.inference.protocols import (
     FrameClassifier,
     StreamingDetector,
 )
+from bird_cv.inference.registry import InferenceModels
 from bird_cv.preprocessing.standardize import standardize_video
 from bird_cv.pipelines.config import InferConfig
 
@@ -75,9 +70,8 @@ def infer_video(
 ) -> pl.DataFrame:
     """Run the full pipeline on one raw video and write its outputs.
 
-    Writes, under ``run_dir``: ``standardized/{camera_id}/{video_id}.mp4``,
-    ``detections/{camera_id}/{video_id}.parquet`` (raw tracks) and
-    ``predictions/{camera_id}/{video_id}.parquet``.
+    Writes the video's standardized copy, raw detections and predictions
+    where :class:`~bird_cv.core.layout.InferRun` puts them in ``run_dir``.
 
     Args:
         raw_video_path: Raw video at ``.../{camera_id}/{video_id}.{ext}``.
@@ -102,8 +96,9 @@ def infer_video(
             f"Classifier input {classifier.input_type!r} is not supported yet"
         )
     camera_id, video_id = parse_raw_video_path(raw_video_path)
-    std_path = run_dir / "standardized" / camera_id / f"{video_id}.mp4"
-    out_path = run_dir / "predictions" / camera_id / f"{video_id}.parquet"
+    out = InferRun(run_dir)
+    std_path = out.standardized(camera_id, video_id)
+    out_path = out.predictions(camera_id, video_id)
 
     expected = _expected_frames(raw_video_path)
     if max_frames is not None:
@@ -155,7 +150,9 @@ def infer_video(
                 # Track each contiguous stretch of non-empty cage frames
                 for run_start, run in _split_runs(cage_frames):
                     detections[cage_id].extend(tracker.track(run, run_start))
-    _write_detections(detections, camera_id, video_id, run_dir / "detections")
+    _write_detections(
+        detections, camera_id, video_id, out.detections(camera_id, video_id)
+    )
 
     boxes = {
         c: fill_gaps(
@@ -241,25 +238,28 @@ def _write_parquet(df: pl.DataFrame, path: Path) -> None:
 def detection_rows(
     detections: Iterable[Detection], camera_id: str, video_id: str, cage_id: str
 ) -> list[dict[str, Any]]:
-    """:data:`DETECTION_SCHEMA` rows: each ``Detection``'s fields plus the ids.
+    """:data:`DETECTION_SCHEMA` rows: the ids plus each ``Detection``'s fields.
+
+    Fields are renamed by :func:`~bird_cv.core.schemas.detection_columns`.
 
     Raises:
         TypeError: If ``Detection``'s fields no longer match the schema.
     """
-    columns = ("camera_id", "video_id", "cage_id") + tuple(
-        f.name for f in fields(Detection)
-    )
-    if columns != tuple(DETECTION_SCHEMA):
+    names = detection_columns()
+    columns = ("camera_id", "video_id", "cage_id") + tuple(names.values())
+    if tuple(f.name for f in fields(Detection)) != tuple(names) or columns != tuple(
+        DETECTION_SCHEMA
+    ):
         raise TypeError("Detection fields and DETECTION_SCHEMA have drifted apart")
     ids = {"camera_id": camera_id, "video_id": video_id, "cage_id": cage_id}
-    return [{**ids, **asdict(d)} for d in detections]
+    return [{**ids, **{names[k]: v for k, v in asdict(d).items()}} for d in detections]
 
 
 def _write_detections(
     detections: dict[str, list[Detection]],
     camera_id: str,
     video_id: str,
-    output_dir: Path,
+    path: Path,
 ) -> None:
     """Write raw tracker output, before filtering and gap fill.
 
@@ -267,18 +267,14 @@ def _write_detections(
         detections: Each cage's detections, frames canonical.
         camera_id: Camera id.
         video_id: Video id.
-        output_dir: Root; writes ``{camera_id}/{video_id}.parquet`` under it
-            with :data:`DETECTION_SCHEMA`.
+        path: Parquet to write, with :data:`DETECTION_SCHEMA`.
     """
     rows = [
         row
         for cage_id, dets in detections.items()
         for row in detection_rows(dets, camera_id, video_id, cage_id)
     ]
-    _write_parquet(
-        pl.DataFrame(rows, schema=DETECTION_SCHEMA),
-        output_dir / camera_id / f"{video_id}.parquet",
-    )
+    _write_parquet(pl.DataFrame(rows, schema=DETECTION_SCHEMA), path)
 
 
 def find_raw_videos(
@@ -308,25 +304,22 @@ def find_raw_videos(
 
 
 def _write_task_manifest(
-    run_dir: Path,
+    run: InferRun,
     task_index: int,
     config: dict[str, Any],
     inputs: dict[str, str],
 ) -> None:
-    """Write ``manifest_task{i}.json`` so array tasks never overwrite each other."""
+    """Write this task's manifest so array tasks never overwrite each other."""
     manifest = new_manifest("infer", config=config, inputs=inputs)
-    path = run_dir / f"manifest_task{task_index:03d}.json"
-    path.write_bytes(msgspec.json.format(msgspec.json.encode(manifest)))
+    run.task_manifest(task_index).write_bytes(
+        msgspec.json.format(msgspec.json.encode(manifest, enc_hook=str))
+    )
 
 
 def run_infer(
     videos: Sequence[Path],
     run_dir: Path,
-    segmentation_configs_path: Path,
-    sam_model_id: str,
-    yolo_path: Path,
-    tracker_path: Path,
-    videomae_path: Path,
+    models: InferenceModels,
     cfg: InferConfig,
     *,
     task_index: int = 0,
@@ -335,21 +328,20 @@ def run_infer(
 ) -> list[Path]:
     """Run inference on this task's share of ``videos``.
 
-    Every camera in ``videos`` is checked for a SAM2 prompt config before
-    any work starts. Task ``i`` of ``n`` processes ``videos[i::n]``; a video
-    that fails is logged and skipped. Writes into ``run_dir``:
-    ``timings.parquet`` (``timings_task{i:03d}.parquet`` when ``n > 1``),
-    ``manifest_task{i:03d}.json`` (config, this task's videos, ``limit`` and
-    failures) and ``failed_task{i:03d}.json`` (failed videos and errors).
+    Every camera in ``videos`` is checked by the segmenter (e.g. for a SAM2
+    prompt config) before any work starts. Task ``i`` of ``n`` processes
+    ``videos[i::n]``; a video that fails is logged and skipped (a model that
+    fails to load raises before any video). Writes this
+    task's timings, manifest (config, model kinds, checkpoints, videos,
+    ``limit`` and failures) and failed videos where
+    :class:`~bird_cv.core.layout.InferRun` puts them in ``run_dir``.
 
     Args:
         videos: Raw videos at ``.../{camera_id}/{video_id}.{ext}``.
         run_dir: Output directory shared by all tasks of the run.
-        segmentation_configs_path: Root holding SAM2 ``configs/`` and ``frames/``.
-        sam_model_id: Hugging Face id of the SAM2 checkpoint.
-        yolo_path: YOLO weights.
-        tracker_path: Tracker config.
-        videomae_path: VideoMAE checkpoint directory.
+        models: The models config picked
+            (:func:`bird_cv.inference.registry.inference_models`); loaded
+            only if this task has videos.
         cfg: Inference settings.
         task_index: This task's index (e.g. ``SLURM_ARRAY_TASK_ID``).
         num_tasks: Number of tasks sharing ``videos``.
@@ -361,69 +353,62 @@ def run_infer(
 
     Raises:
         ValueError: If ``chunk_overlap`` is not in ``[0, chunk_frames)``.
-        FileNotFoundError: If a camera lacks a SAM2 prompt config.
+        FileNotFoundError: If the segmenter can't handle a camera (e.g. no
+            SAM2 prompt config).
     """
     if not 0 <= cfg.chunk_overlap < cfg.chunk_frames:
         raise ValueError(
             f"chunk_overlap ({cfg.chunk_overlap}) must be in "
             f"[0, chunk_frames={cfg.chunk_frames})"
         )
-    check_sam2_configs(
-        segmentation_configs_path, {parse_raw_video_path(v)[0] for v in videos}
-    )
+    segmenters = models.segmenters()
+    segmenters.check_cameras({parse_raw_video_path(v)[0] for v in videos})
 
+    run = InferRun(run_dir)
     my_videos = list(videos)[task_index::num_tasks]
     config: dict[str, Any] = {
         **asdict(cfg),
-        "sam_model_id": sam_model_id,
+        "models": models.kinds(),
+        "train_run_id": models.train_run_id,
+        "fold": models.fold,
+        "prepared": models.prepared,
+        "sam_model_id": models.context.sam_model_id,
         "task_index": task_index,
         "num_tasks": num_tasks,
         "limit": limit,
         "videos": [str(v) for v in my_videos],
     }
-    inputs = {
-        "yolo": str(yolo_path),
-        "tracker": str(tracker_path),
-        "videomae": str(videomae_path),
-        "segmentation_configs": str(segmentation_configs_path),
-    }
+    inputs = models.inputs()
     run_dir.mkdir(exist_ok=True, parents=True)
-    _write_task_manifest(run_dir, task_index, config, inputs)
+    _write_task_manifest(run, task_index, config, inputs)
     if not my_videos:
         return []
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    predictor = build_sam2_video_predictor_hf(sam_model_id, device=device)
-    detector = YoloDetector(model_path=yolo_path, tracker_path=tracker_path)
-    classifier = VideoMAEClassifier(model_path=str(videomae_path))
+    # Model loading fails the whole task, not each video
+    segmenters.load()
+    detector, classifier = models.load()
     timer = StageTimer()
-    timings_name = (
-        "timings.parquet" if num_tasks == 1 else f"timings_task{task_index:03d}.parquet"
-    )
 
     failed: dict[str, str] = {}
     for video in my_videos:
         camera_id, video_id = parse_raw_video_path(video)
         print(f"Inferring {camera_id}/{video_id}")
         try:
-            segmenter = Sam2CageSegmenter(
-                predictor=predictor,
-                sam_model_id=sam_model_id,
-                config_path=sam2_config_path(segmentation_configs_path, camera_id),
-                reference_frame_path=sam2_reference_frame(
-                    segmentation_configs_path, camera_id
-                ),
-                device=device,
+            infer_video(
+                video,
+                run_dir,
+                segmenters.for_camera(camera_id),
+                detector,
+                classifier,
+                cfg,
+                timer,
             )
-            infer_video(video, run_dir, segmenter, detector, classifier, cfg, timer)
         except Exception as e:
             print(f"FAILED {camera_id}/{video_id}:\n{traceback.format_exc()}")
             failed[str(video)] = f"{type(e).__name__}: {e}"
         # Rewrite after every video so a crash keeps earlier results
-        timer.write(run_dir / timings_name)
-        (run_dir / f"failed_task{task_index:03d}.json").write_text(
-            json.dumps(failed, indent=2)
-        )
+        timer.write(run.timings(task_index, num_tasks))
+        run.failed(task_index).write_text(json.dumps(failed, indent=2))
 
-    _write_task_manifest(run_dir, task_index, {**config, "failed": failed}, inputs)
+    _write_task_manifest(run, task_index, {**config, "failed": failed}, inputs)
     return [Path(v) for v in failed]

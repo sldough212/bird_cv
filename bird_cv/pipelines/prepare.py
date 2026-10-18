@@ -1,13 +1,9 @@
 """Prepare training data: snapshot → ground truth → split → summary → sampling.
 
-Each stage skips itself when its outputs already exist. Outputs under
-``path_to_base_output``::
-
-    snapshots/{hash}/{detect.json, classify.json, manifest.json}
-    splits/{split_v{n}.parquet, cv_folds_v{n}.parquet}
-    prepared/{hash}/gt_v{GT_VERSION}/{ground_truth.parquet, ground_truth_stats.json}
-    prepared/{hash}/gt_v{GT_VERSION}/split_v{n}/sampling_{cfghash}/
-        {split_summary, yolo_frames, videomae_clips}.parquet, manifest.json
+Each stage skips itself when its outputs already exist. Outputs go where
+:class:`bird_cv.core.layout.Layout` says (snapshots, splits, prepared ground
+truth and sampling); the run finishes by pointing ``prepared/current.json``
+at its output, which every later stage reads.
 
 ``cfghash`` hashes every config value sampling reads, so changing one
 recomputes the summary and selections instead of reusing stale ones.
@@ -22,6 +18,7 @@ from pathlib import Path
 
 import polars as pl
 
+from bird_cv.core.layout import Layout, Prepared, snapshot_files
 from bird_cv.core.manifest import new_manifest, write_manifest
 from bird_cv.data.ground_truth import (
     GT_VERSION,
@@ -30,7 +27,7 @@ from bird_cv.data.ground_truth import (
 )
 from bird_cv.data.sampling import clip_frames, select_videomae_clips, select_yolo_frames
 from bird_cv.data.snapshot import create_snapshot, export_annotations
-from bird_cv.data.splits import cv_folds_path, split_path, update_split
+from bird_cv.data.splits import update_split
 from bird_cv.data.summary import log_summary, summarize, with_split
 from bird_cv.pipelines.config import BirdCVConfig, load_config, time
 
@@ -49,9 +46,24 @@ def sampling_config(cfg: BirdCVConfig) -> dict[str, int]:
     return {
         "yolo_uniform_stride": cfg.prepare.yolo_uniform_stride,
         "videomae_clip_stride": cfg.prepare.videomae_clip_stride,
-        "num_frames": cfg.classify.num_frames,
+        "num_frames": clip_length(cfg),
         "seed": cfg.prepare.split_seed,
     }
+
+
+def clip_length(cfg: BirdCVConfig) -> int:
+    """Frames per classifier clip: ``[models.classifier] options.num_frames``.
+
+    Raises:
+        ValueError: If the classifier table doesn't set it.
+    """
+    num_frames = cfg.models.classifier.options.get("num_frames")
+    if not isinstance(num_frames, int):
+        raise ValueError(
+            "[models.classifier] options.num_frames must be set: it is the clip "
+            "length prepare samples and the classifier trains on"
+        )
+    return num_frames
 
 
 def config_hash(values: dict[str, int]) -> str:
@@ -76,9 +88,10 @@ def run_prepare(
         classify_export: Existing Classify export to snapshot.
 
     Returns:
-        ``prepared/{hash}/gt_v{GT_VERSION}/split_v{n}/sampling_{cfghash}``.
+        The sampling directory (:meth:`Layout.sampling_dir`), now also the
+        one ``prepared/current.json`` points at.
     """
-    base = cfg.path_to_base_output
+    layout = Layout(cfg.path_to_base_output)
     pcfg = cfg.prepare
 
     # Snapshot
@@ -89,48 +102,56 @@ def run_prepare(
             api_key=cfg.api_key,
             detect_project_name=cfg.detect_project_name,
             classify_project_name=cfg.classify_project_name,
-            output_dir=base / "annotations" / time,
+            output_dir=layout.annotation_exports(time),
         )
     snapshot_hash, snapshot_dir = create_snapshot(
-        detect_export, classify_export, base / "snapshots"
+        detect_export,
+        classify_export,
+        layout.snapshots,
+        snapshot_dir_for=layout.snapshot,
     )
 
     # Ground truth (built before the split, which needs each camera's behaviors)
-    gt_dir = base / "prepared" / snapshot_hash / f"gt_v{GT_VERSION}"
-    gt_path = gt_dir / "ground_truth.parquet"
-    stats_path = gt_dir / "ground_truth_stats.json"
+    gt_path = layout.ground_truth(snapshot_hash, GT_VERSION)
+    stats_path = layout.ground_truth_stats(snapshot_hash, GT_VERSION)
     if gt_path.exists():
         logger.info("Ground truth exists: %s", gt_path)
         ground_truth = pl.read_parquet(gt_path)
     else:
+        detect_path, classify_path = snapshot_files(snapshot_dir)
         result = build_ground_truth(
-            json.loads((snapshot_dir / "detect.json").read_text()),
-            json.loads((snapshot_dir / "classify.json").read_text()),
+            json.loads(detect_path.read_text()),
+            json.loads(classify_path.read_text()),
             standard_counts=standard_frame_counts(cfg.path_to_raw_videos),
         )
         ground_truth = result.table
-        gt_dir.mkdir(parents=True, exist_ok=True)
+        gt_path.parent.mkdir(parents=True, exist_ok=True)
         ground_truth.write_parquet(gt_path)
         stats_path.write_text(json.dumps(result.counts(), indent=2))
 
     # Split
-    splits_dir = base / "splits"
     version = update_split(
         ground_truth,
-        splits_dir,
+        layout.splits,
         split_ratio=pcfg.split_ratio,
         seed=pcfg.split_seed,
         n_folds=pcfg.cv_folds,
     )
-    split = pl.read_parquet(split_path(splits_dir, version))
+    split = pl.read_parquet(layout.split(version))
     frames = with_split(ground_truth, split)
 
     # Summary + sampling, keyed by every config value sampling reads
     sampling_cfg = sampling_config(cfg)
-    out_dir = gt_dir / f"split_v{version}" / f"sampling_{config_hash(sampling_cfg)}"
-    summary_path = out_dir / "split_summary.parquet"
-    yolo_path = out_dir / "yolo_frames.parquet"
-    clips_path = out_dir / "videomae_clips.parquet"
+    prepared = Prepared(
+        snapshot_hash=snapshot_hash,
+        gt_version=GT_VERSION,
+        split_version=version,
+        sampling_hash=config_hash(sampling_cfg),
+    )
+    out_dir = layout.sampling_dir(prepared)
+    summary_path = layout.split_summary(prepared)
+    yolo_path = layout.yolo_frames(prepared)
+    clips_path = layout.videomae_clips(prepared)
     if all(p.exists() for p in (summary_path, yolo_path, clips_path)):
         logger.info("Sampled data exists: %s", out_dir)
     else:
@@ -139,7 +160,7 @@ def run_prepare(
         )
         clips = select_videomae_clips(
             frames,
-            num_frames=cfg.classify.num_frames,
+            num_frames=clip_length(cfg),
             stride=pcfg.videomae_clip_stride,
             seed=pcfg.split_seed,
         )
@@ -167,13 +188,16 @@ def run_prepare(
             inputs={
                 "snapshot": str(snapshot_dir),
                 "ground_truth": str(gt_path),
-                "split": str(split_path(splits_dir, version)),
-                "cv_folds": str(cv_folds_path(splits_dir, version)),
+                "split": str(layout.split(version)),
+                "cv_folds": str(layout.cv_folds(version)),
             },
         ),
         out_dir,
     )
+    layout.write_current(prepared)
     logger.info("Prepared data in %s", out_dir)
+    # Last stdout line: the id later stages take as --prepared
+    print(f"PREPARED={prepared.id}")
     return out_dir
 
 

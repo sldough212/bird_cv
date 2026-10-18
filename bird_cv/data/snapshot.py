@@ -10,10 +10,12 @@ import hashlib
 import json
 import logging
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from bird_cv.client.get_label_studio_annotations import get_label_studio_annotations
+from bird_cv.core.layout import snapshot_files
 from bird_cv.core.manifest import new_manifest, write_manifest
 from bird_cv.data.ground_truth import annotation_results
 
@@ -85,7 +87,7 @@ def export_annotations(
     Returns:
         Paths to the Detect and Classify exports.
     """
-    paths = (output_dir / "detect.json", output_dir / "classify.json")
+    paths = snapshot_files(output_dir)
     for project_name, path in zip((detect_project_name, classify_project_name), paths):
         get_label_studio_annotations(
             host=host,
@@ -99,7 +101,11 @@ def export_annotations(
 
 
 def create_snapshot(
-    detect_export: Path, classify_export: Path, snapshots_dir: Path
+    detect_export: Path,
+    classify_export: Path,
+    snapshots_dir: Path,
+    *,
+    snapshot_dir_for: Callable[[str], Path] | None = None,
 ) -> tuple[str, Path]:
     """Copy two exports into ``snapshots_dir/{hash}/`` unless that snapshot exists.
 
@@ -107,6 +113,9 @@ def create_snapshot(
         detect_export: Path to a Detect project JSON export.
         classify_export: Path to a Classify project JSON export.
         snapshots_dir: Root directory holding all snapshots.
+        snapshot_dir_for: Maps a hash to its snapshot directory (e.g.
+            :meth:`bird_cv.core.layout.Layout.snapshot`); overrides
+            ``snapshots_dir/{hash}``.
 
     Returns:
         The snapshot hash and its directory, which contains ``detect.json``,
@@ -115,14 +124,20 @@ def create_snapshot(
     snapshot_hash = annotation_hash(
         json.loads(detect_export.read_text()), json.loads(classify_export.read_text())
     )
-    snapshot_dir = snapshots_dir / snapshot_hash
+    snapshot_dir = (
+        snapshot_dir_for(snapshot_hash)
+        if snapshot_dir_for
+        else snapshots_dir / snapshot_hash
+    )
     if (snapshot_dir / "manifest.json").exists():
         logger.info("Snapshot %s already exists; labels unchanged", snapshot_hash)
         return snapshot_hash, snapshot_dir
 
     snapshot_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(detect_export, snapshot_dir / "detect.json")
-    shutil.copyfile(classify_export, snapshot_dir / "classify.json")
+    for export, copy in zip(
+        (detect_export, classify_export), snapshot_files(snapshot_dir)
+    ):
+        shutil.copyfile(export, copy)
     write_manifest(
         new_manifest(
             "snapshot",

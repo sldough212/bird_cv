@@ -1,16 +1,20 @@
-"""Trainers for each model kind, looked up by ``ModelSpec.kind``.
+"""Model kinds, looked up by ``ModelSpec.kind``: how to train and load each.
 
 Pipelines only ever talk to the :class:`Trainer` protocol, so swapping in a
 different detector or classifier means writing one class here and pointing
-``[train.detector]`` or ``[train.classifier]`` at its ``kind``.
-:func:`_trainers` is the one place model names live. Importing this module
-doesn't import Ray or any model library; config loading uses it to
-validate kinds and search spaces.
+``[models.detector]`` or ``[models.classifier]`` at its ``kind``; training
+and inference (:meth:`Trainer.load_for_inference`) then both use it.
+:func:`_trainers` is the one place detector and classifier names live (the
+segmenter, which is never trained, is in :mod:`bird_cv.inference.registry`).
+Importing this module doesn't import Ray or any model library; config
+loading uses it to validate kinds and search spaces.
 """
 
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
+
+from bird_cv.core.layout import TrainRun
 
 if TYPE_CHECKING:
     from bird_cv.pipelines.config import ModelSpec
@@ -92,6 +96,19 @@ class Trainer(Protocol):
         """Score a checkpoint on one split of its dataset (model-level metrics)."""
         ...
 
+    def infer_option_keys(self) -> set[str]:
+        """``infer_options`` this kind accepts (checked at config load)."""
+        ...
+
+    def load_for_inference(self, checkpoint: Path, spec: "ModelSpec") -> Any:
+        """The inference model for a checkpoint, built with ``spec.infer_options``.
+
+        A detector kind returns a
+        :class:`~bird_cv.inference.protocols.StreamingDetector`, a
+        classifier kind a :class:`~bird_cv.inference.protocols.FrameClassifier`.
+        """
+        ...
+
 
 def _distribution_keys() -> dict[str, tuple[str, ...]]:
     """Required keys for each search-space distribution type."""
@@ -109,7 +126,7 @@ def check_search_space(spec: dict[str, dict], where: str = "search_space") -> No
     Args:
         spec: Parameter name to ``{"type": ..., ...}`` (see
             :func:`build_search_space`).
-        where: Location named in error messages, e.g. ``"[train.classifier]"``.
+        where: Location named in error messages, e.g. ``"[models.classifier]"``.
 
     Raises:
         ValueError: On a non-table entry, an unknown ``type`` or a missing
@@ -232,6 +249,18 @@ class YoloTrainer:
             device=context.device,
         )
 
+    def infer_option_keys(self) -> set[str]:
+        """:class:`YoloDetector` fields; ``tracker_path`` is required."""
+        return {"tracker_path", "conf", "iou", "max_det"}
+
+    def load_for_inference(self, checkpoint: Path, spec: "ModelSpec") -> Any:
+        """A :class:`YoloDetector`; ``infer_options`` are its fields."""
+        from bird_cv.detection.track import YoloDetector
+
+        if "tracker_path" not in spec.infer_options:
+            raise ValueError("yolo needs infer_options.tracker_path")
+        return YoloDetector(model_path=checkpoint, **spec.infer_options)
+
 
 class VideoMAETrainer:
     """VideoMAE clip classifier, selected on val window macro-F1 (ADR 0005).
@@ -287,7 +316,7 @@ class VideoMAETrainer:
 
         best = tune_video_model(
             clips_root=dataset,
-            output_root=run_dir / "tune",
+            output_root=TrainRun(run_dir).tune_dir,
             search_space=build_search_space(spec.search_space),
             model_checkpoint=spec.pretrained,
             num_samples=spec.tune_trials,
@@ -314,6 +343,22 @@ class VideoMAETrainer:
             "macro_f1": result["macro_f1"],
             "n_skipped_out_of_vocabulary": result["n_skipped_out_of_vocabulary"],
         }
+
+    def infer_option_keys(self) -> set[str]:
+        """:class:`VideoMAEClassifier` fields other than the checkpoint."""
+        return {"num_frames", "stride", "batch_size"}
+
+    def load_for_inference(self, checkpoint: Path, spec: "ModelSpec") -> Any:
+        """A :class:`VideoMAEClassifier`; ``infer_options`` are its fields.
+
+        ``num_frames`` follows training (``spec.options``) unless set there.
+        """
+        from bird_cv.classification.predict_video_model import VideoMAEClassifier
+
+        trained = {k: v for k, v in spec.options.items() if k == "num_frames"}
+        return VideoMAEClassifier(
+            model_path=str(checkpoint), **(trained | spec.infer_options)
+        )
 
 
 def _trainers() -> dict[str, type]:
