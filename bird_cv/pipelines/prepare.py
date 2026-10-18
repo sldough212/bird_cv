@@ -248,7 +248,10 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     run_prepare(
-        load_config(args.config_path),
+        load_config(
+            args.config_path,
+            require_api_key=args.detect_export is None or args.classify_export is None,
+        ),
         hostname=args.hostname,
         detect_export=args.detect_export,
         classify_export=args.classify_export,

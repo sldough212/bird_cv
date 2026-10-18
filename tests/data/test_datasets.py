@@ -19,6 +19,7 @@ from bird_cv.data.check_fps import frame_rate_table
 from bird_cv.pipelines.build_datasets import build_datasets
 from bird_cv.pipelines.config import API_KEY_ENV_VAR, load_config
 from bird_cv.pipelines.evaluate import run_evaluate
+from bird_cv.pipelines.infer import split_run
 from bird_cv.pipelines.prepare import run_prepare
 from bird_cv.preprocessing.standardize import expected_standard_frames
 
@@ -62,16 +63,26 @@ def test_prepare_build_evaluate_connect(
     monkeypatch.setenv(API_KEY_ENV_VAR, "test")
     base = tmp_path / "out"
     config = tmp_path / "config.toml"
-    config.write_text(
-        re.sub(
-            r'^path_to_base_output = ".*"$',
-            f'path_to_base_output = "{base}"',
-            CONFIG.read_text(),
-            flags=re.M,
-        )
+    raw = tmp_path / "raw"
+    text = re.sub(
+        r'^path_to_base_output = ".*"$',
+        f'path_to_base_output = "{base}"',
+        CONFIG.read_text(),
+        flags=re.M,
     )
+    text = re.sub(
+        r'^path_to_raw_videos = ".*"$',
+        f'path_to_raw_videos = "{raw}"',
+        text,
+        flags=re.M,
+    )
+    config.write_text(text)
     cfg = load_config(config)
     cameras, n = "abcd", 20
+    for c in cameras:  # "v" is labeled, "u" isn't; headers unreadable (no counts)
+        for video in ("v", "u"):
+            (raw / c).mkdir(parents=True, exist_ok=True)
+            (raw / c / f"{video}.mp4").touch()
     # Boxes from LS frame 6: crop frame k is canonical k + 5, not k
     detect = [detect_task(c, "v", "0", [(6, n)], n=n) for c in cameras]
     classify = [
@@ -139,28 +150,48 @@ def test_prepare_build_evaluate_connect(
                     label = out / "labels" / image.parent.name / f"{image.stem}.txt"
                     assert bool(label.read_text().strip()) == ((camera, frame) in boxed)
 
-    # Evaluate through the layout: a perfect and an empty sweep setting, then test
+    # Evaluate through the layout: setting 1 perfect, the rest empty
     run_id = "r1"
     predictions = truth.with_columns(
         label=pl.col("label").fill_null(NO_BIRD), confidence=1.0, det_conf=1.0
     ).select(list(PREDICTION_SCHEMA))
-    (gap, conf), (bad_gap, bad_conf) = sweep_settings(
+    settings = sweep_settings(
         cfg.evaluate.sweep_gap_fill_frames, cfg.evaluate.sweep_det_conf
-    )[:2]
+    )
     manifest = new_manifest("infer", config={"prepared": dataclasses.asdict(prepared)})
-    for run, preds in (
-        (layout.sweep_infer_run(run_id, gap, conf), predictions),
-        (
-            layout.sweep_infer_run(run_id, bad_gap, bad_conf),
-            predictions.with_columns(label=pl.lit(NO_BIRD)),
-        ),
-        (layout.test_infer_run(run_id), predictions),
-    ):
+    runs = [
+        (layout.sweep_infer_run(run_id, g, c), i == 1)
+        for i, (g, c) in enumerate(settings)
+    ] + [(layout.test_infer_run(run_id), True)]
+    for run, perfect in runs:
+        preds = (
+            predictions if perfect else predictions.with_columns(label=pl.lit(NO_BIRD))
+        )
         run.predictions("all", "all").parent.mkdir(parents=True)
         preds.write_parquet(run.predictions("all", "all"))
         run.task_manifest(0).write_bytes(msgspec.json.encode(manifest))
     sweep = EvalRun(run_evaluate(cfg, "sweep", run_id, prepared_id=prepared.id))
     best = json.loads(sweep.best_setting.read_text())
-    assert (best["gap_fill_frames"], best["det_conf"]) == (gap, conf)
+    assert (best["gap_fill_frames"], best["det_conf"]) == settings[1]
     test = EvalRun(run_evaluate(cfg, "test", run_id, prepared_id=prepared.id))
     assert json.loads(test.metrics.read_text())["macro_f1"] == 1.0
+
+    # infer.py --split: labeled videos of the split's cameras, setting dirs
+    frozen = dict(
+        pl.read_parquet(layout.split(prepared.split_version))
+        .select("camera_id", "split")
+        .iter_rows()
+    )
+    for split_name, index, setting, run in (
+        ("val", 2, settings[2], layout.sweep_infer_run(run_id, *settings[2])),
+        ("test", None, settings[1], layout.test_infer_run(run_id)),
+    ):
+        videos, run_dir, infer_cfg, _ = split_run(
+            cfg, run_id, split_name, index, prepared.id
+        )
+        assert videos
+        assert sorted(v.relative_to(raw).as_posix() for v in videos) == sorted(
+            f"{c}/v.mp4" for c in cameras if frozen[c] == split_name
+        )
+        assert run_dir == run.dir
+        assert (infer_cfg.gap_fill_frames, infer_cfg.det_conf) == setting

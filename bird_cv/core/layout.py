@@ -407,8 +407,9 @@ class Layout:
         if prepared_id is None:
             prepared = self.read_current()
             logger.warning(
-                "No --prepared given; FALLING BACK to %s, which points at %s. "
+                "No --prepared given%s; FALLING BACK to %s, which points at %s. "
                 "Pass --prepared to pin the data.",
+                f" and no {self.run_prepared(run_id)}" if run_id else "",
                 self.current_prepared,
                 prepared.id,
             )
