@@ -120,7 +120,7 @@ def run_evaluate(
         raise ValueError(f"{mode} mode needs the scored run's --run-id")
     if mode == "model" and role not in cfg.models.roles():
         raise ValueError(f"role must be one of {sorted(cfg.models.roles())}")
-    prepared = layout.resolve_prepared(prepared_id)
+    prepared = layout.resolve_prepared(prepared_id, run_id)
     out = layout.evaluation_run(mode, run_id, role)
     out.mkdir(parents=True, exist_ok=True)
     results = EvalRun(out)

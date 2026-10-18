@@ -10,6 +10,7 @@ a path changes here or nowhere::
     splits/split_v{n}/manifest.json
     splits/cv_folds_v{n}.parquet              CV_FOLD_SCHEMA
     prepared/current.json                     the last prepare output (fallback only)
+    prepared/runs/{run_id}.id                 the prepared id a pipeline run uses
     prepared/{snapshot_hash}/gt_v{g}/         ground_truth.parquet, ground_truth_stats.json
         split_v{n}/sampling_{cfghash}/        split_summary, yolo_frames, videomae_clips
                                               (.parquet), manifest.json
@@ -381,13 +382,28 @@ class Layout:
             )
         return Prepared(**json.loads(self.current_prepared.read_text()))
 
-    def resolve_prepared(self, prepared_id: str | None) -> Prepared:
-        """The prepared data ``prepared_id`` names, or the last one (logged loudly).
+    def run_prepared(self, run_id: str) -> Path:
+        """File holding the prepared id that pipeline run ``run_id`` uses."""
+        return self.base / "prepared" / "runs" / f"{run_id}.id"
+
+    def resolve_prepared(
+        self, prepared_id: str | None, run_id: str | None = None
+    ) -> Prepared:
+        """The prepared data ``prepared_id`` names, else run ``run_id``'s, else the last.
+
+        Args:
+            prepared_id: A :attr:`Prepared.id`.
+            run_id: A pipeline run whose :meth:`run_prepared` file to read.
+
+        Returns:
+            The prepared data; falling back to the last prepare is logged loudly.
 
         Raises:
-            FileNotFoundError: If the named or last prepared data doesn't exist.
-            ValueError: If ``prepared_id`` is malformed.
+            FileNotFoundError: If the prepared data doesn't exist.
+            ValueError: If the id is malformed.
         """
+        if prepared_id is None and run_id and self.run_prepared(run_id).exists():
+            prepared_id = self.run_prepared(run_id).read_text().strip()
         if prepared_id is None:
             prepared = self.read_current()
             logger.warning(

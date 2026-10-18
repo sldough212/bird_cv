@@ -1,17 +1,24 @@
+import dataclasses
 import json
 import re
 import sys
 from pathlib import Path
 
 import cv2
+import msgspec
 import numpy as np
 import polars as pl
 import pytest
 
-from bird_cv.core.layout import Layout
+from bird_cv.core.labels import NO_BIRD
+from bird_cv.core.layout import EvalRun, Layout
+from bird_cv.core.manifest import new_manifest
+from bird_cv.core.schemas import PREDICTION_SCHEMA
+from bird_cv.evaluation.e2e import sweep_settings
 from bird_cv.data.check_fps import frame_rate_table
 from bird_cv.pipelines.build_datasets import build_datasets
 from bird_cv.pipelines.config import API_KEY_ENV_VAR, load_config
+from bird_cv.pipelines.evaluate import run_evaluate
 from bird_cv.pipelines.prepare import run_prepare
 from bird_cv.preprocessing.standardize import expected_standard_frames
 
@@ -49,7 +56,7 @@ def _write_video(path: Path, n_frames: int) -> None:
     writer.release()
 
 
-def test_build_datasets_frozen_and_fold(
+def test_prepare_build_evaluate_connect(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(API_KEY_ENV_VAR, "test")
@@ -131,3 +138,29 @@ def test_build_datasets_frozen_and_fold(
                     assert (camera, frame) in selected
                     label = out / "labels" / image.parent.name / f"{image.stem}.txt"
                     assert bool(label.read_text().strip()) == ((camera, frame) in boxed)
+
+    # Evaluate through the layout: a perfect and an empty sweep setting, then test
+    run_id = "r1"
+    predictions = truth.with_columns(
+        label=pl.col("label").fill_null(NO_BIRD), confidence=1.0, det_conf=1.0
+    ).select(list(PREDICTION_SCHEMA))
+    (gap, conf), (bad_gap, bad_conf) = sweep_settings(
+        cfg.evaluate.sweep_gap_fill_frames, cfg.evaluate.sweep_det_conf
+    )[:2]
+    manifest = new_manifest("infer", config={"prepared": dataclasses.asdict(prepared)})
+    for run, preds in (
+        (layout.sweep_infer_run(run_id, gap, conf), predictions),
+        (
+            layout.sweep_infer_run(run_id, bad_gap, bad_conf),
+            predictions.with_columns(label=pl.lit(NO_BIRD)),
+        ),
+        (layout.test_infer_run(run_id), predictions),
+    ):
+        run.predictions("all", "all").parent.mkdir(parents=True)
+        preds.write_parquet(run.predictions("all", "all"))
+        run.task_manifest(0).write_bytes(msgspec.json.encode(manifest))
+    sweep = EvalRun(run_evaluate(cfg, "sweep", run_id, prepared_id=prepared.id))
+    best = json.loads(sweep.best_setting.read_text())
+    assert (best["gap_fill_frames"], best["det_conf"]) == (gap, conf)
+    test = EvalRun(run_evaluate(cfg, "test", run_id, prepared_id=prepared.id))
+    assert json.loads(test.metrics.read_text())["macro_f1"] == 1.0

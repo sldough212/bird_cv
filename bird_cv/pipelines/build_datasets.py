@@ -73,6 +73,7 @@ def build_datasets(
     roles: list[str] | None = None,
     folds: list[int] | None = None,
     processes: int = 4,
+    run_id: str | None = None,
 ) -> list[Path]:
     """Build (or reuse) the datasets of ``roles`` on the frozen split and ``folds``.
 
@@ -85,6 +86,7 @@ def build_datasets(
         folds: CV folds to build, without the frozen split; if None, the
             frozen split and every fold.
         processes: Worker processes for the converters.
+        run_id: Pipeline run whose prepared id to use if ``prepared_id`` is None.
 
     Returns:
         The dataset directories.
@@ -96,7 +98,7 @@ def build_datasets(
     from bird_cv.training.registry import DatasetMedia, get_trainer
 
     layout = Layout(cfg.path_to_base_output)
-    prepared = layout.resolve_prepared(prepared_id)
+    prepared = layout.resolve_prepared(prepared_id, run_id)
     sampling = sampling_config(cfg)
     if config_hash(sampling) != prepared.sampling_hash:
         raise ValueError(
@@ -212,6 +214,7 @@ def main() -> None:
         "--fold", action="append", dest="folds", type=int, help="Repeatable"
     )
     parser.add_argument("--processes", type=int, default=4)
+    parser.add_argument("--run-id", default=None, help="Pipeline run id")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
@@ -221,6 +224,7 @@ def main() -> None:
         args.roles,
         args.folds,
         args.processes,
+        args.run_id,
     ):
         print(f"Dataset: {out_dir}")
 

@@ -20,7 +20,7 @@ NODE_IP=$(hostname -I | awk '{print $1}')
 
 # Exports both Label Studio projects, then snapshot -> ground truth -> split
 # -> summary -> sampling. Pass --detect-export/--classify-export to reuse files.
-python3 bird_cv/pipelines/prepare.py bird_cv/pipelines/configs/config.toml --hostname $NODE_IP "$@"
+python3 bird_cv/pipelines/prepare.py "${CONFIG:-bird_cv/pipelines/configs/config.toml}" --hostname $NODE_IP "$@"
 end=$(date +'%D %T')
 echo "End:" $end
 

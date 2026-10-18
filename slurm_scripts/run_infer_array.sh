@@ -27,7 +27,7 @@ source .venv/bin/activate
 
 export PYTHONUNBUFFERED=1
 
-python3 bird_cv/pipelines/infer.py bird_cv/pipelines/configs/config.toml \
+python3 bird_cv/pipelines/infer.py "${CONFIG:-bird_cv/pipelines/configs/config.toml}" \
     --run-id "infer_${SLURM_ARRAY_JOB_ID}" \
     --task-index "${SLURM_ARRAY_TASK_ID}" \
     --num-tasks "${SLURM_ARRAY_TASK_COUNT}" \
