@@ -53,7 +53,6 @@ if [ "$SMOKE" = "1" ]; then
     TRAIN+=(--smoke)
     INFER+=(--limit 2)
 fi
-export SWEEP_TASKS=4
 GPU=(--gres=gpu:1 --partition=mb-l40s,mb-a30,mb-h100,mb-a6000,mb-r6000)
 DEP=(--kill-on-invalid-dep=yes --dependency)
 JOBS=()
@@ -83,7 +82,7 @@ done
 trained=$(IFS=:; echo "${TRAIN_JOBS[*]}")
 
 sweep=$(sbatch --parsable "${DEP[@]}" "afterok:$trained" \
-    --array=0-$((N_SWEEP * SWEEP_TASKS - 1)) \
+    --array=0-$((N_SWEEP - 1)) \
     slurm_scripts/run_infer_sweep.sh "${INFER[@]}")
 eval_sweep=$(sbatch --parsable "${DEP[@]}" "afterok:$sweep" \
     slurm_scripts/run_evaluate.sh sweep "${RUN[@]}")
@@ -92,7 +91,7 @@ infer_test=$(sbatch --parsable "${DEP[@]}" "afterok:$eval_sweep" \
 eval_test=$(sbatch --parsable "${DEP[@]}" "afterok:$infer_test" \
     slurm_scripts/run_evaluate.sh test "${RUN[@]}")
 JOBS+=("$sweep" "$eval_sweep" "$infer_test" "$eval_test")
-echo "infer_sweep=$sweep ($N_SWEEP settings x $SWEEP_TASKS tasks) evaluate_sweep=$eval_sweep"
+echo "infer_sweep=$sweep ($N_SWEEP settings) evaluate_sweep=$eval_sweep"
 echo "infer_test=$infer_test evaluate_test=$eval_test"
 echo "Prepared id: $PREPARED_FILE"
 echo "Predictions: $INFER_DIR/{val_sweep,test}  Sweep: $SWEEP_DIR  Test: $TEST_DIR"

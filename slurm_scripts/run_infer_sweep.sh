@@ -1,11 +1,10 @@
 #!/bin/bash
-# Val-sweep inference: array task ID runs share ID % T of the val videos at the
-# (ID / T)-th [evaluate] (gap fill, det_conf) setting, T = SWEEP_TASKS
-# (default 4). submit.sh sets --array=0-$((N_SWEEP * T - 1)); extra arguments
-# go to infer.py, e.g.
-#   sbatch --array=0-35 slurm_scripts/run_infer_sweep.sh --run-id RUN_ID --train-run-id RUN_ID
+# One val-sweep inference per array task: task K runs the frozen split's
+# labeled val videos at the K-th [evaluate] (gap fill, det_conf) setting.
+# submit.sh sets --array; extra arguments go to infer.py, e.g.
+#   sbatch --array=0-8 slurm_scripts/run_infer_sweep.sh --run-id RUN_ID --train-run-id RUN_ID
 #SBATCH --account=passerinagenome
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --partition=mb-l40s
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
@@ -22,10 +21,8 @@ source .venv/bin/activate
 
 export PYTHONUNBUFFERED=1
 
-T=${SWEEP_TASKS:-4}
 python3 bird_cv/pipelines/infer.py "${CONFIG:-bird_cv/pipelines/configs/config.toml}" \
-    --split val --sweep-index $((SLURM_ARRAY_TASK_ID / T)) \
-    --task-index $((SLURM_ARRAY_TASK_ID % T)) --num-tasks "$T" "$@"
+    --split val --sweep-index "${SLURM_ARRAY_TASK_ID}" "$@"
 
 end=$(date +'%D %T')
 echo "End:" $end
