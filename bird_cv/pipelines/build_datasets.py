@@ -1,12 +1,7 @@
 """Build each role's training data from prepared data: frozen split and CV folds.
 
-For every ``[models]`` role, the role's kind (through
-:func:`bird_cv.training.registry.get_trainer`) writes its dataset to
-:meth:`bird_cv.core.layout.Layout.dataset`: on the frozen split from the
-frame or clip list prepare sampled, and on each CV fold (cameras from
-:func:`bird_cv.evaluation.cv.fold_split`) from the same sampling rerun on
-that fold's split. Each dataset directory holds the ``split.parquet`` and
-``selection.parquet`` it was built from and a manifest; a dataset whose
+The frozen split uses prepare's sampled list; each CV fold reruns the
+sampling on its :func:`~bird_cv.evaluation.cv.fold_split`. A dataset whose
 manifest matches is not rebuilt.
 
 Usage::

@@ -20,7 +20,7 @@ import polars as pl
 
 from bird_cv.core.layout import Layout, Prepared, snapshot_files
 from bird_cv.core.manifest import new_manifest, read_manifest, write_manifest
-from bird_cv.data.check_fps import check_frame_rates, frame_rate_table, standard_counts
+from bird_cv.data.check_fps import frame_rate_table, standard_counts
 from bird_cv.data.ground_truth import GT_VERSION, build_ground_truth
 from bird_cv.data.sampling import clip_frames, select_videomae_clips, select_yolo_frames
 from bird_cv.data.snapshot import create_snapshot, export_annotations
@@ -126,19 +126,13 @@ def run_prepare(
         logger.info("Ground truth exists: %s", gt_path)
         ground_truth = pl.read_parquet(gt_path)
     else:
-        if gt_path.exists():
-            logger.warning(
-                "Rebuilding %s: built from other raw videos or frame cap", gt_path
-            )
         detect_path, classify_path = snapshot_files(snapshot_dir)
         detect_tasks = json.loads(detect_path.read_text())
-        # Expected standardized counts from raw headers; fps must all be 15
         rates = frame_rate_table(
             cfg.path_to_raw_videos,
             detect_tasks,
             max_frames=pcfg.standardized_max_frames,
         )
-        check_frame_rates(rates)
         result = build_ground_truth(
             detect_tasks,
             json.loads(classify_path.read_text()),

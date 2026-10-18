@@ -9,7 +9,7 @@ import polars as pl
 import pytest
 
 from bird_cv.core.layout import Layout
-from bird_cv.data.check_fps import frame_rate_problems, frame_rate_table
+from bird_cv.data.check_fps import frame_rate_table
 from bird_cv.pipelines.build_datasets import build_datasets
 from bird_cv.pipelines.config import API_KEY_ENV_VAR, load_config
 from bird_cv.pipelines.prepare import run_prepare
@@ -33,11 +33,12 @@ def test_expected_standard_frames_matches_ffmpeg() -> None:
         assert expected_standard_frames(frames, fps) == written
     assert expected_standard_frames(1502, 25, max_frames=900) == 900
 
-    # The legacy export: Label Studio's own 25 fps for a 15 fps video
-    legacy = detect_task("a", "v", "0", [(1, 2)], n=1502)
-    legacy["annotations"][0]["result"][0]["value"]["duration"] = 60.07
-    table = frame_rate_table(Path("/nonexistent"), [legacy])
-    assert frame_rate_problems(table)["cage_id"].to_list() == ["0"]
+    # Label Studio at 25 fps: reported misaligned (and excluded from ground truth)
+    task = detect_task("a", "v", "0", [(1, 2)], n=1502)
+    task["annotations"][0]["result"][0]["value"]["duration"] = 60.07
+    assert frame_rate_table(Path("/nonexistent"), [task])["aligned"].to_list() == [
+        False
+    ]
 
 
 def _write_video(path: Path, n_frames: int) -> None:

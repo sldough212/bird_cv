@@ -341,12 +341,10 @@ class YoloTrainer:
 
         guidance = (
             selection.group_by("camera_id", "video_id", "cage_id", "split")
-            # canonical_to_ls is a fixed offset; apply it vectorized
             .agg(target_frames=(pl.col("frame") + canonical_to_ls(0)).sort())
             .with_columns(
                 video_path=pl.col("camera_id") + "/" + pl.col("video_id") + ".mp4",
-                # Ground truth kept only cages at 15 fps, whose Label Studio
-                # frames are canonical + 1.
+                # Ground truth keeps only 15 fps cages: LS frame = canonical + 1
                 fps=pl.lit(float(STANDARD_FPS)),
             )
         )
@@ -359,7 +357,6 @@ class YoloTrainer:
             processes=media.processes,
             by_cage=True,
         )
-        # Every selected frame must have its image and label (no silent drops)
         expected = selection.select(
             "split",
             stem=pl.format(
@@ -499,12 +496,9 @@ class VideoMAETrainer:
     ) -> None:
         """Bird-crop clips, ``{split}/{label}/{clip}/``, one per selected clip.
 
-        A bird-crop video's frame ``k`` is its cage's ``k``-th boxed
-        canonical frame (ADR 0002), so each clip's canonical range maps to
-        crop frames through the ground-truth boxes. A selected clip shorter
-        than ``num_frames`` (a short labeled stretch) widens into the
-        neighbouring crop frames, which may show another behavior or a gap
-        between boxes, as clips built from annotations always have.
+        Crop frame ``k`` is the cage's ``k``-th boxed canonical frame (ADR
+        0002). Clips shorter than ``num_frames`` widen into neighbouring crop
+        frames.
 
         Raises:
             ValueError: If a clip covers a frame with no box, or boxed frames
@@ -542,7 +536,6 @@ class VideoMAETrainer:
                 or (end - begin != row["frame_end"] - row["frame_begin"])
             ):
                 raise ValueError(f"Clip {row} isn't a contiguous boxed range")
-            # 1-indexed inclusive crop frames, as Label Studio ranges
             ranges.setdefault(key, []).append((row["label"], begin + 1, end + 1))
 
         selection.select(
@@ -561,7 +554,6 @@ class VideoMAETrainer:
             processes=media.processes,
             ranges_by_cage=ranges,
         )
-        # Every selected clip must be on disk (no silent drops)
         split_of = dict(selection.select("camera_id", "split").unique().iter_rows())
         missing = [
             f"{key}/{i}"

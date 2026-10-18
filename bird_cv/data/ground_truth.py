@@ -29,8 +29,7 @@ logger = logging.getLogger(__name__)
 GT_VERSION = 2
 """Bump when the ground truth rules change, so prepare rebuilds it.
 
-2: standardized frame counts come from raw video headers
-(:mod:`bird_cv.data.check_fps`), and frame rates other than 15 fail."""
+2: standardized frame counts come from raw video headers."""
 
 CageKey = tuple[str, str, str]
 """``(camera_id, video_id, cage_id)``."""
