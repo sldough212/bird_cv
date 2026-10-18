@@ -19,12 +19,9 @@ from pathlib import Path
 import polars as pl
 
 from bird_cv.core.layout import Layout, Prepared, snapshot_files
-from bird_cv.core.manifest import new_manifest, write_manifest
-from bird_cv.data.ground_truth import (
-    GT_VERSION,
-    build_ground_truth,
-    standard_frame_counts,
-)
+from bird_cv.core.manifest import new_manifest, read_manifest, write_manifest
+from bird_cv.data.check_fps import frame_rate_table, standard_counts
+from bird_cv.data.ground_truth import GT_VERSION, build_ground_truth
 from bird_cv.data.sampling import clip_frames, select_videomae_clips, select_yolo_frames
 from bird_cv.data.snapshot import create_snapshot, export_annotations
 from bird_cv.data.splits import update_split
@@ -114,20 +111,41 @@ def run_prepare(
     # Ground truth (built before the split, which needs each camera's behaviors)
     gt_path = layout.ground_truth(snapshot_hash, GT_VERSION)
     stats_path = layout.ground_truth_stats(snapshot_hash, GT_VERSION)
-    if gt_path.exists():
+    # Ground truth also depends on the raw headers its frame counts come from
+    gt_key = {
+        "path_to_raw_videos": str(cfg.path_to_raw_videos),
+        "standardized_max_frames": pcfg.standardized_max_frames,
+    }
+    gt_dir = gt_path.parent
+    gt_current = (
+        gt_path.exists()
+        and (gt_dir / "manifest.json").exists()
+        and read_manifest(gt_dir).config == gt_key
+    )
+    if gt_current:
         logger.info("Ground truth exists: %s", gt_path)
         ground_truth = pl.read_parquet(gt_path)
     else:
         detect_path, classify_path = snapshot_files(snapshot_dir)
+        detect_tasks = json.loads(detect_path.read_text())
+        rates = frame_rate_table(
+            cfg.path_to_raw_videos,
+            detect_tasks,
+            max_frames=pcfg.standardized_max_frames,
+        )
         result = build_ground_truth(
-            json.loads(detect_path.read_text()),
+            detect_tasks,
             json.loads(classify_path.read_text()),
-            standard_counts=standard_frame_counts(cfg.path_to_raw_videos),
+            standard_counts=standard_counts(rates),
         )
         ground_truth = result.table
-        gt_path.parent.mkdir(parents=True, exist_ok=True)
+        gt_dir.mkdir(parents=True, exist_ok=True)
         ground_truth.write_parquet(gt_path)
         stats_path.write_text(json.dumps(result.counts(), indent=2))
+        write_manifest(
+            new_manifest("ground_truth", snapshot_hash=snapshot_hash, config=gt_key),
+            gt_dir,
+        )
 
     # Split
     version = update_split(
@@ -152,7 +170,8 @@ def run_prepare(
     summary_path = layout.split_summary(prepared)
     yolo_path = layout.yolo_frames(prepared)
     clips_path = layout.videomae_clips(prepared)
-    if all(p.exists() for p in (summary_path, yolo_path, clips_path)):
+    # Resample whenever ground truth was (re)built
+    if gt_current and all(p.exists() for p in (summary_path, yolo_path, clips_path)):
         logger.info("Sampled data exists: %s", out_dir)
     else:
         yolo = select_yolo_frames(

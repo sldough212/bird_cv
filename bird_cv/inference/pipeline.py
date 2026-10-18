@@ -53,7 +53,12 @@ from bird_cv.inference.protocols import (
     StreamingDetector,
 )
 from bird_cv.inference.registry import InferenceModels
-from bird_cv.preprocessing.standardize import standardize_video
+from bird_cv.preprocessing.standardize import (  # noqa: F401 (re-exported)
+    expected_standard_frames,
+    find_raw_videos,
+    standardize_video,
+    video_header,
+)
 from bird_cv.pipelines.config import InferConfig
 
 
@@ -205,12 +210,9 @@ def infer_video(
 
 
 def _expected_frames(video_path: Path) -> int:
-    """Approximate standardized frame count of a raw video, for timing rows."""
-    cap = cv2.VideoCapture(str(video_path))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-    cap.release()
-    return round(count * STANDARD_FPS / fps) if fps else 0
+    """Standardized frame count of a raw video from its header, for timing rows."""
+    fps, count = video_header(video_path)
+    return expected_standard_frames(count, fps) if fps else 0
 
 
 def _split_runs(
@@ -275,32 +277,6 @@ def _write_detections(
         for row in detection_rows(dets, camera_id, video_id, cage_id)
     ]
     _write_parquet(pl.DataFrame(rows, schema=DETECTION_SCHEMA), path)
-
-
-def find_raw_videos(
-    raw_videos_path: Path,
-    cameras: Sequence[str] | None = None,
-    extensions: tuple[str, ...] = (".mp4", ".avi", ".mov", ".mkv"),
-) -> list[Path]:
-    """Raw videos under ``{raw_videos_path}/{camera_id}/``, sorted, optionally filtered.
-
-    Args:
-        raw_videos_path: Root with one folder per camera.
-        cameras: Only these camera ids, if given.
-        extensions: Lower-case file suffixes counted as videos (the same set
-            ``check_video_specs`` scans).
-
-    Returns:
-        Matching video paths, sorted.
-    """
-    videos = sorted(
-        p
-        for p in raw_videos_path.glob("*/*")
-        if p.is_file() and p.suffix.lower() in extensions
-    )
-    if cameras is not None:
-        videos = [v for v in videos if parse_raw_video_path(v)[0] in cameras]
-    return videos
 
 
 def _write_task_manifest(

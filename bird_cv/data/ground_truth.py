@@ -13,23 +13,23 @@ excluded and counted.
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-import cv2
 import polars as pl
 
 from bird_cv.client.evaluate_label_studio_tracking import _select_annotation
 from bird_cv.core.frames import is_aligned_with_standard, ls_to_canonical
-from bird_cv.core.ids import parse_media_path, parse_raw_video_path
+from bird_cv.core.ids import parse_media_path
 from bird_cv.core.labels import NO_BIRD, validate_class
 from bird_cv.core.schemas import GROUND_TRUTH_SCHEMA
 
 logger = logging.getLogger(__name__)
 
 # Version marker in prepare's ground-truth skip key, not a parameter default.
-GT_VERSION = 1
-"""Bump when the ground truth rules change, so prepare rebuilds it."""
+GT_VERSION = 2
+"""Bump when the ground truth rules change, so prepare rebuilds it.
+
+2: standardized frame counts come from raw video headers."""
 
 CageKey = tuple[str, str, str]
 """``(camera_id, video_id, cage_id)``."""
@@ -167,31 +167,6 @@ def behavior_by_crop_frame(task: dict[str, Any]) -> dict[int, list[str]]:
                 for frame in range(frame_range["start"], frame_range["end"] + 1):
                     labels[frame].append(label)
     return labels
-
-
-def standard_frame_counts(
-    raw_videos_dir: Path, extensions: tuple[str, ...] = (".mp4", ".avi", ".mov", ".mkv")
-) -> dict[tuple[str, str], int] | None:
-    """Frame counts of the standardized videos, read from their headers.
-
-    Args:
-        raw_videos_dir: Directory of standardized videos laid out as
-            ``{camera}/{video}.{ext}``.
-        extensions: Lower-case file suffixes counted as videos.
-
-    Returns:
-        ``{(camera_id, video_id): frame_count}``, or None if the directory
-        doesn't exist.
-    """
-    if not raw_videos_dir.is_dir():
-        return None
-    counts = {}
-    for path in raw_videos_dir.rglob("*"):
-        if path.suffix.lower() in extensions:
-            cap = cv2.VideoCapture(str(path))
-            counts[parse_raw_video_path(path)] = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            cap.release()
-    return counts
 
 
 def _by_key(tasks: list[dict[str, Any]], project: str) -> dict[CageKey, dict]:

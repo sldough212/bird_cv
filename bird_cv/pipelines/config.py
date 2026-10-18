@@ -70,6 +70,10 @@ class PrepareConfig:
     yolo_uniform_stride: int = 5
     # Frames between consecutive VideoMAE clip starts within a labeled stretch.
     videomae_clip_stride: int = 8
+    # Frame cap the labeled media's standardized videos were made with
+    # (check_video_specs' max_frames); None if uncapped. Expected standardized
+    # frame counts are computed from raw headers with it.
+    standardized_max_frames: int | None = 900
 
 
 @dataclass

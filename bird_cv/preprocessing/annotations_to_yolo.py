@@ -9,7 +9,13 @@ from collections import defaultdict
 from typing import Any, Dict, Optional
 import polars as pl
 
-from bird_cv.core.frames import FrameMap, frame_map_path, is_aligned_with_standard
+from bird_cv.core.frames import (
+    STANDARD_FPS,
+    FrameMap,
+    frame_map_path,
+    is_aligned_with_standard,
+)
+from bird_cv.core.ids import parse_media_path
 
 
 def crop_bird(
@@ -129,6 +135,7 @@ def process_item(
     crop_size: int | None = None,
     *,
     frame_map_root: Path | None = None,
+    by_cage: bool = False,
 ) -> bool:
     """Process a single annotation item and write YOLO-format labels per frame.
 
@@ -167,6 +174,15 @@ def process_item(
             frame per canonical frame, nor if no frame has a box. Also
             skipped if the cage video or the guidance fps isn't aligned with
             the standardized video (``is_aligned_with_standard``).
+        by_cage: Match guidance rows on a ``cage_id`` column too, so each
+            cage video gets its own ``target_frames`` (default: one row per
+            camera video, shared by its cages). Also the canonical mode for
+            aligned media: ids come from
+            :func:`~bird_cv.core.ids.parse_media_path` as in ground truth,
+            frame ``f`` of the cage video takes Label Studio frame ``f``
+            (both canonical + 1), and it raises if the cage video isn't 15
+            fps, the task has more than one non-cancelled annotation, or a
+            frame has more than one box.
 
     Returns:
         True if a frame map was skipped because the video isn't aligned,
@@ -195,6 +211,12 @@ def process_item(
     # Remove optional extension from the video_id
     if not (path_to_videos / camera_id / video_id).is_dir():
         video_id = str(Path(video_id).stem)
+    if by_cage:
+        # Same ids as ground truth
+        camera_id, video_id, cage = parse_media_path(item["data"]["video"])
+        full_video_path = (
+            path_to_videos / camera_id / video_id / f"{cage}{full_video_path.suffix}"
+        )
 
     # Load in the guidance
     guidance = pl.read_parquet(path_to_guidance)
@@ -212,6 +234,8 @@ def process_item(
     video_guidance = video_guidance.filter(
         (pl.col("camera_id") == camera_id) & (pl.col("video_id") == video_id)
     )
+    if by_cage:
+        video_guidance = video_guidance.filter(pl.col("cage_id") == cage)
 
     print(f"Working on {video_path}")
     if video_guidance.is_empty():
@@ -233,7 +257,15 @@ def process_item(
     # Collect annotations per frame
     frame_annotations: Dict[int, list[str]] = defaultdict(list)
 
-    for ann in item["annotations"]:
+    annotations = item["annotations"]
+    if by_cage:
+        annotations = [a for a in annotations if not a.get("was_cancelled")]
+        if len(annotations) > 1:
+            raise ValueError(
+                f"{video_path}: {len(annotations)} non-cancelled annotations; "
+                "by_cage needs exactly one"
+            )
+    for ann in annotations:
         for result in ann["result"]:
             label: Optional[str] = (  # noqa
                 result["value"]["labels"][0] if result["value"].get("labels") else None
@@ -273,6 +305,18 @@ def process_item(
     # Open video to extract frames
     cap = cv2.VideoCapture(full_video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
+    if by_cage:
+        multi = sorted(f for f, lines in frame_annotations.items() if len(lines) > 1)
+        if multi:
+            cap.release()
+            raise ValueError(
+                f"{video_path}: frames {multi[:10]} have more than one box"
+            )
+        if abs(fps - STANDARD_FPS) > 0.01 * STANDARD_FPS:
+            cap.release()
+            raise ValueError(
+                f"{full_video_path}: {fps} fps; by_cage needs {STANDARD_FPS} fps media"
+            )
 
     # Smooth bbox centers across target frames to reduce YOLO jitter
     smoothed_centers: dict[int, tuple[float, float]] = {}
@@ -311,7 +355,9 @@ def process_item(
             continue
 
         # Need to inverse the fps correction to get the correct annotation frame
-        frame_num_ann = int(frame_num * ls_fps / fps)
+        # by_cage: aligned media, video frame = Label Studio frame (canonical
+        # + 1); the rescale truncates to F - 1 for fps slightly above 15
+        frame_num_ann = frame_num if by_cage else int(frame_num * ls_fps / fps)
         lines = frame_annotations[frame_num_ann]
 
         if crop_size:
@@ -371,6 +417,7 @@ def stream_annotations_to_yolo(
     crop_size: int | None = None,
     *,
     frame_map_root: Path | None = None,
+    by_cage: bool = False,
 ) -> None:
     """Stream a large JSON annotation file and convert it to YOLO format.
 
@@ -389,6 +436,7 @@ def stream_annotations_to_yolo(
             labels (see :func:`process_item`).
         frame_map_root: Crop mode only: root under which to write a frame map
             per bird-crop video (see :func:`process_item`).
+        by_cage: Guidance has one row per cage video (see :func:`process_item`).
 
     Raises:
         ValueError: If ``frame_map_root`` is given without ``crop_size``.
@@ -420,6 +468,7 @@ def stream_annotations_to_yolo(
                     path_to_guidance=path_to_guidance,
                     crop_size=crop_size,
                     frame_map_root=frame_map_root,
+                    by_cage=by_cage,
                 )
         else:
             # Parallel execution
@@ -430,6 +479,7 @@ def stream_annotations_to_yolo(
                 path_to_guidance=path_to_guidance,
                 crop_size=crop_size,
                 frame_map_root=frame_map_root,
+                by_cage=by_cage,
             )
 
             with Pool(processes=processes) as pool:
