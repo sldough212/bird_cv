@@ -94,6 +94,10 @@ class Trainer(Protocol):
         """Score a checkpoint on one split of its dataset (model-level metrics)."""
         ...
 
+    def infer_option_keys(self) -> set[str]:
+        """``infer_options`` this kind accepts (checked at config load)."""
+        ...
+
     def load_for_inference(self, checkpoint: Path, spec: "ModelSpec") -> Any:
         """The inference model for a checkpoint, built with ``spec.infer_options``.
 
@@ -243,17 +247,17 @@ class YoloTrainer:
             device=context.device,
         )
 
-    def load_for_inference(self, checkpoint: Path, spec: "ModelSpec") -> Any:
-        """A :class:`YoloDetector`; ``infer_options`` are its fields.
+    def infer_option_keys(self) -> set[str]:
+        """:class:`YoloDetector` fields; ``tracker_path`` is required."""
+        return {"tracker_path", "conf", "iou", "max_det"}
 
-        ``tracker_path`` defaults to the repo's ``detection/tracker.yaml``.
-        """
+    def load_for_inference(self, checkpoint: Path, spec: "ModelSpec") -> Any:
+        """A :class:`YoloDetector`; ``infer_options`` are its fields."""
         from bird_cv.detection.track import YoloDetector
 
-        options = {
-            "tracker_path": Path(__file__).parents[1] / "detection" / "tracker.yaml"
-        } | spec.infer_options
-        return YoloDetector(model_path=checkpoint, **options)
+        if "tracker_path" not in spec.infer_options:
+            raise ValueError("yolo needs infer_options.tracker_path")
+        return YoloDetector(model_path=checkpoint, **spec.infer_options)
 
 
 class VideoMAETrainer:
@@ -337,6 +341,10 @@ class VideoMAETrainer:
             "macro_f1": result["macro_f1"],
             "n_skipped_out_of_vocabulary": result["n_skipped_out_of_vocabulary"],
         }
+
+    def infer_option_keys(self) -> set[str]:
+        """:class:`VideoMAEClassifier` fields other than the checkpoint."""
+        return {"num_frames", "stride", "batch_size"}
 
     def load_for_inference(self, checkpoint: Path, spec: "ModelSpec") -> Any:
         """A :class:`VideoMAEClassifier`; ``infer_options`` are its fields.

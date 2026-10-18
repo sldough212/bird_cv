@@ -99,7 +99,7 @@ def run_evaluate(
 
         assert role is not None and checkpoint is not None  # checked above
         spec = cfg.train.roles()[role]
-        dataset = layout.dataset(prepared, role)
+        dataset = layout.dataset(prepared, role, spec.kind)
         context = TrainContext(
             device=cfg.train.device,
             select_conf=cfg.infer.det_conf,
@@ -207,7 +207,11 @@ def run_evaluate(
             kind="evaluate",
             snapshot_hash=prepared.snapshot_hash,
             split_version=split_version,
-            config={"mode": mode, "evaluate": asdict(ev)},
+            config={
+                "mode": mode,
+                "evaluate": asdict(ev),
+                "prepared": asdict(prepared),
+            },
             inputs=inputs,
         ),
         out,

@@ -330,7 +330,8 @@ def run_infer(
 
     Every camera in ``videos`` is checked by the segmenter (e.g. for a SAM2
     prompt config) before any work starts. Task ``i`` of ``n`` processes
-    ``videos[i::n]``; a video that fails is logged and skipped. Writes this
+    ``videos[i::n]``; a video that fails is logged and skipped (a model that
+    fails to load raises before any video). Writes this
     task's timings, manifest (config, model kinds, checkpoints, videos,
     ``limit`` and failures) and failed videos where
     :class:`~bird_cv.core.layout.InferRun` puts them in ``run_dir``.
@@ -368,6 +369,8 @@ def run_infer(
     config: dict[str, Any] = {
         **asdict(cfg),
         "models": models.kinds(),
+        "train_run_id": models.train_run_id,
+        "fold": models.fold,
         "sam_model_id": models.context.sam_model_id,
         "task_index": task_index,
         "num_tasks": num_tasks,
@@ -380,6 +383,8 @@ def run_infer(
     if not my_videos:
         return []
 
+    # Model loading fails the whole task, not each video
+    segmenters.load()
     detector, classifier = models.load()
     timer = StageTimer()
 

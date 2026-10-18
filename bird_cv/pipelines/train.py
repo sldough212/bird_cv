@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from bird_cv.core.layout import Layout
-from bird_cv.core.manifest import new_manifest, read_manifest, write_manifest
+from bird_cv.core.manifest import new_manifest, write_manifest
 from bird_cv.evaluation.cv import check_fold_cameras
 from bird_cv.pipelines.config import BirdCVConfig, default_run_id, load_config
 
@@ -121,13 +121,13 @@ def run_train(
     trainer = get_trainer(spec.kind)
     layout = Layout(cfg.path_to_base_output)
     prepared = layout.read_current()
-    dataset = layout.dataset(prepared, role, fold)
+    dataset = layout.dataset(prepared, role, spec.kind, fold)
     check_fold(
         fold,
         hyperparameters,
         dataset,
         trainer,
-        split_path=layout.dataset_split(prepared, role, fold),
+        split_path=layout.dataset_split(prepared, role, spec.kind, fold),
         cv_folds_path=layout.cv_folds(prepared.split_version),
     )
     run_dir = layout.train_run(role, default_run_id(run_id), fold)
@@ -154,13 +154,17 @@ def run_train(
             default=float,
         )
     )
-    upstream = read_manifest(dataset) if (dataset / "manifest.json").exists() else None
     write_manifest(
         new_manifest(
             kind=f"train_{role}",
-            snapshot_hash=upstream.snapshot_hash if upstream else None,
-            split_version=upstream.split_version if upstream else None,
-            config={"role": role, "spec": dataclasses.asdict(spec), "fold": fold},
+            snapshot_hash=prepared.snapshot_hash,
+            split_version=prepared.split_version,
+            config={
+                "role": role,
+                "spec": dataclasses.asdict(spec),
+                "fold": fold,
+                "prepared": dataclasses.asdict(prepared),
+            },
             inputs={
                 "dataset": str(dataset),
                 "pretrained": spec.pretrained,

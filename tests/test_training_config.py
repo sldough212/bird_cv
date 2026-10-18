@@ -20,9 +20,9 @@ from bird_cv.training.registry import (
 CONFIG = Path(__file__).parents[1] / "bird_cv/pipelines/configs/config.toml"
 
 
-def _config(tmp_path: Path, detector: str = "", extra: str = "") -> Path:
+def _config(tmp_path: Path, detector: str = "") -> Path:
     """The committed config under ``tmp_path``, ``detector`` added to
-    [train.detector] and ``extra`` appended."""
+    [train.detector]."""
     text = re.sub(
         r'^path_to_base_output = ".*"$',
         f'path_to_base_output = "{tmp_path}"',
@@ -31,14 +31,14 @@ def _config(tmp_path: Path, detector: str = "", extra: str = "") -> Path:
     )
     text = text.replace("\n[train.detector]\n", f"\n[train.detector]\n{detector}\n")
     path = tmp_path / "config.toml"
-    path.write_text(text + extra)
+    path.write_text(text)
     return path
 
 
 def _without_checkpoints(train: TrainConfig) -> TrainConfig:
-    """``train`` minus the committed smoke-test checkpoints."""
+    """``train`` minus the committed checkpoints and inference options."""
     specs: dict[str, Any] = {
-        role: dataclasses.replace(spec, checkpoint=None)
+        role: dataclasses.replace(spec, checkpoint=None, infer_options={})
         for role, spec in train.roles().items()
     }
     return dataclasses.replace(train, **specs)
@@ -105,21 +105,32 @@ def test_fold_check_sees_test_camera_in_yolo_layout(tmp_path: Path) -> None:
 
 def test_inference_models_come_from_config(tmp_path: Path) -> None:
     cfg = load_config(_config(tmp_path), require_api_key=False)
+    with pytest.raises(FileNotFoundError, match="detector.*'r1'"):
+        inference_models(cfg, train_run_id="r1")
+    layout = Layout(tmp_path)
+    for role, trainer in (
+        ("detector", YoloTrainer()),
+        ("classifier", VideoMAETrainer()),
+    ):
+        checkpoint = trainer.checkpoint_path(layout.train_run(role, "r1"))
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.touch()
     models = inference_models(cfg, train_run_id="r1")
     assert models.kinds() == {
         "segmenter": "sam2",
         "detector": "yolo",
         "classifier": "videomae",
     }
-    run_dir = Layout(tmp_path).train_run("detector", "r1")
-    assert models.checkpoints["detector"] == YoloTrainer().checkpoint_path(run_dir)
-    assert inference_models(cfg).checkpoints == {
-        "detector": cfg.train.detector.checkpoint,
-        "classifier": cfg.train.classifier.checkpoint,
-    }
+    assert models.checkpoints["detector"] == tmp_path / "train/detector/r1/best.pt"
 
-    with pytest.raises(ValueError, match="infer.segmenter"):
-        load_config(
-            _config(tmp_path, extra='\n[infer.segmenter]\nkind = "nope"\n'),
-            require_api_key=False,
-        )
+    edits = (
+        ("[infer.segmenter]\n", '[infer.segmenter]\nkind = "nope"\n', "nope"),
+        ("[infer.segmenter]\n", "[infer.segmenter]\noptions = { iou = 1 }\n", "iou"),
+        ("{ tracker_path", "{ trackr_path", "trackr_path"),
+        ('checkpoint = "/gscratch', 'checkpoint = "gscratch', "absolute"),
+    )
+    for old, new, match in edits:
+        path = _config(tmp_path)
+        path.write_text(path.read_text().replace(old, new, 1))
+        with pytest.raises(ValueError, match=match):
+            load_config(path, require_api_key=False)

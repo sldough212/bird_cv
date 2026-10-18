@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -99,7 +100,11 @@ def export_annotations(
 
 
 def create_snapshot(
-    detect_export: Path, classify_export: Path, snapshots_dir: Path
+    detect_export: Path,
+    classify_export: Path,
+    snapshots_dir: Path,
+    *,
+    snapshot_dir_for: Callable[[str], Path] | None = None,
 ) -> tuple[str, Path]:
     """Copy two exports into ``snapshots_dir/{hash}/`` unless that snapshot exists.
 
@@ -107,6 +112,9 @@ def create_snapshot(
         detect_export: Path to a Detect project JSON export.
         classify_export: Path to a Classify project JSON export.
         snapshots_dir: Root directory holding all snapshots.
+        snapshot_dir_for: Maps a hash to its snapshot directory (e.g.
+            :meth:`bird_cv.core.layout.Layout.snapshot`); overrides
+            ``snapshots_dir/{hash}``.
 
     Returns:
         The snapshot hash and its directory, which contains ``detect.json``,
@@ -115,7 +123,11 @@ def create_snapshot(
     snapshot_hash = annotation_hash(
         json.loads(detect_export.read_text()), json.loads(classify_export.read_text())
     )
-    snapshot_dir = snapshots_dir / snapshot_hash
+    snapshot_dir = (
+        snapshot_dir_for(snapshot_hash)
+        if snapshot_dir_for
+        else snapshots_dir / snapshot_hash
+    )
     if (snapshot_dir / "manifest.json").exists():
         logger.info("Snapshot %s already exists; labels unchanged", snapshot_hash)
         return snapshot_hash, snapshot_dir

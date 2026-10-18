@@ -25,8 +25,10 @@ classify_project_name = "Classify"
 
 [detect]
 # ---- Required ----
+# Duplicated in [train.detector] for the new pipelines; this copy is for the legacy ones.
 path_to_yolo = "/gscratch/pdoughe1/full_pipeline/20260817/detect/output/20260901_011549/bird_yolo/weights/best.pt"
 path_to_yolo_config = "/home/pdoughe1/bird_cv/bird_cv/detection/detect_birds.yaml"
+# Duplicated in [train.detector] for the new pipelines; this copy is for the legacy ones.
 path_to_tracker_config = "/home/pdoughe1/bird_cv/bird_cv/detection/tracker.yaml"
 
 # ---- Optional (defaults shown) ----
@@ -39,6 +41,7 @@ run_name = "bird_yolo"
 
 [classify]
 # ---- Required ----
+# Duplicated in [train.classifier] for the new pipelines; this copy is for the legacy ones.
 path_to_mae = "/gscratch/pdoughe1/20260415_163412/training/videomae_behavior/best"
 
 # ---- Optional (defaults shown) ----
@@ -51,19 +54,25 @@ freeze_encoder = true
 
 
 
-# ---- Models (optional; defaults shown) ----
+# ---- Models ----
 # Each role table picks a model by `kind` (see bird_cv/training/registry.py)
-# for both training and inference, and overrides only the keys it sets. A
-# table that changes `kind` starts from scratch and must set `pretrained`.
-# `options` apply to every training run of the role; `tune_options` only to
-# the tuner; `infer_options` to the inference model. `checkpoint` is what
-# infer.py loads when it isn't given --train-run-id. Training data, runs and
-# every other output path come from bird_cv/core/layout.py.
-#
-# [train]
+# for both training and inference, and overrides only the keys it sets; the
+# commented keys show the defaults. A table that changes `kind` starts from
+# scratch and must set `pretrained`. `options` apply to every training run of
+# the role; `tune_options` only to the tuner; `infer_options` to the inference
+# model. `checkpoint` (absolute) is what infer.py loads when it isn't given
+# --train-run-id. Training data, runs and every other output path come from
+# bird_cv/core/layout.py.
+
+[train]
 # device = 0
-#
-# [train.detector]
+
+[train.detector]
+# Duplicated in [detect] path_to_yolo / path_to_tracker_config for the legacy
+# pipelines; these copies are for the new ones. Smoke-test weights (ADR 0004).
+checkpoint = "/gscratch/pdoughe1/full_pipeline/20260817/detect/output/20260901_011549/bird_yolo/weights/best.pt"
+# YoloDetector fields: tracker_path (required), conf, iou, max_det
+infer_options = { tracker_path = "/home/pdoughe1/bird_cv/bird_cv/detection/tracker.yaml" }
 # kind = "yolo"
 # pretrained = "yolo11n.pt"
 # epochs = 60
@@ -75,10 +84,11 @@ freeze_encoder = true
 # options = {}
 # # Ultralytics run_ray_tune arguments, e.g. { grace_period = 10 }
 # tune_options = {}
-# # YoloDetector fields; tracker_path defaults to bird_cv/detection/tracker.yaml
-# infer_options = {}
-#
-# [train.classifier]
+
+[train.classifier]
+# Duplicated in [classify] path_to_mae for the legacy pipelines; this copy is
+# for the new ones. Smoke-test weights (ADR 0004).
+checkpoint = "/gscratch/pdoughe1/20260415_163412/training/videomae_behavior/best"
 # kind = "videomae"
 # pretrained = "MCG-NJU/videomae-base"
 # epochs = 10
@@ -86,7 +96,7 @@ freeze_encoder = true
 # tune_trials = 20
 # options = { num_frames = 16, batch_size = 8 }
 # tune_options = { cpus_per_trial = 8, grace_period = 2 }
-# # VideoMAEClassifier fields (num_frames follows options), e.g. { stride = 8 }
+# # VideoMAEClassifier fields (num_frames follows options): stride, batch_size
 # infer_options = {}
 #
 # [train.classifier.search_space]
@@ -94,16 +104,9 @@ freeze_encoder = true
 # freeze_encoder = { type = "choice", values = [true, false] }
 # weight_decay = { type = "loguniform", lower = 1e-4, upper = 1e-1 }
 # class_weighted_loss = { type = "choice", values = [true, false] }
-#
-# [infer.segmenter]
-# # "sam2" (prompts from path_to_segmentation_configs, model sam_model_id) or
-# # "whole_frame" (each frame is one cage).
+
+[infer.segmenter]
+# "sam2" (prompts from path_to_segmentation_configs, model sam_model_id;
+# options: iou_threshold) or "whole_frame" (each frame is one cage).
 # kind = "sam2"
 # options = {}
-
-# Smoke-test checkpoints (ADR 0004) for ad-hoc inference without a training run.
-[train.detector]
-checkpoint = "/gscratch/pdoughe1/full_pipeline/20260817/detect/output/20260901_011549/bird_yolo/weights/best.pt"
-
-[train.classifier]
-checkpoint = "/gscratch/pdoughe1/20260415_163412/training/videomae_behavior/best"

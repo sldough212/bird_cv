@@ -13,8 +13,8 @@ a path changes here or nowhere::
     prepared/{snapshot_hash}/gt_v{g}/         ground_truth.parquet, ground_truth_stats.json
         split_v{n}/sampling_{cfghash}/        split_summary, yolo_frames, videomae_clips
                                               (.parquet), manifest.json
-            datasets/{role}/frozen/           training data on the frozen split
-            datasets/{role}/fold{k}/          one CV fold, with its split.parquet
+            datasets/{role}/{kind}/frozen/    training data on the frozen split
+            datasets/{role}/{kind}/fold{k}/   one CV fold, with its split.parquet
     train/{role}/{run_id}/                    frozen-split training run
     train/{role}/fold{k}/{run_id}/            CV fold training run
     infer/{run_id}/                           an ad-hoc inference run, or the root of:
@@ -196,16 +196,18 @@ class Layout:
         """Sampled classifier training clips (``VIDEOMAE_CLIPS_SCHEMA``)."""
         return self.sampling_dir(prepared) / "videomae_clips.parquet"
 
-    def dataset(self, prepared: Prepared, role: str, fold: int | None = None) -> Path:
-        """Training data of one role: the frozen split, or CV fold ``fold``."""
-        root = self.sampling_dir(prepared) / "datasets" / role
+    def dataset(
+        self, prepared: Prepared, role: str, kind: str, fold: int | None = None
+    ) -> Path:
+        """Training data of one role's model kind: frozen split or CV fold ``fold``."""
+        root = self.sampling_dir(prepared) / "datasets" / role / kind
         return root / ("frozen" if fold is None else f"fold{fold}")
 
     def dataset_split(
-        self, prepared: Prepared, role: str, fold: int | None = None
+        self, prepared: Prepared, role: str, kind: str, fold: int | None = None
     ) -> Path:
         """The camera split a dataset was built from (``camera_id``, ``split``)."""
-        return self.dataset(prepared, role, fold) / "split.parquet"
+        return self.dataset(prepared, role, kind, fold) / "split.parquet"
 
     @property
     def current_prepared(self) -> Path:

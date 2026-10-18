@@ -7,8 +7,8 @@
 # the model its config table names, then scores each role's model on val/test.
 # --smoke (or SMOKE=1) runs 2 tuning trials and 2 epochs per role, for a
 # first cluster run; it is a smoke test, never report its scores.
-# Override CONFIG or RUN_ID in the environment. Output paths come from the
-# config ([train] output, path_to_base_output) and are printed below.
+# Override CONFIG or RUN_ID in the environment. Output paths come from
+# bird_cv/core/layout.py under path_to_base_output and are printed below.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -52,6 +52,7 @@ done
 #   sbatch --dependency=afterok:$infer_val slurm_scripts/run_evaluate.sh sweep --run-id "$RUN_ID"
 # then test inference with best_setting.json, then
 #   sbatch --dependency=afterok:$infer_test slurm_scripts/run_evaluate.sh test --run-id "$RUN_ID"
-echo "Inference is not chained yet; after predictions exist run:"
+echo "Inference is not chained yet (waiting on #48 part 3). Once val-sweep and"
+echo "test predictions exist under infer/$RUN_ID/, run:"
 echo "  sbatch slurm_scripts/run_evaluate.sh sweep --run-id $RUN_ID"
 echo "  sbatch slurm_scripts/run_evaluate.sh test --run-id $RUN_ID"

@@ -222,10 +222,14 @@ def _convert_train_config(table: dict, dec_hook) -> TrainConfig:
 
     Raises:
         ValueError: On unknown keys in ``[train]`` or a role table, an
-            unknown ``kind``, a new ``kind`` without ``pretrained``, or a
-            malformed ``search_space`` entry.
+            unknown ``kind``, a new ``kind`` without ``pretrained``, unknown
+            ``infer_options``, a relative ``checkpoint``, or a malformed ``search_space`` entry.
     """
-    from bird_cv.training.registry import check_search_space, trainer_kinds
+    from bird_cv.training.registry import (
+        check_search_space,
+        get_trainer,
+        trainer_kinds,
+    )
 
     defaults = TrainConfig().roles()
     known = {f.name for f in fields(TrainConfig)}
@@ -256,6 +260,19 @@ def _convert_train_config(table: dict, dec_hook) -> TrainConfig:
             base = {}
         merged[role] = base | role_table
         check_search_space(merged[role].get("search_space", {}), where=where)
+        options = merged[role].get("infer_options", {})
+        if not isinstance(options, dict):
+            raise ValueError(f"{where} infer_options must be a table")
+        known = get_trainer(kind).infer_option_keys()
+        if set(options) - known:
+            raise ValueError(
+                f"{where} infer_options has unknown keys "
+                f"{sorted(set(options) - known)} for kind {kind!r}; "
+                f"known: {sorted(known)}"
+            )
+        checkpoint = merged[role].get("checkpoint")
+        if checkpoint is not None and not Path(checkpoint).is_absolute():
+            raise ValueError(f"{where} checkpoint must be absolute: {checkpoint!r}")
     return msgspec.convert(merged, type=TrainConfig, dec_hook=dec_hook)
 
 
@@ -263,23 +280,35 @@ def _convert_infer_config(table: dict, dec_hook) -> InferConfig:
     """Build :class:`InferConfig`, checking ``[infer.segmenter]`` keys and kind.
 
     Raises:
-        ValueError: On unknown keys in ``[infer]`` or ``[infer.segmenter]``,
-            or a segmenter ``kind`` with no registry entry.
+        ValueError: On unknown keys in ``[infer]``, ``[infer.segmenter]``
+            or its ``options``, a non-table ``segmenter``, or a segmenter
+            ``kind`` with no registry entry.
     """
-    from bird_cv.inference.registry import segmenter_kinds
+    from bird_cv.inference.registry import segmenter_kinds, segmenter_option_keys
 
+    segmenter = table.get("segmenter", {})
+    if not isinstance(segmenter, dict):
+        raise ValueError("[infer] segmenter must be a table ([infer.segmenter])")
     for where, typ, keys in (
         ("[infer]", InferConfig, table),
-        ("[infer.segmenter]", SegmenterSpec, table.get("segmenter", {})),
+        ("[infer.segmenter]", SegmenterSpec, segmenter),
     ):
         unknown = set(keys) - {f.name for f in fields(typ)}
         if unknown:
             raise ValueError(f"Unknown keys in {where}: {sorted(unknown)}")
     cfg = msgspec.convert(table, type=InferConfig, dec_hook=dec_hook)
-    if cfg.segmenter.kind not in segmenter_kinds():
+    kind = cfg.segmenter.kind
+    if kind not in segmenter_kinds():
         raise ValueError(
-            f"[infer.segmenter] kind {cfg.segmenter.kind!r} is not registered;"
+            f"[infer.segmenter] kind {kind!r} is not registered;"
             f" known: {segmenter_kinds()}"
+        )
+    known = segmenter_option_keys(kind)
+    if set(cfg.segmenter.options) - known:
+        raise ValueError(
+            f"[infer.segmenter] options has unknown keys "
+            f"{sorted(set(cfg.segmenter.options) - known)} for kind {kind!r}; "
+            f"known: {sorted(known)}"
         )
     return cfg
 

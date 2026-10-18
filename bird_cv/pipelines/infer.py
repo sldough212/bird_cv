@@ -53,7 +53,7 @@ def main() -> None:
     run_dir = Layout(cfg.path_to_base_output).infer_run(default_run_id(args.run_id)).dir
     print(f"Run directory: {run_dir}")
 
-    run_infer(
+    failed = run_infer(
         videos=videos,
         run_dir=run_dir,
         models=models,
@@ -62,6 +62,10 @@ def main() -> None:
         num_tasks=args.num_tasks,
         limit=args.limit,
     )
+    if failed:
+        raise SystemExit(
+            f"{len(failed)} video(s) failed; see {run_dir}/failed_task*.json"
+        )
 
 
 if __name__ == "__main__":

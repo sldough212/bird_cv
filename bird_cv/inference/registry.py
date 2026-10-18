@@ -38,38 +38,65 @@ class SegmenterContext:
 class Segmenters(Protocol):
     """Builds one :class:`CageSegmenter` per camera."""
 
+    @classmethod
+    def option_keys(cls) -> set[str]:
+        """``[infer.segmenter] options`` this kind accepts (checked at config load)."""
+        ...
+
     def check_cameras(self, camera_ids: Iterable[str]) -> None:
         """Fail before any work if a camera can't be segmented."""
         ...
 
+    def load(self) -> None:
+        """Load model weights; a failure here stops the task, not one video."""
+        ...
+
     def for_camera(self, camera_id: str) -> "CageSegmenter":
-        """The segmenter for one camera's videos."""
+        """The segmenter for one camera's videos (after :meth:`load`)."""
         ...
 
 
 class Sam2Segmenters:
     """SAM2 prompted per camera from ``{segmentation_configs}/configs/``.
 
-    One predictor is built on first use and shared by every camera.
-    ``options`` are :class:`~bird_cv.inference.cages.Sam2CageSegmenter`
-    keyword arguments (e.g. ``iou_threshold``).
+    :meth:`load` builds one predictor, shared by every camera. ``options``
+    are :class:`~bird_cv.inference.cages.Sam2CageSegmenter` keyword
+    arguments (:meth:`option_keys`), checked against its signature here.
     """
 
     def __init__(self, context: SegmenterContext, **options: Any) -> None:
+        import inspect
+
+        from bird_cv.inference.cages import Sam2CageSegmenter
+
+        unknown = set(options) - self.option_keys()
+        if unknown:
+            raise ValueError(f"Unknown sam2 segmenter options: {sorted(unknown)}")
+        inspect.signature(Sam2CageSegmenter).bind_partial(**options)
         self.context = context
         self.options = options
         self._predictor: Any = None
-        self._device: str | None = None
+        self._device = "cuda"
+
+    @classmethod
+    def option_keys(cls) -> set[str]:
+        return {"iou_threshold"}
 
     def check_cameras(self, camera_ids: Iterable[str]) -> None:
         from bird_cv.inference.cages import check_sam2_configs
 
         check_sam2_configs(self.context.segmentation_configs, camera_ids)
 
-    def for_camera(self, camera_id: str) -> "CageSegmenter":
+    def load(self) -> None:
         import torch
         from sam2.build_sam import build_sam2_video_predictor_hf
 
+        self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._predictor = build_sam2_video_predictor_hf(
+            self.context.sam_model_id, device=self._device
+        )
+
+    def for_camera(self, camera_id: str) -> "CageSegmenter":
         from bird_cv.inference.cages import (
             Sam2CageSegmenter,
             sam2_config_path,
@@ -77,17 +104,14 @@ class Sam2Segmenters:
         )
 
         if self._predictor is None:
-            self._device = "cuda" if torch.cuda.is_available() else "cpu"
-            self._predictor = build_sam2_video_predictor_hf(
-                self.context.sam_model_id, device=self._device
-            )
+            raise RuntimeError("Call Sam2Segmenters.load() before for_camera()")
         configs = self.context.segmentation_configs
         return Sam2CageSegmenter(
             predictor=self._predictor,
             sam_model_id=self.context.sam_model_id,
             config_path=sam2_config_path(configs, camera_id),
             reference_frame_path=sam2_reference_frame(configs, camera_id),
-            device=self._device or "cuda",
+            device=self._device,
             **self.options,
         )
 
@@ -98,7 +122,14 @@ class WholeFrameSegmenters:
     def __init__(self, context: SegmenterContext) -> None:
         self.context = context
 
+    @classmethod
+    def option_keys(cls) -> set[str]:
+        return set()
+
     def check_cameras(self, camera_ids: Iterable[str]) -> None:
+        return None
+
+    def load(self) -> None:
         return None
 
     def for_camera(self, camera_id: str) -> "CageSegmenter":
@@ -107,7 +138,7 @@ class WholeFrameSegmenters:
         return WholeFrameSegmenter()
 
 
-def _segmenters() -> dict[str, type]:
+def _segmenters() -> dict[str, Any]:
     """The segmenter registry: ``[infer.segmenter] kind`` to class."""
     return {"sam2": Sam2Segmenters, "whole_frame": WholeFrameSegmenters}
 
@@ -115,6 +146,11 @@ def _segmenters() -> dict[str, type]:
 def segmenter_kinds() -> list[str]:
     """Every registered segmenter ``kind``, sorted."""
     return sorted(_segmenters())
+
+
+def segmenter_option_keys(kind: str) -> set[str]:
+    """The options a registered segmenter ``kind`` accepts."""
+    return _segmenters()[kind].option_keys()
 
 
 def get_segmenters(spec: "SegmenterSpec", context: SegmenterContext) -> Segmenters:
@@ -141,6 +177,8 @@ class InferenceModels:
         classifier: The ``[train.classifier]`` spec.
         checkpoints: Weights per role (``detector``, ``classifier``).
         context: Settings the segmenter reads.
+        train_run_id: The training run the checkpoints came from, if any.
+        fold: That run's CV fold, if any.
     """
 
     segmenter: "SegmenterSpec"
@@ -148,6 +186,8 @@ class InferenceModels:
     classifier: "ModelSpec"
     checkpoints: Mapping[str, Path]
     context: SegmenterContext
+    train_run_id: str | None = None
+    fold: int | None = None
 
     def kinds(self) -> dict[str, str]:
         """Each role's ``kind``, for manifests."""
@@ -164,7 +204,7 @@ class InferenceModels:
         }
 
     def segmenters(self) -> Segmenters:
-        """The per-camera segmenter factory (loads nothing until used)."""
+        """The per-camera segmenter factory (loads nothing until ``load()``)."""
         return get_segmenters(self.segmenter, self.context)
 
     def load(self) -> tuple["StreamingDetector", "FrameClassifier"]:
@@ -200,6 +240,7 @@ def inference_models(
 
     Raises:
         ValueError: If a role has neither a training run nor a ``checkpoint``.
+        FileNotFoundError: If a role's checkpoint doesn't exist.
     """
     from bird_cv.core.layout import Layout
     from bird_cv.training.registry import get_trainer
@@ -218,6 +259,16 @@ def inference_models(
                 f"No {role} checkpoint: pass a training run id or set "
                 f"[train.{role}] checkpoint"
             )
+        if not checkpoints[role].exists():
+            source = (
+                f"training run {train_run_id!r}"
+                + (f" fold {fold}" if fold is not None else "")
+                if train_run_id is not None
+                else f"[train.{role}] checkpoint"
+            )
+            raise FileNotFoundError(
+                f"{role} checkpoint {checkpoints[role]} (from {source}) does not exist"
+            )
     return InferenceModels(
         segmenter=cfg.infer.segmenter,
         detector=specs["detector"],
@@ -227,4 +278,6 @@ def inference_models(
             segmentation_configs=cfg.path_to_segmentation_configs,
             sam_model_id=cfg.sam_model_id,
         ),
+        train_run_id=train_run_id,
+        fold=fold,
     )
