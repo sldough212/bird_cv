@@ -89,9 +89,12 @@ def test_prepare_build_evaluate_connect(
         classify_task(c, "v", "0", [("preening", 1, 7), ("resting", 8, 15)])
         for c in cameras
     ]
-    for kind_dir in (cfg.path_to_cage_videos, cfg.path_to_bbox_videos):
-        for c in cameras:
-            _write_video(kind_dir / c / "v" / "0.mp4", n)
+    # Media outside path_to_base_output, found from the exports' URLs
+    for tasks, kind in ((detect, "cage_videos"), (classify, "bird_crops")):
+        for c, task in zip(cameras, tasks):
+            media = tmp_path / "legacy" / kind / c / "v" / "0.mp4"
+            _write_video(media, n)
+            task["data"]["video"] = f"/data/local-files/?d={str(media)[1:]}"
     (tmp_path / "detect.json").write_text(json.dumps(detect))
     (tmp_path / "classify.json").write_text(json.dumps(classify))
     run_prepare(
@@ -109,6 +112,14 @@ def test_prepare_build_evaluate_connect(
         .select("camera_id", "frame")
         .iter_rows()
     )
+
+    # Missing media fails before any dataset is written
+    moved = tmp_path / "legacy" / "cage_videos" / "a" / "v" / "0.mp4"
+    moved.rename(moved.with_suffix(".bak"))
+    with pytest.raises(FileNotFoundError, match="1 selected media"):
+        build_datasets(cfg, prepared.id, folds=None, processes=1)
+    assert not list(base.rglob("datasets"))
+    moved.with_suffix(".bak").rename(moved)
 
     built = build_datasets(cfg, prepared.id, folds=None, processes=1)
     assert build_datasets(cfg, prepared.id, folds=None, processes=1) == built

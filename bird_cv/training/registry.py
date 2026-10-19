@@ -58,21 +58,17 @@ class TrainResult:
 
 @dataclass(frozen=True)
 class DatasetMedia:
-    """Labeled media and exports a dataset is built from.
+    """Exports a dataset is built from; each task's ``data.video`` is its media.
 
     Attributes:
-        cage_videos: Detect media root, ``{camera_id}/{video_id}/{cage}.mp4``.
-        bird_crop_videos: Classify media root, same layout.
-        detect_export: The snapshot's interpolated Detect export.
-        classify_export: The snapshot's Classify export.
+        detect_export: The snapshot's interpolated Detect export (cage videos).
+        classify_export: The snapshot's Classify export (bird-crop videos).
         processes: Worker processes for the converters.
     """
 
-    cage_videos: Path
-    bird_crop_videos: Path
     detect_export: Path
     classify_export: Path
-    processes: int = 4
+    processes: int = 1
 
 
 class Trainer(Protocol):
@@ -143,6 +139,10 @@ class Trainer(Protocol):
 
         ``sampling`` is :func:`bird_cv.pipelines.prepare.sampling_config`.
         """
+        ...
+
+    def dataset_export(self, media: DatasetMedia) -> Path:
+        """The export whose tasks' media :meth:`build_dataset` reads."""
         ...
 
     def build_dataset(
@@ -324,6 +324,9 @@ class YoloTrainer:
             frames, stride=sampling["yolo_uniform_stride"], seed=sampling["seed"]
         )
 
+    def dataset_export(self, media):
+        return media.detect_export
+
     def build_dataset(
         self, selection, ground_truth, spec, media, out_dir, guidance_path
     ) -> None:
@@ -350,7 +353,7 @@ class YoloTrainer:
         )
         guidance.write_parquet(guidance_path)
         stream_annotations_to_yolo(
-            path_to_videos=media.cage_videos,
+            path_to_videos=Path(),  # unused: media come from the export
             path_to_annotations=media.detect_export,
             path_to_output=out_dir,
             path_to_guidance=guidance_path,
@@ -491,6 +494,9 @@ class VideoMAETrainer:
             seed=sampling["seed"],
         )
 
+    def dataset_export(self, media):
+        return media.classify_export
+
     def build_dataset(
         self, selection, ground_truth, spec, media, out_dir, guidance_path
     ) -> None:
@@ -544,7 +550,7 @@ class VideoMAETrainer:
         ).unique().write_parquet(guidance_path)
         num_frames = spec.options["num_frames"]
         stream_annotations_to_mae(
-            path_to_videos=media.bird_crop_videos,
+            path_to_videos=Path(),  # unused: media come from the export
             path_to_annotations=media.classify_export,
             path_to_guidance=guidance_path,
             path_to_output=out_dir,

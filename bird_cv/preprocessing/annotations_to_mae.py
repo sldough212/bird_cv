@@ -10,6 +10,7 @@ import numpy as np
 import polars as pl
 from tqdm import tqdm
 
+from bird_cv.client.utils import get_local_path
 from bird_cv.core.ids import parse_media_path
 
 
@@ -202,6 +203,7 @@ def process_item(
             annotations under ``item["annotations"]``.
         path_to_videos: Root directory containing the cropped per-cage
             videos, structured as ``{camera_id}/{video_id}/{cage_id}.mp4``.
+            Unused with ``ranges_by_cage``.
         path_to_output: Directory where clip frames will be written.
         guidance: Split guidance mapping produced by :func:`load_split_guidance`.
         num_frames: Number of frames per clip. Must match what
@@ -221,24 +223,25 @@ def process_item(
         None. Clip frames are written to disk as a side effect.
     """
     video_field = item["data"]["video"]
-    video_path = video_field.split(f"{path_to_videos.name}/")[-1].replace("%2C", ",")
-    full_video_path = path_to_videos / video_path
-
-    video_path_base = path_to_videos.stem
-    dirs = str(full_video_path).split(video_path_base)[-1]
-    dirs_names = dirs.split("/")
-    camera_id = dirs_names[1]
-    video_id = dirs_names[2]
-    cage = full_video_path.stem
-
     if ranges_by_cage is not None:
-        # Same ids as ground truth
+        # Same ids as ground truth; media from the export's local-files URL
         camera_id, video_id, cage = parse_media_path(video_field)
-        full_video_path = (
-            path_to_videos / camera_id / video_id / f"{cage}{full_video_path.suffix}"
-        )
+        full_video_path = get_local_path(video_field)
+        video_path = str(full_video_path)
         if (camera_id, video_id, cage) not in ranges_by_cage:
             return
+    else:
+        video_path = video_field.split(f"{path_to_videos.name}/")[-1].replace(
+            "%2C", ","
+        )
+        full_video_path = path_to_videos / video_path
+
+        video_path_base = path_to_videos.stem
+        dirs = str(full_video_path).split(video_path_base)[-1]
+        dirs_names = dirs.split("/")
+        camera_id = dirs_names[1]
+        video_id = dirs_names[2]
+        cage = full_video_path.stem
     split = guidance.get((camera_id, video_id))
     if split is None:
         print(f"Video {video_path} not in split guidance, skipping.")
@@ -334,6 +337,7 @@ def stream_annotations_to_mae(
     Args:
         path_to_videos: Root directory containing the cropped per-cage
             videos, structured as ``{camera_id}/{video_id}/{cage_id}.mp4``.
+            Unused with ``ranges_by_cage``.
         path_to_annotations: Path to the behavior annotation JSON exported
             from Label Studio.
         path_to_guidance: Path to the split guidance parquet (see

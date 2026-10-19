@@ -15,6 +15,7 @@ from bird_cv.core.frames import (
     frame_map_path,
     is_aligned_with_standard,
 )
+from bird_cv.client.utils import get_local_path
 from bird_cv.core.ids import parse_media_path
 
 
@@ -152,7 +153,7 @@ def process_item(
             the JSON file. This must include video metadata under `item["data"]`
             and annotation data under `item["annotations"]`.
         path_to_videos: Root directory containing all video files referenced
-            in the annotation JSON.
+            in the annotation JSON. Unused with ``by_cage``.
         path_to_output: Directory where output files will be written. In YOLO
             mode, one image and label file is created per frame. In crop mode,
             one cropped JPEG is saved per annotated frame.
@@ -193,30 +194,32 @@ def process_item(
     """
     if frame_map_root is not None and not crop_size:
         raise ValueError("frame_map_root requires crop_size")
-    # Get video path and clean it
-    video_path = (
-        item["data"]["video"].split(f"{path_to_videos.name}/")[-1].replace("%2C", ",")
-    )
-    full_video_path = path_to_videos / video_path
-
-    # Where the annotation filenames are based
-    video_path_base = path_to_videos.stem
-
-    # Get the camera and video from the video_filename
-    dirs = str(full_video_path).split(video_path_base)[-1]
-    dirs_names = dirs.split("/")
-    camera_id = dirs_names[1]
-    video_id = dirs_names[2]
-    cage = full_video_path.stem
-    # Remove optional extension from the video_id
-    if not (path_to_videos / camera_id / video_id).is_dir():
-        video_id = str(Path(video_id).stem)
     if by_cage:
-        # Same ids as ground truth
+        # Same ids as ground truth; media from the export's local-files URL
         camera_id, video_id, cage = parse_media_path(item["data"]["video"])
-        full_video_path = (
-            path_to_videos / camera_id / video_id / f"{cage}{full_video_path.suffix}"
+        full_video_path = get_local_path(item["data"]["video"])
+        video_path = str(full_video_path)
+    else:
+        # Get video path and clean it
+        video_path = (
+            item["data"]["video"]
+            .split(f"{path_to_videos.name}/")[-1]
+            .replace("%2C", ",")
         )
+        full_video_path = path_to_videos / video_path
+
+        # Where the annotation filenames are based
+        video_path_base = path_to_videos.stem
+
+        # Get the camera and video from the video_filename
+        dirs = str(full_video_path).split(video_path_base)[-1]
+        dirs_names = dirs.split("/")
+        camera_id = dirs_names[1]
+        video_id = dirs_names[2]
+        cage = full_video_path.stem
+        # Remove optional extension from the video_id
+        if not (path_to_videos / camera_id / video_id).is_dir():
+            video_id = str(Path(video_id).stem)
 
     # Load in the guidance
     guidance = pl.read_parquet(path_to_guidance)
@@ -427,6 +430,7 @@ def stream_annotations_to_yolo(
 
     Args:
         path_to_videos: Root directory containing all referenced video files.
+            Unused with ``by_cage``.
         path_to_annotations: Path to the JSON annotation file to be processed.
         path_to_output: Output directory where YOLO `.txt` files will be written.
         processes: Number of worker processes to use. If set to 1, processing
