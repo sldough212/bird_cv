@@ -122,18 +122,16 @@ def write_dataset_yaml(dataset_root: Path, path: Path) -> Path:
     return path
 
 
-def _trial_hyperparameters(results: "ResultGrid", run_name: str) -> dict[str, dict]:
-    """Sampled hyperparameters per tuning run directory name.
+def _tuned_hyperparameters(results: "ResultGrid", yolo_run: Path) -> dict[str, Any]:
+    """A tuning trial's sampled hyperparameters, read from its run's ``args.yaml``.
 
-    Ultralytics names each trial's run ``{run_name}_{last part of trial id}``
-    and adds ``data`` to every config; that key is dropped.
+    Ray's trial configs give the tuned keys (``data``, which Ultralytics adds,
+    is dropped); the run's own ``args.yaml`` gives the values, so this doesn't
+    depend on how the Ultralytics version names trial runs.
     """
-    by_run = {}
-    for result in results:
-        suffix = Path(result.path).name.split("_")[-1]
-        config = {k: v for k, v in (result.config or {}).items() if k != "data"}
-        by_run[f"{run_name}_{suffix}"] = config
-    return by_run
+    keys = {k for result in results for k in (result.config or {})} - {"data"}
+    args = yaml.safe_load((yolo_run / "args.yaml").read_text())
+    return {k: args[k] for k in sorted(keys)}
 
 
 def train_select_yolo(
@@ -253,12 +251,10 @@ def train_select_yolo(
 
     shutil.copy2(best["checkpoint"], run_dir / "best.pt")
     if tune:
-        trials = _trial_hyperparameters(outcome, run_name)  # type: ignore[arg-type]
-        if best["candidate"] not in trials:
-            raise RuntimeError(
-                f"No tuning config found for {best['candidate']}; known: {sorted(trials)}"
-            )
-        best_hyperparameters = trials[best["candidate"]]
+        best_hyperparameters = _tuned_hyperparameters(
+            outcome,  # type: ignore[arg-type]
+            Path(best["checkpoint"]).parents[1],
+        )
     else:
         best_hyperparameters = dict(hyperparameters or {})
     TrainRun(run_dir).best_hyperparameters.write_text(
