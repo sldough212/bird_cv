@@ -15,6 +15,7 @@ import tomli_w
 import msgspec
 
 from bird_cv.core.layout import TrainRun
+from bird_cv.training.ray_job import init_job_ray
 from bird_cv.detection.evaluate_yolo import yolo_presence_metrics
 from bird_cv.pipelines.config import resolve_run_dir
 
@@ -89,6 +90,7 @@ def train_yolo(
     )
 
     if tune:
+        init_job_ray()
         return model.tune(
             use_ray=True,
             iterations=iterations,
