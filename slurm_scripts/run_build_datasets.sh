@@ -7,7 +7,7 @@
 #SBATCH --account=passerinagenome
 #SBATCH --time=12:00:00
 #SBATCH --mem=64G
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=1
 
 echo "SLURM_JOB_ID:" $SLURM_JOB_ID
 start=$(date +'%D %T')

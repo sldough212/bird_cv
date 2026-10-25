@@ -49,7 +49,9 @@ def load_predictions(
         else sorted(p for p in path.rglob("*.parquet") if p.name not in skip_files)
     )
     frames = [
-        pl.read_parquet(f, columns=list(PREDICTION_SCHEMA)).cast(PREDICTION_SCHEMA)  # type: ignore[arg-type]
+        pl.read_parquet(f, columns=list(PREDICTION_SCHEMA), glob=False).cast(
+            PREDICTION_SCHEMA
+        )  # type: ignore[arg-type]
         for f in files
     ]
     if not frames:
@@ -74,7 +76,9 @@ def load_ground_truth(path: Path) -> pl.DataFrame:
     if not files:
         raise FileNotFoundError(f"No ground-truth parquet under {path}")
     return pl.concat(
-        pl.read_parquet(f, columns=list(GROUND_TRUTH_SCHEMA)).cast(GROUND_TRUTH_SCHEMA)  # type: ignore[arg-type]
+        pl.read_parquet(f, columns=list(GROUND_TRUTH_SCHEMA), glob=False).cast(
+            GROUND_TRUTH_SCHEMA
+        )  # type: ignore[arg-type]
         for f in files
     )
 
