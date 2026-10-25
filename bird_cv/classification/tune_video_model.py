@@ -10,9 +10,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+from ray import tune
+from ray.tune.schedulers import ASHAScheduler
+
 from bird_cv.classification.train_video_model import train_video_model
 from bird_cv.core.layout import TrainRun
-from bird_cv.utils import init_job_ray
+from bird_cv.training.ray_job import init_job_ray
 
 
 def tune_video_model(
@@ -58,9 +61,6 @@ def tune_video_model(
         ``hyperparameters`` (the best trial's value for each searched
         parameter), its ``val_macro_f1`` and best ``epoch``.
     """
-    from ray import tune
-    from ray.tune.schedulers import ASHAScheduler
-
     clips_root = Path(clips_root).resolve()
     output_root = Path(output_root).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
