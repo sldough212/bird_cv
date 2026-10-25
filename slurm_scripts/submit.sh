@@ -54,26 +54,31 @@ if [ "$SMOKE" = "1" ]; then
     INFER+=(--limit 2)
 fi
 GPU=(--gres=gpu:1 --partition=mb-l40s,mb-a30,mb-h100,mb-a6000)
+export RUN_LOGS="$BASE/slurm_logs/$RUN_ID"
+LOGS=$RUN_LOGS
+mkdir -p "$LOGS"
+log() { echo --job-name="$1" --output="$LOGS/$1-%j.out"; }
+alog() { echo --job-name="$1" --output="$LOGS/$1-%A_%a.out"; }
 DEP=(--kill-on-invalid-dep=yes --dependency)
 JOBS=()
 
 after=()
 if [ -z "$PREPARED" ]; then
-    prepare=$(sbatch --parsable slurm_scripts/run_prepare.sh --run-id "$RUN_ID" \
+    prepare=$(sbatch --parsable $(log prepare) slurm_scripts/run_prepare.sh --run-id "$RUN_ID" \
         ${PREPARE_ARGS[@]+"${PREPARE_ARGS[@]}"})
     echo "prepare=$prepare"
     JOBS+=("$prepare")
     after=("${DEP[@]}" "afterok:$prepare")
 fi
-build=$(sbatch --parsable ${after[@]+"${after[@]}"} slurm_scripts/run_build_datasets.sh "${RUN[@]}")
+build=$(sbatch --parsable $(log build_datasets) ${after[@]+"${after[@]}"} slurm_scripts/run_build_datasets.sh "${RUN[@]}")
 echo "build_datasets=$build"
 JOBS+=("$build")
 
 TRAIN_JOBS=()
 for role in $ROLES; do
-    job=$(sbatch --parsable "${DEP[@]}" "afterok:$build" \
+    job=$(sbatch --parsable $(log "train_$role") "${DEP[@]}" "afterok:$build" \
         slurm_scripts/run_train.sh "$role" "${TRAIN[@]}")
-    eval_job=$(sbatch --parsable "${DEP[@]}" "afterok:$job" "${GPU[@]}" \
+    eval_job=$(sbatch --parsable $(log "evaluate_$role") "${DEP[@]}" "afterok:$job" "${GPU[@]}" \
         slurm_scripts/run_evaluate.sh model --role "$role" "${RUN[@]}")
     echo "train_${role}=$job evaluate_${role}=$eval_job"
     TRAIN_JOBS+=("$job")
@@ -81,18 +86,19 @@ for role in $ROLES; do
 done
 trained=$(IFS=:; echo "${TRAIN_JOBS[*]}")
 
-sweep=$(sbatch --parsable "${DEP[@]}" "afterok:$trained" \
+sweep=$(sbatch --parsable $(alog infer_sweep) "${DEP[@]}" "afterok:$trained" \
     --array=0-$((N_SWEEP - 1)) \
     slurm_scripts/run_infer_sweep.sh "${INFER[@]}")
-eval_sweep=$(sbatch --parsable "${DEP[@]}" "afterok:$sweep" \
+eval_sweep=$(sbatch --parsable $(log evaluate_sweep) "${DEP[@]}" "afterok:$sweep" \
     slurm_scripts/run_evaluate.sh sweep "${RUN[@]}")
-infer_test=$(sbatch --parsable "${DEP[@]}" "afterok:$eval_sweep" \
+infer_test=$(sbatch --parsable $(alog infer_test) "${DEP[@]}" "afterok:$eval_sweep" \
     slurm_scripts/run_infer_array.sh --split test "${INFER[@]}")
-eval_test=$(sbatch --parsable "${DEP[@]}" "afterok:$infer_test" \
+eval_test=$(sbatch --parsable $(log evaluate_test) "${DEP[@]}" "afterok:$infer_test" \
     slurm_scripts/run_evaluate.sh test "${RUN[@]}")
 JOBS+=("$sweep" "$eval_sweep" "$infer_test" "$eval_test")
 echo "infer_sweep=$sweep ($N_SWEEP settings) evaluate_sweep=$eval_sweep"
 echo "infer_test=$infer_test evaluate_test=$eval_test"
+echo "Logs: $LOGS"
 echo "Prepared id: $PREPARED_FILE"
 echo "Predictions: $INFER_DIR/{val_sweep,test}  Sweep: $SWEEP_DIR  Test: $TEST_DIR"
 echo "Cancel: scancel ${JOBS[*]}"
