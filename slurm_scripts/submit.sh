@@ -53,7 +53,7 @@ if [ "$SMOKE" = "1" ]; then
     TRAIN+=(--smoke)
     INFER+=(--limit 2)
 fi
-GPU=(--gres=gpu:1 --partition=mb-l40s,mb-a30,mb-h100,mb-a6000,mb-r6000)
+GPU=(--gres=gpu:1 --partition=mb-l40s,mb-a30,mb-h100,mb-a6000)
 DEP=(--kill-on-invalid-dep=yes --dependency)
 JOBS=()
 

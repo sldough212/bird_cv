@@ -8,7 +8,7 @@
 #SBATCH --time=48:00:00
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=8
-#SBATCH --partition=mb-l40s,mb-a30,mb-h100,mb-a6000,mb-r6000
+#SBATCH --partition=mb-l40s,mb-a30,mb-h100,mb-a6000
 #SBATCH --gres=gpu:1
 
 echo "SLURM_JOB_ID:" $SLURM_JOB_ID
