@@ -23,6 +23,9 @@ cd $SLURM_SUBMIT_DIR
 source .venv/bin/activate
 
 export PYTHONUNBUFFERED=1
+# Ray (started by init_job_ray in Python) keeps its files per job
+export RAY_TMPDIR=/tmp/ray_${SLURM_JOB_ID}
+export OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4
 
 CONFIG=${CONFIG:-bird_cv/pipelines/configs/config.toml}
 RUN_ID=$(date +%Y%m%d_%H%M%S)
@@ -34,5 +37,7 @@ for ((i = 1; i <= $#; i++)); do
 done
 source slurm_scripts/run_logs.sh "$RUN_ID"
 python3 bird_cv/pipelines/train.py $CONFIG "$@" --run-id "$RUN_ID"
+status=$?
 end=$(date +'%D %T')
 echo "End:" $end
+exit $status

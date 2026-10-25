@@ -12,6 +12,7 @@ from typing import Any
 
 from bird_cv.classification.train_video_model import train_video_model
 from bird_cv.core.layout import TrainRun
+from bird_cv.utils import init_job_ray
 
 
 def tune_video_model(
@@ -83,6 +84,7 @@ def tune_video_model(
             **(base_kwargs | config),
         )
 
+    init_job_ray()
     tuner = tune.Tuner(
         tune.with_resources(trainable, {"cpu": cpus_per_trial, "gpu": gpus_per_trial}),
         param_space=search_space,
