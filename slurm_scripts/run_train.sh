@@ -5,6 +5,7 @@
 #   sbatch slurm_scripts/run_train.sh detector --run-id ID --prepared PREPARED_ID
 #   sbatch slurm_scripts/run_train.sh classifier --fold 0 --hyperparameters RUN_DIR/best_hyperparameters.json
 #SBATCH --account=passerinagenome
+#SBATCH --job-name=train
 #SBATCH --time=48:00:00
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=8
@@ -24,6 +25,14 @@ source .venv/bin/activate
 export PYTHONUNBUFFERED=1
 
 CONFIG=${CONFIG:-bird_cv/pipelines/configs/config.toml}
-python3 bird_cv/pipelines/train.py $CONFIG "$@"
+RUN_ID=$(date +%Y%m%d_%H%M%S)
+for ((i = 1; i <= $#; i++)); do
+    case "${!i}" in
+        --run-id) j=$((i + 1)); RUN_ID=${!j} ;;
+        --run-id=*) RUN_ID=${!i#--run-id=} ;;
+    esac
+done
+source slurm_scripts/run_logs.sh "$RUN_ID"
+python3 bird_cv/pipelines/train.py $CONFIG "$@" --run-id "$RUN_ID"
 end=$(date +'%D %T')
 echo "End:" $end
