@@ -108,7 +108,7 @@ def _predict_frame_votes(
     batch_size: int = 4,
     *,
     frames: Sequence[np.ndarray] | None = None,
-    cover_tail: bool = False,
+    cover_tail: bool = True,
 ) -> list[list[int]]:
     """Run windowed VideoMAE inference and collect per-frame class-id votes.
 
@@ -251,11 +251,9 @@ def predict_video_frames(
 
     Returns:
         One :class:`FramePrediction` per video frame, in frame order.
-        ``label`` is ``None`` for frames no window covers (the first/last
-        few frames when the video is shorter than one window past the
-        last stride step); ``confidence`` is the majority label's vote
-        share among windows covering that frame (0.0 when ``label`` is
-        ``None``).
+        ``label`` is ``None`` only when the video is shorter than one
+        window; ``confidence`` is the majority label's vote share among
+        windows covering that frame (0.0 when ``label`` is ``None``).
     """
     frame_votes = _predict_frame_votes(
         video_path, model, processor, dev, num_frames, stride, batch_size
