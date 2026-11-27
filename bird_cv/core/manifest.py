@@ -87,7 +87,11 @@ def new_manifest(
 def write_manifest(manifest: Manifest, output_dir: Path) -> Path:
     """Write ``manifest.json`` into ``output_dir`` and return its path."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / "manifest.json"
+    return write_manifest_file(manifest, output_dir / "manifest.json")
+
+
+def write_manifest_file(manifest: Manifest, path: Path) -> Path:
+    """Write a manifest file of any name (e.g. an array task's)."""
 
     def enc_hook(obj: Any) -> Any:
         if isinstance(obj, Path):

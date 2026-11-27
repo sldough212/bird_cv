@@ -18,7 +18,7 @@ import logging
 import shutil
 from dataclasses import asdict
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import ijson
 import polars as pl
@@ -29,12 +29,9 @@ from bird_cv.core.layout import Layout, Prepared, snapshot_files
 from bird_cv.core.manifest import new_manifest, read_manifest, write_manifest
 from bird_cv.data.summary import with_split
 from bird_cv.evaluation.cv import fold_split
-from bird_cv.pipelines.config import BirdCVConfig, load_config
+from bird_cv.pipelines.config import BirdCVConfig, ModelSpec, load_config
 from bird_cv.pipelines.prepare import config_hash, sampling_config
-
-if TYPE_CHECKING:
-    from bird_cv.pipelines.config import ModelSpec
-    from bird_cv.training.registry import DatasetMedia
+from bird_cv.training.registry import DatasetMedia, get_trainer
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +54,12 @@ def export_media(export: Path) -> dict[tuple[str, str, str], Path]:
 
 def dataset_config(
     role: str,
-    spec: "ModelSpec",
+    spec: ModelSpec,
     fold: int | None,
     prepared: Prepared,
     split: pl.DataFrame,
     selection: pl.DataFrame,
-    media: "DatasetMedia",
+    media: DatasetMedia,
     media_paths: list[str],
     builder_version: int = 2,
 ) -> dict[str, Any]:
@@ -120,8 +117,6 @@ def build_datasets(
         FileNotFoundError: If a selected cage's media (from the export) is
             missing; raised before any dataset is built.
     """
-    from bird_cv.training.registry import DatasetMedia, get_trainer
-
     layout = Layout(cfg.path_to_base_output)
     prepared = layout.resolve_prepared(prepared_id, run_id)
     sampling = sampling_config(cfg)

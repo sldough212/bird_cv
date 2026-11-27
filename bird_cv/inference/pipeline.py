@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any
 
 import cv2
-import msgspec
 import numpy as np
 import polars as pl
 
@@ -31,7 +30,7 @@ from bird_cv.classification.types import FramePrediction
 from bird_cv.core.frames import STANDARD_FPS
 from bird_cv.core.ids import parse_raw_video_path
 from bird_cv.core.layout import InferRun
-from bird_cv.core.manifest import new_manifest
+from bird_cv.core.manifest import new_manifest, write_manifest_file
 from bird_cv.core.schemas import (
     DETECTION_SCHEMA,
     PREDICTION_SCHEMA,
@@ -44,6 +43,7 @@ from bird_cv.inference.chunks import iter_chunks, stitch_overlapping
 from bird_cv.inference.classify import (
     bird_crop_rgb,
     classify_runs,
+    contiguous_runs,
     smoothed_box_centers,
 )
 from bird_cv.inference.gap_fill import cage_predictions, fill_gaps
@@ -53,9 +53,8 @@ from bird_cv.inference.protocols import (
     StreamingDetector,
 )
 from bird_cv.inference.registry import InferenceModels
-from bird_cv.preprocessing.standardize import (  # noqa: F401 (re-exported)
+from bird_cv.preprocessing.standardize import (
     expected_standard_frames,
-    find_raw_videos,
     standardize_video,
     video_header,
 )
@@ -105,9 +104,7 @@ def infer_video(
     std_path = out.standardized(camera_id, video_id)
     out_path = out.predictions(camera_id, video_id)
 
-    expected = _expected_frames(raw_video_path)
-    if max_frames is not None:
-        expected = min(expected, max_frames)
+    expected = _expected_frames(raw_video_path, max_frames)
     with timer.stage(camera_id, video_id, "standardize", frames=expected):
         result = standardize_video(
             raw_video_path, std_path, fps=STANDARD_FPS, max_frames=max_frames
@@ -143,7 +140,8 @@ def infer_video(
     with timer.stage(camera_id, video_id, "detect", frames=n_frames):
         for start, frames in iter_chunks(std_path, cfg.chunk_frames):
             for cage_id, tracker in trackers.items():
-                cage_frames: list[tuple[int, np.ndarray]] = []
+                idx: list[int] = []
+                crops: list[np.ndarray] = []
                 for i, frame in enumerate(frames):
                     cropped = cage_frame(
                         frame, masks.at(start + i, cage_id), shapes[cage_id]
@@ -151,10 +149,11 @@ def infer_video(
                     if cropped is None:
                         empty[cage_id].add(start + i)
                         continue
-                    cage_frames.append((start + i, cropped))
+                    idx.append(start + i)
+                    crops.append(cropped)
                 # Track each contiguous stretch of non-empty cage frames
-                for run_start, run in _split_runs(cage_frames):
-                    detections[cage_id].extend(tracker.track(run, run_start))
+                for lo, hi in contiguous_runs(idx):
+                    detections[cage_id].extend(tracker.track(crops[lo:hi], idx[lo]))
     _write_detections(
         detections, camera_id, video_id, out.detections(camera_id, video_id)
     )
@@ -209,27 +208,10 @@ def infer_video(
     return predictions
 
 
-def _expected_frames(video_path: Path) -> int:
+def _expected_frames(video_path: Path, max_frames: int | None) -> int:
     """Standardized frame count of a raw video from its header, for timing rows."""
     fps, count = video_header(video_path)
-    return expected_standard_frames(count, fps) if fps else 0
-
-
-def _split_runs(
-    frames: Sequence[tuple[int, np.ndarray]],
-) -> list[tuple[int, list[np.ndarray]]]:
-    """Group ``(canonical_frame, frame)`` pairs into runs of consecutive frames.
-
-    Returns:
-        ``(first canonical frame, frames)`` per run, in order.
-    """
-    runs: list[tuple[int, list[np.ndarray]]] = []
-    for frame_idx, frame in frames:
-        if runs and runs[-1][0] + len(runs[-1][1]) == frame_idx:
-            runs[-1][1].append(frame)
-        else:
-            runs.append((frame_idx, [frame]))
-    return runs
+    return expected_standard_frames(count, fps, max_frames=max_frames) if fps else 0
 
 
 def _write_parquet(df: pl.DataFrame, path: Path) -> None:
@@ -286,9 +268,9 @@ def _write_task_manifest(
     inputs: dict[str, str],
 ) -> None:
     """Write this task's manifest so array tasks never overwrite each other."""
-    manifest = new_manifest("infer", config=config, inputs=inputs)
-    run.task_manifest(task_index).write_bytes(
-        msgspec.json.format(msgspec.json.encode(manifest, enc_hook=str))
+    write_manifest_file(
+        new_manifest("infer", config=config, inputs=inputs),
+        run.task_manifest(task_index),
     )
 
 

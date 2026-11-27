@@ -8,10 +8,15 @@ never trained, has its own mapping here (:func:`_segmenters`), picked by
 ``[infer.segmenter] kind``. Importing this module imports no model library.
 """
 
+import inspect
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
+
+from bird_cv.core.layout import Layout
+from bird_cv.core.manifest import read_manifest
+from bird_cv.training.registry import get_trainer
 
 if TYPE_CHECKING:
     from bird_cv.inference.protocols import (
@@ -65,8 +70,6 @@ class Sam2Segmenters:
     """
 
     def __init__(self, context: SegmenterContext, **options: Any) -> None:
-        import inspect
-
         from bird_cv.inference.cages import Sam2CageSegmenter
 
         unknown = set(options) - self.option_keys()
@@ -212,7 +215,6 @@ class InferenceModels:
 
     def load(self) -> tuple["StreamingDetector", "FrameClassifier"]:
         """Build the detector and classifier (loads weights)."""
-        from bird_cv.training.registry import get_trainer
 
         def load_role(role: str, spec: "ModelSpec") -> Any:
             return get_trainer(spec.kind).load_for_inference(
@@ -247,10 +249,6 @@ def inference_models(
         ValueError: If the training runs of the roles used different
             prepared data.
     """
-    from bird_cv.core.layout import Layout
-    from bird_cv.core.manifest import read_manifest
-    from bird_cv.training.registry import get_trainer
-
     layout = Layout(cfg.path_to_base_output)
     specs = {"detector": cfg.models.detector, "classifier": cfg.models.classifier}
     checkpoints: dict[str, Path] = {}

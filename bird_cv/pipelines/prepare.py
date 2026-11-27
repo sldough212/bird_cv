@@ -105,10 +105,7 @@ def run_prepare(
             output_dir=layout.annotation_exports(time),
         )
     snapshot_hash, snapshot_dir = create_snapshot(
-        detect_export,
-        classify_export,
-        layout.snapshots,
-        snapshot_dir_for=layout.snapshot,
+        detect_export, classify_export, layout.snapshots
     )
 
     # Ground truth (built before the split, which needs each camera's behaviors)

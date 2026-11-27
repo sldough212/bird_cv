@@ -29,16 +29,6 @@ from bird_cv.core.schemas import CV_FOLD_SCHEMA, SPLIT_SCHEMA, SPLITS
 logger = logging.getLogger(__name__)
 
 
-def split_path(splits_dir: Path, version: int) -> Path:
-    """Location of split version ``version`` (see :mod:`bird_cv.core.layout`)."""
-    return split_file(splits_dir, version)
-
-
-def cv_folds_path(splits_dir: Path, version: int) -> Path:
-    """Location of the CV folds belonging to split version ``version``."""
-    return cv_folds_file(splits_dir, version)
-
-
 def latest_split_version(splits_dir: Path) -> int | None:
     """Highest split version written in ``splits_dir``, or None if there is none."""
     versions = [
@@ -373,8 +363,8 @@ def update_split(
             orient="row",
         )
     else:
-        old_split = pl.read_parquet(split_path(splits_dir, latest))
-        old_folds = pl.read_parquet(cv_folds_path(splits_dir, latest))
+        old_split = pl.read_parquet(split_file(splits_dir, latest))
+        old_folds = pl.read_parquet(cv_folds_file(splits_dir, latest))
         known = set(old_split.get_column("camera_id"))
         new = {c: b for c, b in behaviors.items() if c not in known}
         if not new:
@@ -418,8 +408,8 @@ def update_split(
             logger.warning("Split v%d: %s lacks %s", version, name, sorted(missing))
 
     splits_dir.mkdir(parents=True, exist_ok=True)
-    split.write_parquet(split_path(splits_dir, version))
-    folds.write_parquet(cv_folds_path(splits_dir, version))
+    split.write_parquet(split_file(splits_dir, version))
+    folds.write_parquet(cv_folds_file(splits_dir, version))
     write_manifest(
         new_manifest(
             "split",

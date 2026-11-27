@@ -7,6 +7,9 @@ import os
 import msgspec
 import tomllib
 
+from bird_cv.inference.registry import segmenter_kinds, segmenter_option_keys
+from bird_cv.training.registry import check_search_space, get_trainer, trainer_kinds
+
 time = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 API_KEY_ENV_VAR = "LABEL_STUDIO_API_KEY"
@@ -241,12 +244,6 @@ def _convert_models_config(table: dict, dec_hook) -> ModelsConfig:
             ``infer_options``, a relative ``checkpoint``, or a malformed
             ``search_space`` entry.
     """
-    from bird_cv.training.registry import (
-        check_search_space,
-        get_trainer,
-        trainer_kinds,
-    )
-
     defaults = ModelsConfig().roles()
     unknown = set(table) - set(defaults)
     if unknown:
@@ -301,8 +298,6 @@ def _convert_infer_config(table: dict, dec_hook) -> InferConfig:
             or its ``options``, a non-table ``segmenter``, or a segmenter
             ``kind`` with no registry entry.
     """
-    from bird_cv.inference.registry import segmenter_kinds, segmenter_option_keys
-
     segmenter = table.get("segmenter", {})
     if not isinstance(segmenter, dict):
         raise ValueError("[infer] segmenter must be a table ([infer.segmenter])")

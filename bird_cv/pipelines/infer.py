@@ -26,8 +26,9 @@ import polars as pl
 from bird_cv.core.ids import parse_raw_video_path
 from bird_cv.core.layout import EvalRun, Layout, Prepared
 from bird_cv.evaluation.e2e import sweep_settings
-from bird_cv.inference.pipeline import find_raw_videos, run_infer
+from bird_cv.inference.pipeline import run_infer
 from bird_cv.inference.registry import inference_models
+from bird_cv.preprocessing.standardize import find_raw_videos
 from bird_cv.pipelines.config import (
     BirdCVConfig,
     InferConfig,

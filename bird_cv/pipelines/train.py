@@ -26,17 +26,16 @@ import argparse
 import dataclasses
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import polars as pl
 
 from bird_cv.core.layout import Layout, TrainRun
 from bird_cv.core.manifest import new_manifest, write_manifest
 from bird_cv.evaluation.cv import check_fold_cameras
+from bird_cv.evaluation.e2e import sweep_settings
 from bird_cv.pipelines.config import BirdCVConfig, default_run_id, load_config
-
-if TYPE_CHECKING:
-    from bird_cv.training.registry import Trainer
+from bird_cv.training.registry import TrainContext, Trainer, get_trainer
 
 
 def smoke_config(cfg: BirdCVConfig) -> BirdCVConfig:
@@ -56,7 +55,7 @@ def check_fold(
     fold: int | None,
     hyperparameters: dict | None,
     dataset: Path,
-    trainer: "Trainer",
+    trainer: Trainer,
     *,
     split_path: Path,
     cv_folds_path: Path,
@@ -121,8 +120,6 @@ def run_train(
     Returns:
         The run directory.
     """
-    from bird_cv.training.registry import TrainContext, get_trainer
-
     spec = cfg.models.roles()[role]
     trainer = get_trainer(spec.kind)
     layout = Layout(cfg.path_to_base_output)
@@ -191,9 +188,6 @@ def print_paths(cfg: BirdCVConfig, run_id: str) -> None:
     ``SWEEP_DIR`` (sweep evaluation), ``TEST_DIR`` (test evaluation),
     ``{ROLE}_RUN_DIR`` and ``{ROLE}_BEST``.
     """
-    from bird_cv.evaluation.e2e import sweep_settings
-    from bird_cv.training.registry import get_trainer
-
     layout = Layout(cfg.path_to_base_output)
     ev = cfg.evaluate
     print(f"ROLES='{' '.join(cfg.models.roles())}'")

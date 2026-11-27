@@ -14,7 +14,9 @@ import polars as pl
 
 from bird_cv.core.frames import is_aligned_with_standard
 from bird_cv.core.ids import parse_media_path, parse_raw_video_path
+from bird_cv.core.layout import Layout, snapshot_files
 from bird_cv.data.ground_truth import annotation_results
+from bird_cv.pipelines.config import load_config
 from bird_cv.preprocessing.standardize import (
     expected_standard_frames,
     find_raw_videos,
@@ -112,9 +114,6 @@ def standard_counts(table: pl.DataFrame) -> dict[tuple[str, str], int] | None:
 
 
 def main() -> None:
-    from bird_cv.core.layout import Layout, snapshot_files
-    from bird_cv.pipelines.config import load_config
-
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("config_path", type=Path)
     parser.add_argument("--detect-export", type=Path, default=None)
