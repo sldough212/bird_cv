@@ -483,18 +483,3 @@ def load_config(
     }
 
     return config_type(**raw, detect=detect_cfg, classify=classify_cfg, **optional_cfgs)
-
-
-def save_config(config: msgspec.Struct, config_path: Path) -> None:
-    """Save a msgspec struct to a TOML config file.
-    Args:
-        config: A msgspec.Struct instance to encode.
-        config_path: Path to save the TOML file.
-    """
-
-    def path_to_str(obj):
-        if isinstance(obj, Path):
-            return str(obj)
-        raise TypeError(f"Unsupported type: {type(obj)}")
-
-    config_path.write_bytes(msgspec.toml.encode(config, enc_hook=path_to_str))
