@@ -4,15 +4,24 @@ Resting is 87% of labeled frames, so train and val keep every active
 (non-resting) frame and cap resting: YOLO per cage video (resting and
 ``no_bird`` at the video's most common active behavior count), VideoMAE per
 split (resting clips at the split's most common active behavior clip count).
-Test keeps everything.
+Test keeps everything. Also the per-split class counts
+(``split_summary.parquet``) of the sampled data.
 """
+
+import logging
 
 import polars as pl
 
-from bird_cv.core.labels import ACTIVE_BEHAVIORS, BEHAVIORS, NO_BIRD, RESTING
-from bird_cv.core.schemas import VIDEOMAE_CLIPS_SCHEMA, YOLO_FRAMES_SCHEMA
+from bird_cv.core.labels import ACTIVE_BEHAVIORS, BEHAVIORS, CLASSES, NO_BIRD, RESTING
+from bird_cv.core.schemas import (
+    CAGE_COLUMNS,
+    SPLIT_SUMMARY_SCHEMA,
+    SPLITS,
+    VIDEOMAE_CLIPS_SCHEMA,
+    YOLO_FRAMES_SCHEMA,
+)
 
-CAGE = ["camera_id", "video_id", "cage_id"]
+logger = logging.getLogger(__name__)
 
 
 def _active_cap(counts: pl.Expr) -> pl.Expr:
@@ -20,7 +29,7 @@ def _active_cap(counts: pl.Expr) -> pl.Expr:
     return (
         counts.filter(pl.col("label").is_in(ACTIVE_BEHAVIORS))
         .max()
-        .over(CAGE)
+        .over(CAGE_COLUMNS)
         .fill_null(0)
     )
 
@@ -42,12 +51,12 @@ def select_yolo_frames(frames: pl.DataFrame, stride: int, seed: int) -> pl.DataF
     Returns:
         Selected frames in :data:`YOLO_FRAMES_SCHEMA`.
     """
-    frames = frames.sort([*CAGE, "frame"])
+    frames = frames.sort([*CAGE_COLUMNS, "frame"])
     test = frames.filter(pl.col("split") == "test")
     fit = frames.filter(pl.col("split") != "test").with_columns(
-        active=pl.col("label").is_in(ACTIVE_BEHAVIORS).any().over(CAGE),
-        count=pl.len().over([*CAGE, "label"]),
-        rank=pl.int_range(pl.len()).shuffle(seed=seed).over([*CAGE, "label"]),
+        active=pl.col("label").is_in(ACTIVE_BEHAVIORS).any().over(CAGE_COLUMNS),
+        count=pl.len().over([*CAGE_COLUMNS, "label"]),
+        rank=pl.int_range(pl.len()).shuffle(seed=seed).over([*CAGE_COLUMNS, "label"]),
     )
     fit = fit.with_columns(cap=_active_cap(pl.col("count")))
     keep = pl.when(~pl.col("active")).then(pl.col("frame") % stride == 0)
@@ -63,7 +72,7 @@ def select_yolo_frames(frames: pl.DataFrame, stride: int, seed: int) -> pl.DataF
                 test.select(list(YOLO_FRAMES_SCHEMA)),
             ]
         )
-        .sort([*CAGE, "frame"])
+        .sort([*CAGE_COLUMNS, "frame"])
         .cast(YOLO_FRAMES_SCHEMA)
     )
 
@@ -78,18 +87,18 @@ def labeled_stretches(frames: pl.DataFrame) -> pl.DataFrame:
         One row per stretch of a behavior (``no_bird`` and holes excluded),
         with ``frame_begin`` and ``frame_end`` inclusive.
     """
-    runs = frames.sort([*CAGE, "frame"]).with_columns(
+    runs = frames.sort([*CAGE_COLUMNS, "frame"]).with_columns(
         run=(
             (pl.col("frame").diff() != 1)
             | pl.col("label").ne_missing(pl.col("label").shift())
         )
         .fill_null(True)
         .cum_sum()
-        .over(CAGE)
+        .over(CAGE_COLUMNS)
     )
     return (
         runs.filter(pl.col("label").is_in(BEHAVIORS))
-        .group_by([*CAGE, "run"])
+        .group_by([*CAGE_COLUMNS, "run"])
         .agg(
             pl.col("label").first(),
             pl.col("split").first(),
@@ -139,9 +148,11 @@ def select_videomae_clips(
                 pl.col("frame_begin") + num_frames - 1, pl.col("frame_end")
             )
         )
-        .sort([*CAGE, "frame_begin"])
+        .sort([*CAGE_COLUMNS, "frame_begin"])
         .with_columns(
-            rank=pl.int_range(pl.len()).shuffle(seed=seed).over([*CAGE, "label"])
+            rank=pl.int_range(pl.len())
+            .shuffle(seed=seed)
+            .over([*CAGE_COLUMNS, "label"])
         )
     )
     capped = (pl.col("label") == RESTING) & (pl.col("split") != "test")
@@ -156,7 +167,7 @@ def select_videomae_clips(
         clips.filter(capped)
         .join(caps, on="split", how="left")
         .with_columns(pl.col("cap").fill_null(0))
-        .sort(["split", "rank", *CAGE])
+        .sort(["split", "rank", *CAGE_COLUMNS])
         .filter(pl.int_range(pl.len()).over("split") < pl.col("cap"))
     )
     return (
@@ -166,7 +177,7 @@ def select_videomae_clips(
                 resting.select(list(VIDEOMAE_CLIPS_SCHEMA)),
             ]
         )
-        .sort([*CAGE, "frame_begin"])
+        .sort([*CAGE_COLUMNS, "frame_begin"])
         .cast(VIDEOMAE_CLIPS_SCHEMA)
     )
 
@@ -184,6 +195,102 @@ def clip_frames(clips: pl.DataFrame) -> pl.DataFrame:
     return (
         clips.with_columns(frame=pl.int_ranges("frame_begin", pl.col("frame_end") + 1))
         .explode("frame")
-        .select(*CAGE, "frame", "label", "split")
+        .select(*CAGE_COLUMNS, "frame", "label", "split")
         .unique()
     )
+
+
+def summarize(frames: pl.DataFrame) -> pl.DataFrame:
+    """Count frames, stretches, cameras, videos and cages per split and class.
+
+    A stretch is a run of consecutive canonical frames with the same label
+    on one cage. Null labels count only towards the total row: as
+    ``unlabeled_video_frames`` in cage videos with no behavior label at all,
+    else as ``labeling_hole_frames``. ``frac_of_split`` is relative to the
+    split's non-null frames. ``stretches`` is null on ``*_sampled`` splits,
+    where runs of sampled frames are not labeled stretches.
+
+    Args:
+        frames: Table with ``camera_id``, ``video_id``, ``cage_id``, ``frame``,
+            ``label`` and ``split`` columns.
+
+    Returns:
+        One row per (split, class) present plus a ``"total"`` row per split,
+        in :data:`~bird_cv.core.schemas.SPLIT_SUMMARY_SCHEMA`.
+    """
+    runs = frames.sort([*CAGE_COLUMNS, "frame"]).with_columns(
+        new_stretch=(
+            (pl.col("frame").diff() != 1)
+            | (pl.col("label").ne_missing(pl.col("label").shift()))
+        )
+        .over(["split", *CAGE_COLUMNS])
+        .fill_null(True),
+        labeled_video=pl.col("label").is_in(BEHAVIORS).any().over(CAGE_COLUMNS),
+    )
+    group = {
+        "frames": pl.len(),
+        "stretches": pl.col("new_stretch").sum(),
+        "cameras": pl.col("camera_id").n_unique(),
+        "videos": pl.struct("camera_id", "video_id").n_unique(),
+        "cages": pl.struct(*CAGE_COLUMNS).n_unique(),
+    }
+    labeled = runs.filter(pl.col("label").is_not_null())
+    per_class = labeled.group_by("split", "label").agg(**group)
+    totals = (
+        runs.group_by("split")
+        .agg(
+            frames=pl.col("label").is_not_null().sum(),
+            stretches=pl.col("new_stretch").filter(pl.col("label").is_not_null()).sum(),
+            cameras=group["cameras"],
+            videos=group["videos"],
+            cages=group["cages"],
+            labeling_hole_frames=(
+                pl.col("label").is_null() & pl.col("labeled_video")
+            ).sum(),
+            unlabeled_video_frames=(
+                pl.col("label").is_null() & ~pl.col("labeled_video")
+            ).sum(),
+        )
+        .with_columns(label=pl.lit("total"))
+    )
+    order = {c: i for i, c in enumerate((*CLASSES, "total"))}
+    split_frames = totals.select("split", split_frames="frames")
+    summary = (
+        pl.concat([per_class, totals], how="diagonal_relaxed")
+        .join(split_frames, on="split")
+        .with_columns(
+            frac_of_split=pl.col("frames") / pl.col("split_frames"),
+            stretches=pl.when(~pl.col("split").str.ends_with("_sampled")).then(
+                pl.col("stretches")
+            ),
+            _order=pl.col("label").replace_strict(order, default=len(order)),
+            _split_order=pl.col("split").replace_strict(
+                {s: i for i, s in enumerate(SPLITS)}, default=len(SPLITS)
+            ),
+        )
+        .sort("_split_order", "split", "_order")
+    )
+    return summary.select(
+        pl.col(name).cast(dtype) for name, dtype in SPLIT_SUMMARY_SCHEMA.items()
+    )
+
+
+def log_summary(summary: pl.DataFrame, counts: dict[str, int] | None = None) -> str:
+    """Log a split summary as a readable table and return the text.
+
+    Args:
+        summary: Table in :data:`~bird_cv.core.schemas.SPLIT_SUMMARY_SCHEMA`.
+        counts: Extra counts to print under the table, e.g. the ground truth
+            conversion's excluded (misaligned) Detect tasks.
+
+    Returns:
+        The logged text.
+    """
+    with pl.Config(
+        tbl_rows=-1, tbl_cols=-1, tbl_width_chars=200, tbl_hide_dataframe_shape=True
+    ):
+        text = str(summary.with_columns(pl.col("frac_of_split").round(4)))
+    for name, value in (counts or {}).items():
+        text += f"\n{name}: {value}"
+    logger.info("Split summary:\n%s", text)
+    return text

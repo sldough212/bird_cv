@@ -1,4 +1,4 @@
-from bird_cv.preprocessing.get_split_guidance import split_guidance_within_camera
+from bird_cv.preprocessing.splits import split_guidance_within_camera
 from bird_cv.preprocessing.annotations_to_yolo import stream_annotations_to_yolo
 from bird_cv.pipelines.config import BirdCVConfig, load_config
 from bird_cv.client.get_label_studio_annotations import get_label_studio_annotations

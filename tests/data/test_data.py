@@ -10,16 +10,19 @@ import pytest
 from bird_cv.core.labels import BEHAVIORS, NO_BIRD
 from bird_cv.core.layout import split_file
 from bird_cv.core.schemas import GROUND_TRUTH_SCHEMA
-from bird_cv.data.ground_truth import build_ground_truth, parse_detect_task
-from bird_cv.data.sampling import select_videomae_clips, select_yolo_frames
-from bird_cv.data.snapshot import annotation_hash
-from bird_cv.data.splits import (
+from bird_cv.preprocessing.ground_truth import build_ground_truth, parse_detect_task
+from bird_cv.preprocessing.sampling import (
+    select_videomae_clips,
+    select_yolo_frames,
+    summarize,
+)
+from bird_cv.preprocessing.snapshot import annotation_hash
+from bird_cv.preprocessing.splits import (
     camera_behaviors,
     choose_initial_split,
     coverage_gaps,
     update_split,
 )
-from bird_cv.data.summary import summarize
 from bird_cv.pipelines.config import API_KEY_ENV_VAR, load_config
 from bird_cv.pipelines.prepare import run_prepare
 

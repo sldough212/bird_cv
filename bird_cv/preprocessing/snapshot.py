@@ -16,7 +16,7 @@ from typing import Any
 from bird_cv.client.get_label_studio_annotations import get_label_studio_annotations
 from bird_cv.core.layout import snapshot_files
 from bird_cv.core.manifest import new_manifest, write_manifest
-from bird_cv.data.ground_truth import annotation_results
+from bird_cv.preprocessing.ground_truth import annotation_results
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ def _canonical_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Reduce an export to sorted (video, regions) records for hashing.
 
     Only the annotation ground truth reads (the most recent non-cancelled
-    one, see :func:`bird_cv.data.ground_truth.annotation_results`) counts.
+    one, see :func:`bird_cv.preprocessing.ground_truth.annotation_results`) counts.
     """
     # Region keys that carry annotation content; everything else (region ids,
     # origin, ...) is bookkeeping that changes without the labels changing.

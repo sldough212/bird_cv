@@ -8,7 +8,10 @@ canonical frames (see :mod:`bird_cv.core.frames`).
 
 import polars as pl
 
-KEY_COLUMNS = ("camera_id", "video_id", "cage_id", "frame")
+CAGE_COLUMNS = ("camera_id", "video_id", "cage_id")
+"""Columns that identify one cage video (formats as in :data:`KEY_COLUMNS`)."""
+
+KEY_COLUMNS = (*CAGE_COLUMNS, "frame")
 """Columns that identify one cage on one canonical frame.
 
 Formats (always build them with :mod:`bird_cv.core.ids`):

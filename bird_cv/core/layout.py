@@ -71,7 +71,7 @@ class Prepared:
     Attributes:
         snapshot_hash: Label Studio snapshot.
         gt_version: Ground-truth rules version
-            (:data:`bird_cv.data.ground_truth.GT_VERSION`).
+            (:data:`bird_cv.preprocessing.ground_truth.GT_VERSION`).
         split_version: Frozen split version.
         sampling_hash: Hash of the config values frame and clip selection read.
     """

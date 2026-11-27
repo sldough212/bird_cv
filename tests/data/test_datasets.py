@@ -15,7 +15,7 @@ from bird_cv.core.layout import EvalRun, Layout
 from bird_cv.core.manifest import new_manifest
 from bird_cv.core.schemas import PREDICTION_SCHEMA
 from bird_cv.evaluation.e2e import sweep_settings
-from bird_cv.data.check_fps import frame_rate_table
+from bird_cv.preprocessing.check_fps import frame_rate_table
 from bird_cv.pipelines.build_datasets import build_datasets
 from bird_cv.pipelines.config import API_KEY_ENV_VAR, load_config
 from bird_cv.pipelines.evaluate import run_evaluate

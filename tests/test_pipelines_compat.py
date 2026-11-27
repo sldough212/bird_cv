@@ -119,11 +119,11 @@ EXPECTED_PARAMS: dict[str, list[tuple[str, str | None]]] = {
         ("clip_output_path", None),
         ("videos_path", None),
     ],
-    "bird_cv.preprocessing.get_split_guidance:simulate_split_guidance": [
+    "bird_cv.preprocessing.splits:simulate_split_guidance": [
         ("videos_path", None),
         ("output_path", None),
     ],
-    "bird_cv.preprocessing.get_split_guidance:split_guidance_within_camera": [
+    "bird_cv.preprocessing.splits:split_guidance_within_camera": [
         ("path_to_guidance", None),
         ("split_ratio", None),
         ("output_path", None),

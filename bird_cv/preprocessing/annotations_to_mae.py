@@ -82,8 +82,8 @@ def load_split_guidance(path_to_guidance: Path) -> Dict[Tuple[str, str], str]:
 
     Args:
         path_to_guidance: Path to a ``split_guidance.parquet`` file (e.g.
-            produced by ``get_split_guidance.split_camera_data`` or
-            ``segment_videos.split_guidance_within_camera``), containing at
+            produced by :func:`~bird_cv.preprocessing.splits.simulate_split_guidance`
+            or :func:`~bird_cv.preprocessing.splits.split_guidance_within_camera`), containing at
             least ``video_path`` (path to the *source* camera video, e.g.
             ``"I20%2CI38/32.mp4"``) and ``split`` columns.
 
