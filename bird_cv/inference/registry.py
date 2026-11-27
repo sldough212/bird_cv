@@ -176,8 +176,8 @@ class InferenceModels:
         checkpoints: Weights per role (``detector``, ``classifier``).
         context: Settings the segmenter reads.
         train_run_id: The training run the checkpoints came from, if any.
-        prepared: The prepared data (``asdict(Prepared)``) that training run
-            recorded, if any.
+        dataset: The dataset (``{"id", "key"}``) that training run recorded,
+            if any.
     """
 
     segmenter: "SegmenterSpec"
@@ -186,7 +186,7 @@ class InferenceModels:
     checkpoints: Mapping[str, Path]
     context: SegmenterContext
     train_run_id: str | None = None
-    prepared: dict[str, Any] | None = None
+    dataset: dict[str, Any] | None = None
 
     def kinds(self) -> dict[str, str]:
         """Each role's ``kind``, for manifests."""
@@ -239,18 +239,18 @@ def inference_models(
         ValueError: If a role has neither a training run nor a ``checkpoint``.
         FileNotFoundError: If a role's checkpoint doesn't exist.
         ValueError: If the training runs of the roles used different
-            prepared data.
+            datasets.
     """
     layout = Layout(cfg.path_to_base_output)
     specs = {"detector": cfg.models.detector, "classifier": cfg.models.classifier}
     checkpoints: dict[str, Path] = {}
-    prepared: dict[str, dict[str, Any] | None] = {}
+    datasets: dict[str, dict[str, Any] | None] = {}
     for role, spec in specs.items():
         if train_run_id is not None:
             run_dir = layout.train_run(role, train_run_id)
             checkpoints[role] = get_trainer(spec.kind).checkpoint_path(run_dir)
             if (run_dir / "manifest.json").exists():
-                prepared[role] = read_manifest(run_dir).config.get("prepared")
+                datasets[role] = read_manifest(run_dir).config.get("dataset")
         elif spec.checkpoint is not None:
             checkpoints[role] = spec.checkpoint
         else:
@@ -267,10 +267,9 @@ def inference_models(
             raise FileNotFoundError(
                 f"{role} checkpoint {checkpoints[role]} (from {source}) does not exist"
             )
-    if len({str(p) for p in prepared.values()}) > 1:
+    if len({str(d and d["key"]) for d in datasets.values()}) > 1:
         raise ValueError(
-            f"Training run {train_run_id!r} roles used different prepared data: "
-            f"{prepared}"
+            f"Training run {train_run_id!r} roles used different datasets: {datasets}"
         )
     return InferenceModels(
         segmenter=cfg.infer.segmenter,
@@ -282,5 +281,5 @@ def inference_models(
             sam_model_id=cfg.sam_model_id,
         ),
         train_run_id=train_run_id,
-        prepared=next(iter(prepared.values()), None),
+        dataset=next(iter(datasets.values()), None),
     )

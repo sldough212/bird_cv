@@ -24,13 +24,13 @@ from pathlib import Path
 import polars as pl
 
 from bird_cv.core.ids import parse_raw_video_path
-from bird_cv.core.layout import EvalRun, Layout, Prepared
+from bird_cv.core.layout import EvalRun, Layout, default_run_id
 from bird_cv.evaluation.e2e import sweep_settings
 from bird_cv.inference.pipeline import run_infer
 from bird_cv.inference.registry import inference_models
 from bird_cv.preprocessing.standardize import find_raw_videos
-from bird_cv.core.layout import default_run_id
 from bird_cv.pipelines.config import BirdCVConfig, InferConfig, load_config
+from bird_cv.pipelines.prepare import dataset_key
 
 
 def split_run(
@@ -38,8 +38,8 @@ def split_run(
     run_id: str,
     split: str,
     sweep_index: int | None,
-    prepared_id: str | None,
-) -> tuple[list[Path], Path, InferConfig, Prepared]:
+    dataset_id: str | None,
+) -> tuple[list[Path], Path, InferConfig, dict]:
     """Videos, run dir and settings of a ``--split`` inference run.
 
     Args:
@@ -47,21 +47,21 @@ def split_run(
         run_id: Pipeline run id.
         split: ``"val"`` (one sweep setting) or ``"test"`` (the chosen setting).
         sweep_index: Index into the ``[evaluate]`` sweep settings, for val.
-        prepared_id: Prepared-data id; the run's if None.
+        dataset_id: The dataset whose split and ground truth pick the
+            videos; ``run_id`` if None.
 
     Returns:
         The split's raw videos that have ground truth, the run directory,
         ``cfg.infer`` with the setting's gap fill and det_conf, and the
-        prepared data.
+        dataset's key.
     """
     layout = Layout(cfg.path_to_base_output)
-    prepared = layout.resolve_prepared(prepared_id, run_id)
-    frozen = pl.read_parquet(layout.split(prepared.split_version))
+    dataset_id = layout.resolve_dataset(dataset_id, run_id)
+    frozen = pl.read_parquet(layout.dataset_split_file(dataset_id))
     cameras = frozen.filter(pl.col("split") == split)["camera_id"].to_list()
     labeled = set(
         pl.read_parquet(
-            layout.ground_truth(prepared.snapshot_hash, prepared.gt_version),
-            columns=["camera_id", "video_id"],
+            layout.ground_truth(dataset_id), columns=["camera_id", "video_id"]
         ).iter_rows()
     )
     videos = [
@@ -82,7 +82,7 @@ def split_run(
         gap, conf = setting["gap_fill_frames"], setting["det_conf"]
         run_dir = layout.test_infer_run(run_id).dir
     infer_cfg = dataclasses.replace(cfg.infer, gap_fill_frames=gap, det_conf=conf)
-    return videos, run_dir, infer_cfg, prepared
+    return videos, run_dir, infer_cfg, dataset_key(layout, dataset_id)
 
 
 def main() -> None:
@@ -107,7 +107,9 @@ def main() -> None:
     )
     parser.add_argument("--split", choices=("val", "test"), default=None)
     parser.add_argument("--sweep-index", type=int, default=None)
-    parser.add_argument("--prepared", default=None, help="Prepared-data id")
+    parser.add_argument(
+        "--dataset", default=None, help="Dataset id (default: --run-id)"
+    )
     parser.add_argument("--task-index", type=int, default=0)
     parser.add_argument("--num-tasks", type=int, default=1)
     args = parser.parse_args()
@@ -118,23 +120,23 @@ def main() -> None:
 
     cfg = load_config(args.config_path, require_api_key=False)
     if args.split:
-        videos, run_dir, infer_cfg, prepared = split_run(
-            cfg, args.run_id, args.split, args.sweep_index, args.prepared
+        videos, run_dir, infer_cfg, key = split_run(
+            cfg, args.run_id, args.split, args.sweep_index, args.dataset
         )
     else:
         videos = find_raw_videos(cfg.path_to_raw_videos, args.cameras)
         layout = Layout(cfg.path_to_base_output)
         run_dir = layout.infer_run(default_run_id(args.run_id)).dir
-        infer_cfg, prepared = cfg.infer, None
+        infer_cfg, key = cfg.infer, None
     videos = videos[: args.limit]
     if not videos:
         raise SystemExit(f"No videos found under {cfg.path_to_raw_videos}")
 
     models = inference_models(cfg, train_run_id=args.train_run_id)
-    if prepared and models.prepared and models.prepared != dataclasses.asdict(prepared):
+    if key and models.dataset and models.dataset["key"] != key:
         parser.error(
-            f"Training run {args.train_run_id} used prepared data "
-            f"{Prepared(**models.prepared).id}, not {prepared.id}"
+            f"Training run {args.train_run_id} used dataset "
+            f"{models.dataset['id']}, which differs from this one"
         )
     print(f"Run directory: {run_dir}")
     failed = run_infer(

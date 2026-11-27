@@ -1,7 +1,7 @@
 """Plots of an end-to-end test run: behavior timelines, confusion matrix,
 per-class scores and stage timings.
 
-    python -m bird_cv.evaluation.plots CONFIG --run-id RUN_ID [--prepared ID]
+    python -m bird_cv.evaluation.plots CONFIG --run-id RUN_ID [--dataset ID]
 
 Writes PNGs to ``evaluation/test/{run_id}/plots/``.
 """
@@ -201,26 +201,26 @@ def plot_timings(timings: pl.DataFrame, path: Path) -> None:
 
 
 def plot_test_run(
-    config_path: Path, run_id: str, prepared_id: str | None = None
+    config_path: Path, run_id: str, dataset_id: str | None = None
 ) -> Path:
     """Write every plot for a run's test inference.
 
     Args:
         config_path: Pipeline config.
         run_id: The pipeline run whose test inference to plot.
-        prepared_id: Prepared data to compare against; the run's if ``None``.
+        dataset_id: Dataset to compare against; ``run_id`` if ``None``.
 
     Returns:
         The plots directory.
     """
     cfg = load_config(config_path, require_api_key=False)
     layout = Layout(cfg.path_to_base_output)
-    prepared = layout.resolve_prepared(prepared_id, run_id)
+    dataset_id = layout.resolve_dataset(dataset_id, run_id)
     test_run = layout.test_infer_run(run_id)
     pred = load_predictions(test_run.predictions_dir)
-    truth = load_ground_truth(
-        layout.ground_truth(prepared.snapshot_hash, prepared.gt_version)
-    ).filter(pl.col("camera_id").is_in(pred["camera_id"].unique().implode()))
+    truth = load_ground_truth(layout.ground_truth(dataset_id)).filter(
+        pl.col("camera_id").is_in(pred["camera_id"].unique().implode())
+    )
     joined = join_predictions(truth, pred)
     out = layout.evaluation_run("test", run_id) / "plots"
     (out / "timelines").mkdir(parents=True, exist_ok=True)
@@ -254,9 +254,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("config_path", type=Path)
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--prepared", default=None)
+    parser.add_argument("--dataset", default=None)
     args = parser.parse_args()
-    plot_test_run(args.config_path, args.run_id, args.prepared)
+    plot_test_run(args.config_path, args.run_id, args.dataset)
 
 
 if __name__ == "__main__":

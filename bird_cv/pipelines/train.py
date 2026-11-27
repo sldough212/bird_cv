@@ -5,20 +5,20 @@ Roles are the :class:`~bird_cv.pipelines.config.ModelSpec` tables of
 :func:`bird_cv.training.registry.get_trainer` turns into a trainer. On the
 frozen split a role is tuned (if ``tune``) and selected on its validation
 objective (ADR 0005); ``--hyperparameters`` trains with fixed
-hyperparameters instead, no tuning. ``--smoke`` shrinks tuning and epochs to 2 for a first cluster run
-(a smoke test; never report its scores). The ``paths`` mode prints each
+hyperparameters instead, no tuning. ``--smoke`` shrinks tuning and epochs
+to 2 for a first cluster run (a smoke test; never report its scores). The ``paths`` mode prints each
 role's resolved run directory and checkpoint for a run id as shell
 assignments, without creating anything.
 
 Usage::
 
-    python bird_cv/pipelines/train.py CONFIG ROLE --prepared ID [--run-id ID] [--smoke]
-    python bird_cv/pipelines/train.py CONFIG ROLE --prepared ID \\
-        --hyperparameters RUN_DIR/best_hyperparameters.json [--run-id ID]
+    python bird_cv/pipelines/train.py CONFIG ROLE --run-id ID [--dataset ID] [--smoke]
+    python bird_cv/pipelines/train.py CONFIG ROLE --run-id ID [--dataset ID] \\
+        --hyperparameters RUN_DIR/best_hyperparameters.json
     python bird_cv/pipelines/train.py CONFIG paths --run-id ID
 
-``--prepared`` is the id prepare prints last (:attr:`Prepared.id`); without
-it the last prepare output is used, with a warning.
+Trains on ``datasets/{--dataset}`` (default: the run id) and writes
+``models/{role}/{run_id}/``.
 """
 
 import argparse
@@ -28,11 +28,11 @@ from pathlib import Path
 from typing import Any
 
 
-from bird_cv.core.layout import Layout, TrainRun
+from bird_cv.core.layout import Layout, TrainRun, default_run_id
 from bird_cv.core.manifest import new_manifest, write_manifest
 from bird_cv.evaluation.e2e import sweep_settings
-from bird_cv.core.layout import default_run_id
 from bird_cv.pipelines.config import BirdCVConfig, load_config
+from bird_cv.pipelines.prepare import dataset_key
 from bird_cv.training.registry import TrainContext, get_trainer
 
 
@@ -54,13 +54,13 @@ def run_train(
     role: str,
     run_id: str | None = None,
     hyperparameters: dict[str, Any] | None = None,
-    prepared_id: str | None = None,
+    dataset_id: str | None = None,
 ) -> Path:
     """Tune (optionally) and train one role's model; write results and a manifest.
 
-    Trains on :meth:`Layout.dataset` of the prepared data and writes the
+    Trains on :meth:`Layout.dataset` of the dataset and writes the
     :class:`TrainRun` results and ``manifest.json`` (which records the
-    prepared data) to :meth:`Layout.train_run`; the checkpoint goes where
+    dataset) to :meth:`Layout.train_run`; the checkpoint goes where
     the role's trainer puts it (:meth:`Trainer.checkpoint_path`).
 
     Args:
@@ -70,8 +70,7 @@ def run_train(
         run_id: Fixed run directory name; timestamped if ``None``.
         hyperparameters: Fixed hyperparameters (a frozen-split run's
             ``best_hyperparameters.json``). Disables tuning.
-        prepared_id: :attr:`Prepared.id` of the data to train on; the last
-            prepare output (logged) if ``None``.
+        dataset_id: The dataset to train on; ``run_id`` if ``None``.
 
     Returns:
         The run directory.
@@ -79,8 +78,9 @@ def run_train(
     spec = cfg.models.roles()[role]
     trainer = get_trainer(spec.kind)
     layout = Layout(cfg.path_to_base_output)
-    prepared = layout.resolve_prepared(prepared_id, run_id)
-    dataset = layout.dataset(prepared, role, spec.kind)
+    dataset_id = layout.resolve_dataset(dataset_id, run_id)
+    key = dataset_key(layout, dataset_id)
+    dataset = layout.dataset(dataset_id, role, spec.kind)
     run_dir = layout.train_run(role, default_run_id(run_id))
     run_dir.mkdir(parents=True, exist_ok=True)
     print(f"Run directory: {run_dir}")
@@ -109,12 +109,12 @@ def run_train(
     write_manifest(
         new_manifest(
             kind=f"train_{role}",
-            snapshot_hash=prepared.snapshot_hash,
-            split_version=prepared.split_version,
+            snapshot_hash=key["snapshot_hash"],
+            split_version=key["split_version"],
             config={
                 "role": role,
                 "spec": dataclasses.asdict(spec),
-                "prepared": dataclasses.asdict(prepared),
+                "dataset": {"id": dataset_id, "key": key},
             },
             inputs={
                 "dataset": str(dataset),
@@ -131,7 +131,7 @@ def print_paths(cfg: BirdCVConfig, run_id: str) -> None:
     """Print a pipeline run's paths and sizes as shell assignments.
 
     Variables are ``ROLES`` (space-separated role names), ``BASE``,
-    ``PREPARED_FILE``, ``N_SWEEP`` (val-sweep settings), ``INFER_DIR``,
+    ``LOGS``, ``N_SWEEP`` (val-sweep settings), ``INFER_DIR``,
     ``SWEEP_DIR`` (sweep evaluation), ``TEST_DIR`` (test evaluation),
     ``{ROLE}_RUN_DIR`` and ``{ROLE}_BEST``.
     """
@@ -139,7 +139,7 @@ def print_paths(cfg: BirdCVConfig, run_id: str) -> None:
     ev = cfg.evaluate
     print(f"ROLES='{' '.join(cfg.models.roles())}'")
     print(f"BASE='{cfg.path_to_base_output}'")
-    print(f"PREPARED_FILE='{layout.run_prepared(run_id)}'")
+    print(f"LOGS='{layout.slurm_logs(run_id)}'")
     print(f"N_SWEEP={len(sweep_settings(ev.sweep_gap_fill_frames, ev.sweep_det_conf))}")
     print(f"INFER_DIR='{layout.infer_run(run_id).dir}'")
     print(f"SWEEP_DIR='{layout.evaluation_run('sweep', run_id)}'")
@@ -157,7 +157,7 @@ def main() -> None:
     parser.add_argument("role", help="A [models] role (detector, classifier) or paths")
     parser.add_argument("--run-id", default=None, help="Run directory name")
     parser.add_argument(
-        "--prepared", default=None, help="Prepared-data id printed by prepare"
+        "--dataset", default=None, help="Dataset id (default: --run-id)"
     )
     parser.add_argument(
         "--hyperparameters",
@@ -184,7 +184,7 @@ def main() -> None:
     hyperparameters = (
         json.loads(args.hyperparameters.read_text()) if args.hyperparameters else None
     )
-    run_dir = run_train(cfg, args.role, args.run_id, hyperparameters, args.prepared)
+    run_dir = run_train(cfg, args.role, args.run_id, hyperparameters, args.dataset)
     print(f"Done: {run_dir}")
 
 

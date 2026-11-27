@@ -5,9 +5,9 @@ from typing import Any
 
 import pytest
 
-from bird_cv.core.layout import Layout, Prepared
+from bird_cv.core.layout import Layout
 from bird_cv.core.manifest import new_manifest, write_manifest
-from bird_cv.pipelines.evaluate import check_prepared
+from bird_cv.pipelines.evaluate import check_dataset
 from bird_cv.inference.registry import inference_models
 from bird_cv.pipelines.config import ModelsConfig, load_config
 from bird_cv.training.registry import (
@@ -24,7 +24,7 @@ def _config(tmp_path: Path, detector: str = "") -> Path:
     """The committed config under ``tmp_path``, ``detector`` added to
     [models.detector]."""
     text = re.sub(
-        r'^path_to_base_output = ".*"$',
+        r'^path_to_base_output = ".*"\s*$',
         f'path_to_base_output = "{tmp_path}"',
         CONFIG.read_text(),
         flags=re.M,
@@ -101,7 +101,7 @@ def test_inference_models_come_from_config(tmp_path: Path) -> None:
         "detector": "yolo",
         "classifier": "videomae",
     }
-    assert models.checkpoints["detector"] == tmp_path / "train/detector/r1/best.pt"
+    assert models.checkpoints["detector"] == tmp_path / "models/detector/r1/best.pt"
 
     edits = (
         ("[infer.segmenter]\n", '[infer.segmenter]\nkind = "nope"\n', "nope"),
@@ -116,14 +116,10 @@ def test_inference_models_come_from_config(tmp_path: Path) -> None:
             load_config(path, require_api_key=False)
 
 
-def test_prepared_id_round_trips_and_evaluate_rejects_other_data(
-    tmp_path: Path,
-) -> None:
-    used = Prepared("abc", 1, 2, "deadbeef")
-    assert Prepared.parse(used.id) == used
-    other = Prepared("abc", 1, 3, "deadbeef")
-    manifest = new_manifest("infer", config={"prepared": dataclasses.asdict(other)})
-    path = write_manifest(manifest, tmp_path)
-    check_prepared(other, [path], "run")
-    with pytest.raises(ValueError, match="split_v3"):
-        check_prepared(used, [path], "run")
+def test_evaluate_rejects_runs_on_other_datasets(tmp_path: Path) -> None:
+    recorded = {"id": "d1", "key": {"split_version": 3}}
+    path = write_manifest(new_manifest("infer", config={"dataset": recorded}), tmp_path)
+    # A reused (linked) dataset id with the same key matches
+    check_dataset({"id": "d2", "key": {"split_version": 3}}, [path], "run")
+    with pytest.raises(ValueError, match="dataset d1"):
+        check_dataset({"id": "d3", "key": {"split_version": 2}}, [path], "run")

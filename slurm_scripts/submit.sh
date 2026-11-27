@@ -4,11 +4,13 @@
 # -> val-sweep inference array -> evaluate sweep -> test inference at the
 # chosen setting -> evaluate test.
 #
-#   bash slurm_scripts/submit.sh [--smoke] [--prepared ID] [PREPARE_ARGS...]
+#   bash slurm_scripts/submit.sh [--smoke] [--dataset ID] [PREPARE_ARGS...]
 #
 # PREPARE_ARGS go to prepare.py (e.g. --detect-export F --classify-export F).
-# The prepare job writes its id to PREPARED_FILE, which later jobs read via
-# --run-id; --prepared ID (or PREPARED=ID) skips prepare and writes ID there.
+# Every job uses RUN_ID: prepare writes datasets/RUN_ID (a symlink if an
+# identical dataset exists), training models/{role}/RUN_ID, inference
+# infer/RUN_ID and evaluation eval/RUN_ID. --dataset ID (or DATASET=ID) skips
+# prepare and trains on datasets/ID instead.
 # --smoke (or SMOKE=1): 2 tuning trials and 2 epochs per role, and 2 videos
 # per inference run; a smoke test, never report its scores.
 # Override CONFIG or RUN_ID in the environment.
@@ -18,12 +20,12 @@ cd "$(dirname "$0")/.."
 export CONFIG=${CONFIG:-bird_cv/pipelines/configs/config.toml}
 RUN_ID=${RUN_ID:-$(date +%Y%m%d_%H%M%S)}
 SMOKE=${SMOKE:-0}
-PREPARED=${PREPARED:-}
+DATASET=${DATASET:-}
 PREPARE_ARGS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --smoke) SMOKE=1 ;;
-        --prepared) PREPARED=$2; shift ;;
+        --dataset) DATASET=$2; shift ;;
         *) PREPARE_ARGS+=("$1") ;;
     esac
     shift
@@ -42,11 +44,10 @@ echo "RUN_ID=$RUN_ID CONFIG=$CONFIG SMOKE=$SMOKE"
 echo "$PATHS"
 
 [ -n "$ROLES" ] || { echo "No [models] roles in $CONFIG" >&2; exit 1; }
-if [ -n "$PREPARED" ]; then
-    mkdir -p "$(dirname "$PREPARED_FILE")"
-    echo "$PREPARED" > "$PREPARED_FILE"
-fi
 RUN=(--run-id "$RUN_ID")
+if [ -n "$DATASET" ]; then
+    RUN+=(--dataset "$DATASET")
+fi
 INFER=("${RUN[@]}" --train-run-id "$RUN_ID")
 TRAIN=("${RUN[@]}")
 if [ "$SMOKE" = "1" ]; then
@@ -54,8 +55,7 @@ if [ "$SMOKE" = "1" ]; then
     INFER+=(--limit 2)
 fi
 GPU=(--gres=gpu:1 --partition=mb-l40s,mb-a30,mb-h100,mb-a6000)
-export RUN_LOGS="$BASE/slurm_logs/$RUN_ID"
-LOGS=$RUN_LOGS
+export RUN_LOGS=$LOGS
 mkdir -p "$LOGS"
 log() { echo --job-name="$1" --output="$LOGS/$1-%j.out"; }
 alog() { echo --job-name="$1" --output="$LOGS/$1-%A_%a.out"; }
@@ -63,7 +63,7 @@ DEP=(--kill-on-invalid-dep=yes --dependency)
 JOBS=()
 
 after=()
-if [ -z "$PREPARED" ]; then
+if [ -z "$DATASET" ]; then
     prepare=$(sbatch --parsable $(log prepare) slurm_scripts/run_prepare.sh --run-id "$RUN_ID" \
         ${PREPARE_ARGS[@]+"${PREPARE_ARGS[@]}"})
     echo "prepare=$prepare"
@@ -99,6 +99,6 @@ JOBS+=("$sweep" "$eval_sweep" "$infer_test" "$eval_test")
 echo "infer_sweep=$sweep ($N_SWEEP settings) evaluate_sweep=$eval_sweep"
 echo "infer_test=$infer_test evaluate_test=$eval_test"
 echo "Logs: $LOGS"
-echo "Prepared id: $PREPARED_FILE"
+echo "Dataset: $BASE/datasets/${DATASET:-$RUN_ID}"
 echo "Predictions: $INFER_DIR/{val_sweep,test}  Sweep: $SWEEP_DIR  Test: $TEST_DIR"
 echo "Cancel: scancel ${JOBS[*]}"

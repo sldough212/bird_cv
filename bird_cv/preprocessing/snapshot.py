@@ -1,24 +1,20 @@
-"""Immutable, content-addressed snapshots of the Detect and Classify exports.
+"""Snapshots of the Detect and Classify exports, hashed by content.
 
-A snapshot is named by a hash of the annotation content only (each task's
-video path and its result regions), so re-exporting unchanged labels gives
-the same hash and no new snapshot. Ids, timestamps and other export
-metadata are ignored.
+A snapshot's hash covers the annotation content only (each task's video path
+and its result regions), so re-exporting unchanged labels gives the same
+hash. Ids, timestamps and other export metadata are ignored. Prepare stores
+the exports in each dataset and its key records the hash.
 """
 
 import hashlib
 import json
-import logging
 import shutil
 from pathlib import Path
 from typing import Any
 
 from bird_cv.client.get_label_studio_annotations import get_label_studio_annotations
 from bird_cv.core.layout import snapshot_files
-from bird_cv.core.manifest import new_manifest, write_manifest
 from bird_cv.preprocessing.ground_truth import annotation_results
-
-logger = logging.getLogger(__name__)
 
 
 def _canonical_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -99,42 +95,21 @@ def export_annotations(
     return paths
 
 
-def create_snapshot(
-    detect_export: Path,
-    classify_export: Path,
-    snapshots_dir: Path,
-) -> tuple[str, Path]:
-    """Copy two exports into ``snapshots_dir/{hash}/`` unless that snapshot exists.
+def snapshot_exports(detect_export: Path, classify_export: Path, out_dir: Path) -> str:
+    """Copy two exports into ``out_dir`` (if not already there); return their hash.
 
     Args:
         detect_export: Path to a Detect project JSON export.
         classify_export: Path to a Classify project JSON export.
-        snapshots_dir: Root directory holding all snapshots.
+        out_dir: A dataset's annotations directory.
 
     Returns:
-        The snapshot hash and its directory, which contains ``detect.json``,
-        ``classify.json`` and ``manifest.json``.
+        :func:`annotation_hash` of the exports.
     """
-    snapshot_hash = annotation_hash(
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for export, copy in zip((detect_export, classify_export), snapshot_files(out_dir)):
+        if export.resolve() != copy.resolve():
+            shutil.copyfile(export, copy)
+    return annotation_hash(
         json.loads(detect_export.read_text()), json.loads(classify_export.read_text())
     )
-    snapshot_dir = snapshots_dir / snapshot_hash
-    if (snapshot_dir / "manifest.json").exists():
-        logger.info("Snapshot %s already exists; labels unchanged", snapshot_hash)
-        return snapshot_hash, snapshot_dir
-
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
-    for export, copy in zip(
-        (detect_export, classify_export), snapshot_files(snapshot_dir)
-    ):
-        shutil.copyfile(export, copy)
-    write_manifest(
-        new_manifest(
-            "snapshot",
-            snapshot_hash=snapshot_hash,
-            inputs={"detect": str(detect_export), "classify": str(classify_export)},
-        ),
-        snapshot_dir,
-    )
-    logger.info("Wrote snapshot %s to %s", snapshot_hash, snapshot_dir)
-    return snapshot_hash, snapshot_dir

@@ -2,41 +2,44 @@
 
 All new pipeline stages (prepare, dataset build, train, infer, evaluate) and
 the slurm scripts locate their inputs and outputs through :class:`Layout`, so
-a path changes here or nowhere::
+a path changes here or nowhere. One pipeline run uses one id (``RUN_ID`` in
+``submit.sh``) for every stage::
 
-    annotations/{stamp}/                      Label Studio exports
-    snapshots/{snapshot_hash}/                detect.json, classify.json, manifest.json
-    splits/split_v{n}.parquet                 SPLIT_SCHEMA
+    splits/split_v{n}.parquet                 SPLIT_SCHEMA, shared by every dataset
     splits/split_v{n}/manifest.json
-    prepared/current.json                     the last prepare output (fallback only)
-    prepared/runs/{run_id}.id                 the prepared id a pipeline run uses
-    prepared/{snapshot_hash}/gt_v{g}/         ground_truth.parquet, ground_truth_stats.json
-        split_v{n}/sampling_{cfghash}/        split_summary, yolo_frames, videomae_clips
-                                              (.parquet), manifest.json
-            datasets/{role}/{kind}/frozen/    training data on the frozen split, with
-                                              split, selection, split_guidance (.parquet)
+    datasets/{dataset_id}/                    prepare + build_datasets
+        manifest.json                         its key: snapshot, ground truth,
+                                              split and sampling hashes
+        annotations/detect.json, classify.json   Label Studio exports
+        ground_truth.parquet, ground_truth_stats.json
+        split.parquet                         the split version it used
+        split_summary.parquet, yolo_frames.parquet, videomae_clips.parquet
+        {role}/{kind}/                        training data, with selection,
+                                              split, split_guidance (.parquet)
                                               and manifest.json
-    train/{role}/{run_id}/                    frozen-split training run
+    models/{role}/{run_id}/                   a training run (TrainRun)
     infer/{run_id}/                           an ad-hoc inference run, or the root of:
         val_sweep/gap{g}_conf{c}/             one val-sweep setting
         test/                                 test cameras at the chosen setting
-    evaluation/{mode}/{run_id}/[{role}/]
+    eval/{run_id}/{mode or role}/             sweep, test, or a role's model metrics
+    slurm_logs/{run_id}/                      submit.sh job logs
 
-Files inside run directories are named by :class:`TrainRun`,
-:class:`InferRun` and :class:`EvalRun`. Later stages name their prepared
-data by :attr:`Prepared.id` (printed by prepare); ``prepared/current.json``
-is only a logged fallback. The legacy Label Studio pipelines keep their own
-paths (``BirdCVConfig.__post_init__``).
+A dataset whose key matches an existing one is a symlink to it (see
+``bird_cv/pipelines/prepare.py``). Files inside run directories are named by
+:class:`TrainRun`, :class:`InferRun` and :class:`EvalRun`. The legacy Label
+Studio pipelines keep their own paths (``BirdCVConfig.__post_init__``).
+
+TODO: inference standardizes, segments (SAM2) and detects each video again
+in every run and every val-sweep setting, though those steps depend only on
+the raw video and the segmenter/detector. Cache them (e.g.
+``cache/standardized/`` and ``cache/segments/{segmenter}/``) so sweep
+settings only redo gap fill and classification.
 """
 
-import json
-import logging
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-
-logger = logging.getLogger(__name__)
 
 
 def resolve_run_dir(base_path: Path, run_id: str | None) -> Path:
@@ -87,50 +90,6 @@ def snapshot_files(directory: Path) -> tuple[Path, Path]:
 def sweep_setting_name(gap_fill_frames: int, det_conf: float) -> str:
     """Directory name of one val-sweep setting, e.g. ``gap8_conf0.25``."""
     return f"gap{gap_fill_frames}_conf{det_conf:g}"
-
-
-@dataclass(frozen=True)
-class Prepared:
-    """Identifies one prepare output: the data every later stage reads.
-
-    Attributes:
-        snapshot_hash: Label Studio snapshot.
-        gt_version: Ground-truth rules version
-            (:data:`bird_cv.preprocessing.ground_truth.GT_VERSION`).
-        split_version: Frozen split version.
-        sampling_hash: Hash of the config values frame and clip selection read.
-    """
-
-    snapshot_hash: str
-    gt_version: int
-    split_version: int
-    sampling_hash: str
-
-    @property
-    def id(self) -> str:
-        """``{snapshot_hash}/gt_v{g}/split_v{n}/sampling_{hash}``, the sampling
-        directory relative to ``prepared/``; :meth:`parse` reads it back."""
-        return (
-            f"{self.snapshot_hash}/gt_v{self.gt_version}"
-            f"/split_v{self.split_version}/sampling_{self.sampling_hash}"
-        )
-
-    @classmethod
-    def parse(cls, prepared_id: str) -> "Prepared":
-        """The :class:`Prepared` an :attr:`id` names.
-
-        Raises:
-            ValueError: If ``prepared_id`` isn't of that form.
-        """
-        m = re.fullmatch(
-            r"([^/]+)/gt_v(\d+)/split_v(\d+)/sampling_([^/]+)", prepared_id.strip()
-        )
-        if not m:
-            raise ValueError(
-                f"Not a prepared-data id: {prepared_id!r}; expected "
-                "{snapshot_hash}/gt_v{g}/split_v{n}/sampling_{hash}"
-            )
-        return cls(m.group(1), int(m.group(2)), int(m.group(3)), m.group(4))
 
 
 @dataclass(frozen=True)
@@ -276,23 +235,7 @@ class Layout:
 
     base: Path
 
-    # Label Studio exports and snapshots
-
-    def annotation_exports(self, stamp: str) -> Path:
-        """Directory one Label Studio export run writes into."""
-        return self.base / "annotations" / stamp
-
-    @property
-    def snapshots(self) -> Path:
-        """Root of every snapshot, ``{snapshot_hash}/`` below it."""
-        return self.base / "snapshots"
-
-    def snapshot(self, snapshot_hash: str) -> Path:
-        """One snapshot: ``detect.json``, ``classify.json``, ``manifest.json``."""
-        return self.snapshots / snapshot_hash
-
     # Splits
-
     @property
     def splits(self) -> Path:
         """Directory of every split version."""
@@ -302,130 +245,82 @@ class Layout:
         """Split version ``version`` (``SPLIT_SCHEMA``)."""
         return split_file(self.splits, version)
 
-    # Prepared data
-
-    def ground_truth_dir(self, snapshot_hash: str, gt_version: int) -> Path:
-        """Ground truth built from one snapshot under one rules version."""
-        return self.base / "prepared" / snapshot_hash / f"gt_v{gt_version}"
-
-    def ground_truth(self, snapshot_hash: str, gt_version: int) -> Path:
-        """Ground truth table (``GROUND_TRUTH_SCHEMA``)."""
-        return self.ground_truth_dir(snapshot_hash, gt_version) / "ground_truth.parquet"
-
-    def ground_truth_stats(self, snapshot_hash: str, gt_version: int) -> Path:
-        """Counts of what the ground-truth conversion fixed or dropped."""
-        return (
-            self.ground_truth_dir(snapshot_hash, gt_version) / "ground_truth_stats.json"
-        )
-
-    def sampling_dir(self, prepared: Prepared) -> Path:
-        """Summary and sampled frame/clip lists of one prepare output."""
-        return (
-            self.ground_truth_dir(prepared.snapshot_hash, prepared.gt_version)
-            / f"split_v{prepared.split_version}"
-            / f"sampling_{prepared.sampling_hash}"
-        )
-
-    def split_summary(self, prepared: Prepared) -> Path:
-        """Per-split class counts (``SPLIT_SUMMARY_SCHEMA``)."""
-        return self.sampling_dir(prepared) / "split_summary.parquet"
-
-    def yolo_frames(self, prepared: Prepared) -> Path:
-        """Sampled detector training frames (``YOLO_FRAMES_SCHEMA``)."""
-        return self.sampling_dir(prepared) / "yolo_frames.parquet"
-
-    def videomae_clips(self, prepared: Prepared) -> Path:
-        """Sampled classifier training clips (``VIDEOMAE_CLIPS_SCHEMA``)."""
-        return self.sampling_dir(prepared) / "videomae_clips.parquet"
-
-    def dataset(self, prepared: Prepared, role: str, kind: str) -> Path:
-        """Training data of one role's model kind on the frozen split."""
-        root = self.sampling_dir(prepared) / "datasets" / role / kind
-        return root / "frozen"
-
-    def dataset_split(self, prepared: Prepared, role: str, kind: str) -> Path:
-        """The camera split a dataset was built from (``camera_id``, ``split``)."""
-        return self.dataset(prepared, role, kind) / "split.parquet"
-
-    def dataset_selection(self, prepared: Prepared, role: str, kind: str) -> Path:
-        """The sampled frames or clips a dataset was built from."""
-        return self.dataset(prepared, role, kind) / "selection.parquet"
-
-    def dataset_guidance(self, prepared: Prepared, role: str, kind: str) -> Path:
-        """The split-guidance parquet handed to the dataset converter."""
-        return self.dataset(prepared, role, kind) / "split_guidance.parquet"
-
+    # Datasets
     @property
-    def current_prepared(self) -> Path:
-        """Pointer to the prepare output later stages read."""
-        return self.base / "prepared" / "current.json"
+    def datasets(self) -> Path:
+        """Root of every dataset, ``{dataset_id}/`` below it."""
+        return self.base / "datasets"
 
-    def write_current(self, prepared: Prepared) -> Path:
-        """Point later stages at ``prepared``; returns the pointer file."""
-        self.current_prepared.parent.mkdir(parents=True, exist_ok=True)
-        self.current_prepared.write_text(json.dumps(asdict(prepared), indent=2))
-        return self.current_prepared
+    def dataset_dir(self, dataset_id: str) -> Path:
+        """One dataset: prepare's outputs and each role's training data."""
+        return self.datasets / dataset_id
 
-    def read_current(self) -> Prepared:
-        """The last prepare output written under this base.
+    def annotations(self, dataset_id: str) -> Path:
+        """The dataset's Label Studio exports (see :func:`snapshot_files`)."""
+        return self.dataset_dir(dataset_id) / "annotations"
+
+    def ground_truth(self, dataset_id: str) -> Path:
+        """Ground truth table (``GROUND_TRUTH_SCHEMA``)."""
+        return self.dataset_dir(dataset_id) / "ground_truth.parquet"
+
+    def ground_truth_stats(self, dataset_id: str) -> Path:
+        """Counts of what the ground-truth conversion fixed or dropped."""
+        return self.dataset_dir(dataset_id) / "ground_truth_stats.json"
+
+    def dataset_split_file(self, dataset_id: str) -> Path:
+        """Copy of the split version the dataset was sampled on."""
+        return self.dataset_dir(dataset_id) / "split.parquet"
+
+    def split_summary(self, dataset_id: str) -> Path:
+        """Per-split class counts (``SPLIT_SUMMARY_SCHEMA``)."""
+        return self.dataset_dir(dataset_id) / "split_summary.parquet"
+
+    def yolo_frames(self, dataset_id: str) -> Path:
+        """Sampled detector training frames (``YOLO_FRAMES_SCHEMA``)."""
+        return self.dataset_dir(dataset_id) / "yolo_frames.parquet"
+
+    def videomae_clips(self, dataset_id: str) -> Path:
+        """Sampled classifier training clips (``VIDEOMAE_CLIPS_SCHEMA``)."""
+        return self.dataset_dir(dataset_id) / "videomae_clips.parquet"
+
+    def dataset(self, dataset_id: str, role: str, kind: str) -> Path:
+        """Training data of one role's model kind."""
+        return self.dataset_dir(dataset_id) / role / kind
+
+    def dataset_split(self, dataset_id: str, role: str, kind: str) -> Path:
+        """The camera split a dataset was built from (``camera_id``, ``split``)."""
+        return self.dataset(dataset_id, role, kind) / "split.parquet"
+
+    def dataset_selection(self, dataset_id: str, role: str, kind: str) -> Path:
+        """The sampled frames or clips a dataset was built from."""
+        return self.dataset(dataset_id, role, kind) / "selection.parquet"
+
+    def dataset_guidance(self, dataset_id: str, role: str, kind: str) -> Path:
+        """The split-guidance parquet handed to the dataset converter."""
+        return self.dataset(dataset_id, role, kind) / "split_guidance.parquet"
+
+    def resolve_dataset(self, dataset_id: str | None, run_id: str | None) -> str:
+        """``dataset_id``, else the run's own id; it must have been prepared.
 
         Raises:
-            FileNotFoundError: If prepare has not run under this base.
+            ValueError: If neither id is given.
+            FileNotFoundError: If prepare hasn't written that dataset.
         """
-        if not self.current_prepared.exists():
+        dataset_id = dataset_id or run_id
+        if not dataset_id:
+            raise ValueError("Pass --dataset (or --run-id, if prepare used it)")
+        if not (self.dataset_dir(dataset_id) / "manifest.json").exists():
             raise FileNotFoundError(
-                f"No {self.current_prepared}; run bird_cv/pipelines/prepare.py first"
+                f"No prepared dataset at {self.dataset_dir(dataset_id)}"
             )
-        return Prepared(**json.loads(self.current_prepared.read_text()))
-
-    def run_prepared(self, run_id: str) -> Path:
-        """File holding the prepared id that pipeline run ``run_id`` uses."""
-        return self.base / "prepared" / "runs" / f"{run_id}.id"
-
-    def resolve_prepared(
-        self, prepared_id: str | None, run_id: str | None = None
-    ) -> Prepared:
-        """The prepared data ``prepared_id`` names, else run ``run_id``'s, else the last.
-
-        Args:
-            prepared_id: A :attr:`Prepared.id`.
-            run_id: A pipeline run whose :meth:`run_prepared` file to read.
-
-        Returns:
-            The prepared data; falling back to the last prepare is logged loudly.
-
-        Raises:
-            FileNotFoundError: If the prepared data doesn't exist.
-            ValueError: If the id is malformed.
-        """
-        if prepared_id is None and run_id and self.run_prepared(run_id).exists():
-            prepared_id = self.run_prepared(run_id).read_text().strip()
-        if prepared_id is None:
-            prepared = self.read_current()
-            logger.warning(
-                "No --prepared given%s; FALLING BACK to %s, which points at %s. "
-                "Pass --prepared to pin the data.",
-                f" and no {self.run_prepared(run_id)}" if run_id else "",
-                self.current_prepared,
-                prepared.id,
-            )
-        else:
-            prepared = Prepared.parse(prepared_id)
-        if not self.sampling_dir(prepared).is_dir():
-            raise FileNotFoundError(
-                f"No prepared data at {self.sampling_dir(prepared)}"
-            )
-        return prepared
+        return dataset_id
 
     # Training
-
     def train_run(self, role: str, run_id: str) -> Path:
         """One training run of a role."""
-        root = self.base / "train" / role
-        return root / run_id
+        return self.base / "models" / role / run_id
 
     # Inference
-
     def infer_run(self, run_id: str) -> InferRun:
         """An ad-hoc inference run."""
         return InferRun(self.base / "infer" / run_id)
@@ -447,8 +342,10 @@ class Layout:
         return InferRun(self.infer_run(run_id).dir / "test")
 
     # Evaluation
-
     def evaluation_run(self, mode: str, run_id: str, role: str | None = None) -> Path:
-        """Output of one evaluation mode (and role, for model metrics)."""
-        out = self.base / "evaluation" / mode / run_id
-        return out / role if role is not None else out
+        """Output of one evaluation mode, or of one role's model metrics."""
+        return self.base / "eval" / run_id / (role if role is not None else mode)
+
+    def slurm_logs(self, run_id: str) -> Path:
+        """Job logs of one ``submit.sh`` run."""
+        return self.base / "slurm_logs" / run_id

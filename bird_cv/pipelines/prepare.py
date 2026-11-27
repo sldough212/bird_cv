@@ -1,25 +1,27 @@
-"""Prepare training data: snapshot → ground truth → split → summary → sampling.
+"""Prepare a dataset: snapshot → ground truth → split → summary → sampling.
 
-Each stage skips itself when its outputs already exist. Outputs go where
-:class:`bird_cv.core.layout.Layout` says (snapshots, splits, prepared ground
-truth and sampling); the run finishes by pointing ``prepared/current.json``
-at its output, which every later stage reads.
+Writes ``datasets/{dataset_id}/`` (see :class:`bird_cv.core.layout.Layout`);
+the dataset id is ``--run-id`` (a timestamp if not given). Its manifest's
+``key`` records the snapshot hash, ground-truth version and inputs, split
+version and sampling hash. If an existing dataset has the same key, the new
+id becomes a symlink to it instead of a copy, unless ``--force``.
 
-``cfghash`` hashes every config value sampling reads, so changing one
-recomputes the summary and selections instead of reusing stale ones.
+``sampling_hash`` hashes every config value sampling reads, so changing one
+gives a new key instead of reusing stale selections.
 """
 
 import argparse
 import hashlib
 import json
 import logging
+import shutil
 from dataclasses import asdict
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 
-from bird_cv.core.layout import Layout, Prepared, snapshot_files
+from bird_cv.core.layout import Layout, default_run_id, snapshot_files
 from bird_cv.core.manifest import new_manifest, read_manifest, write_manifest
 from bird_cv.preprocessing.check_fps import frame_rate_table, standard_counts
 from bird_cv.preprocessing.ground_truth import GT_VERSION, build_ground_truth
@@ -30,9 +32,9 @@ from bird_cv.preprocessing.sampling import (
     select_yolo_frames,
     summarize,
 )
-from bird_cv.preprocessing.snapshot import create_snapshot, export_annotations
+from bird_cv.preprocessing.snapshot import export_annotations, snapshot_exports
 from bird_cv.preprocessing.splits import update_split, with_split
-from bird_cv.pipelines.config import BirdCVConfig, load_config, time
+from bird_cv.pipelines.config import BirdCVConfig, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +72,24 @@ def clip_length(cfg: BirdCVConfig) -> int:
     return num_frames
 
 
-def config_hash(values: dict[str, int]) -> str:
+def config_hash(values: dict[str, Any]) -> str:
     """Short, stable hash of a config dict, for naming output directories."""
     return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()[:8]
+
+
+def dataset_key(layout: Layout, dataset_id: str) -> dict[str, Any]:
+    """The key prepare recorded for a dataset (equal keys mean equal data)."""
+    return read_manifest(layout.dataset_dir(dataset_id)).config["key"]
+
+
+def matching_dataset(layout: Layout, key: dict[str, Any]) -> str | None:
+    """Id of a prepared dataset (not a symlink) whose key is ``key``, if any."""
+    for manifest in sorted(layout.datasets.glob("*/manifest.json")):
+        if not manifest.parent.is_symlink() and (
+            read_manifest(manifest.parent).config.get("key") == key
+        ):
+            return manifest.parent.name
+    return None
 
 
 def run_prepare(
@@ -81,27 +98,34 @@ def run_prepare(
     detect_export: Path | None = None,
     classify_export: Path | None = None,
     run_id: str | None = None,
-) -> Path:
-    """Run every prepare stage and return the sampling output directory.
+    force: bool = False,
+) -> str:
+    """Run every prepare stage and return the dataset id.
 
     Args:
         cfg: Loaded pipeline config.
         hostname: Label Studio host, used only when exporting.
-        detect_export: Existing Detect export to snapshot instead of
-            exporting from Label Studio. Must be given with
-            ``classify_export``.
-        classify_export: Existing Classify export to snapshot.
-        run_id: Pipeline run whose jobs read the prepared id from
-            :meth:`Layout.run_prepared`.
+        detect_export: Existing Detect export to use instead of exporting
+            from Label Studio. Must be given with ``classify_export``.
+        classify_export: Existing Classify export.
+        run_id: The dataset id; a timestamp if None.
+        force: Write a new dataset even if an existing one has the same key.
 
     Returns:
-        The sampling directory (:meth:`Layout.sampling_dir`), now also the
-        one ``prepared/current.json`` points at.
+        The dataset id (``run_id``). If that dataset exists already, it is
+        returned untouched.
     """
     layout = Layout(cfg.path_to_base_output)
     pcfg = cfg.prepare
+    dataset_id = default_run_id(run_id)
+    out_dir = layout.dataset_dir(dataset_id)
+    if (out_dir / "manifest.json").exists():
+        logger.info("Dataset %s exists: %s", dataset_id, out_dir)
+        print(f"DATASET={dataset_id}")
+        return dataset_id
 
     # Snapshot
+    annotations = layout.annotations(dataset_id)
     if detect_export is None or classify_export is None:
         detect_export, classify_export = export_annotations(
             host=hostname,
@@ -109,55 +133,35 @@ def run_prepare(
             api_key=cfg.api_key,
             detect_project_name=cfg.detect_project_name,
             classify_project_name=cfg.classify_project_name,
-            output_dir=layout.annotation_exports(time),
+            output_dir=annotations,
         )
-    snapshot_hash, snapshot_dir = create_snapshot(
-        detect_export, classify_export, layout.snapshots
-    )
+    snapshot_hash = snapshot_exports(detect_export, classify_export, annotations)
 
-    # Ground truth (built before the split, which needs each camera's behaviors)
-    gt_path = layout.ground_truth(snapshot_hash, GT_VERSION)
-    stats_path = layout.ground_truth_stats(snapshot_hash, GT_VERSION)
-    # Ground truth also depends on the raw headers its frame counts come from
+    # Ground truth (built before the split, which needs each camera's behaviors).
+    # It also depends on the raw headers its frame counts come from.
     gt_key = {
+        "gt_version": GT_VERSION,
         "path_to_raw_videos": str(cfg.path_to_raw_videos),
         "standardized_max_frames": pcfg.standardized_max_frames,
         "standard_fps": cfg.standard_fps,
         "behaviors": asdict(cfg.behaviors),
     }
-    gt_dir = gt_path.parent
-    gt_current = (
-        gt_path.exists()
-        and (gt_dir / "manifest.json").exists()
-        and read_manifest(gt_dir).config == gt_key
+    detect_path, classify_path = snapshot_files(annotations)
+    detect_tasks = json.loads(detect_path.read_text())
+    rates = frame_rate_table(
+        cfg.path_to_raw_videos,
+        detect_tasks,
+        cfg.standard_fps,
+        max_frames=pcfg.standardized_max_frames,
     )
-    if gt_current:
-        logger.info("Ground truth exists: %s", gt_path)
-        ground_truth = pl.read_parquet(gt_path)
-    else:
-        detect_path, classify_path = snapshot_files(snapshot_dir)
-        detect_tasks = json.loads(detect_path.read_text())
-        rates = frame_rate_table(
-            cfg.path_to_raw_videos,
-            detect_tasks,
-            cfg.standard_fps,
-            max_frames=pcfg.standardized_max_frames,
-        )
-        result = build_ground_truth(
-            detect_tasks,
-            json.loads(classify_path.read_text()),
-            cfg.standard_fps,
-            cfg.behaviors,
-            standard_counts=standard_counts(rates),
-        )
-        ground_truth = result.table
-        gt_dir.mkdir(parents=True, exist_ok=True)
-        ground_truth.write_parquet(gt_path)
-        stats_path.write_text(json.dumps(result.counts(), indent=2))
-        write_manifest(
-            new_manifest("ground_truth", snapshot_hash=snapshot_hash, config=gt_key),
-            gt_dir,
-        )
+    result = build_ground_truth(
+        detect_tasks,
+        json.loads(classify_path.read_text()),
+        cfg.standard_fps,
+        cfg.behaviors,
+        standard_counts=standard_counts(rates),
+    )
+    ground_truth = result.table
 
     # Split
     version = update_split(
@@ -168,80 +172,84 @@ def run_prepare(
         vocab=cfg.behaviors,
     )
     split = pl.read_parquet(layout.split(version))
-    frames = with_split(ground_truth, split)
 
-    # Summary + sampling, keyed by every config value sampling reads
+    # Reuse an identical dataset
     sampling_cfg = sampling_config(cfg)
-    prepared = Prepared(
-        snapshot_hash=snapshot_hash,
-        gt_version=GT_VERSION,
-        split_version=version,
-        sampling_hash=config_hash(sampling_cfg),
+    # Through JSON, so it compares equal to the key read back from a manifest
+    key = json.loads(
+        json.dumps(
+            {
+                "snapshot_hash": snapshot_hash,
+                "ground_truth": gt_key,
+                "split_version": version,
+                "sampling_hash": config_hash(sampling_cfg),
+            }
+        )
     )
-    out_dir = layout.sampling_dir(prepared)
-    summary_path = layout.split_summary(prepared)
-    yolo_path = layout.yolo_frames(prepared)
-    clips_path = layout.videomae_clips(prepared)
-    # Resample whenever ground truth was (re)built
-    if gt_current and all(p.exists() for p in (summary_path, yolo_path, clips_path)):
-        logger.info("Sampled data exists: %s", out_dir)
-    else:
-        yolo = select_yolo_frames(
-            frames,
-            stride=pcfg.yolo_uniform_stride,
-            seed=pcfg.split_seed,
-            vocab=cfg.behaviors,
-        )
-        clips = select_videomae_clips(
-            frames,
-            num_frames=clip_length(cfg),
-            stride=pcfg.videomae_clip_stride,
-            seed=pcfg.split_seed,
-            vocab=cfg.behaviors,
-        )
-        sampled = [
-            summarize(
-                table.filter(pl.col("split") != "test").with_columns(
-                    pl.col("split") + f"_{kind}_sampled"
-                ),
-                cfg.behaviors,
-            )
-            for kind, table in (("yolo", yolo), ("videomae", clip_frames(clips)))
-        ]
-        out_dir.mkdir(parents=True, exist_ok=True)
-        yolo.write_parquet(yolo_path)
-        clips.write_parquet(clips_path)
-        pl.concat([summarize(frames, cfg.behaviors), *sampled]).write_parquet(
-            summary_path
-        )
+    existing = None if force else matching_dataset(layout, key)
+    if existing is not None:
+        shutil.rmtree(out_dir)
+        out_dir.symlink_to(existing, target_is_directory=True)
+        logger.info("Dataset %s matches %s; linked to it", dataset_id, existing)
+        print(f"DATASET={dataset_id}")
+        return dataset_id
 
-    counts = json.loads(stats_path.read_text()) if stats_path.exists() else None
-    log_summary(pl.read_parquet(summary_path), counts=counts)
+    # Ground truth, split, summary + sampling
+    ground_truth.write_parquet(layout.ground_truth(dataset_id))
+    counts = result.counts()
+    layout.ground_truth_stats(dataset_id).write_text(json.dumps(counts, indent=2))
+    split.write_parquet(layout.dataset_split_file(dataset_id))
+    frames = with_split(ground_truth, split)
+    yolo = select_yolo_frames(
+        frames,
+        stride=pcfg.yolo_uniform_stride,
+        seed=pcfg.split_seed,
+        vocab=cfg.behaviors,
+    )
+    clips = select_videomae_clips(
+        frames,
+        num_frames=clip_length(cfg),
+        stride=pcfg.videomae_clip_stride,
+        seed=pcfg.split_seed,
+        vocab=cfg.behaviors,
+    )
+    sampled = [
+        summarize(
+            table.filter(pl.col("split") != "test").with_columns(
+                pl.col("split") + f"_{kind}_sampled"
+            ),
+            cfg.behaviors,
+        )
+        for kind, table in (("yolo", yolo), ("videomae", clip_frames(clips)))
+    ]
+    yolo.write_parquet(layout.yolo_frames(dataset_id))
+    clips.write_parquet(layout.videomae_clips(dataset_id))
+    summary = pl.concat([summarize(frames, cfg.behaviors), *sampled])
+    summary.write_parquet(layout.split_summary(dataset_id))
+    log_summary(summary, counts=counts)
+
+    # Written last, so an interrupted prepare is redone next time
     write_manifest(
         new_manifest(
             "prepare",
             snapshot_hash=snapshot_hash,
             split_version=version,
-            config={"prepare": asdict(pcfg), "sampling": sampling_cfg},
+            config={"key": key, "prepare": asdict(pcfg), "sampling": sampling_cfg},
             inputs={
-                "snapshot": str(snapshot_dir),
-                "ground_truth": str(gt_path),
+                "detect_export": str(detect_export),
+                "classify_export": str(classify_export),
                 "split": str(layout.split(version)),
             },
         ),
         out_dir,
     )
-    layout.write_current(prepared)
-    if run_id:
-        layout.run_prepared(run_id).parent.mkdir(parents=True, exist_ok=True)
-        layout.run_prepared(run_id).write_text(prepared.id)
-    logger.info("Prepared data in %s", out_dir)
-    print(f"PREPARED={prepared.id}")
-    return out_dir
+    logger.info("Prepared dataset %s in %s", dataset_id, out_dir)
+    print(f"DATASET={dataset_id}")
+    return dataset_id
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Prepare training data.")
+    parser = argparse.ArgumentParser(description="Prepare a dataset.")
     parser.add_argument(
         "config_path",
         type=Path,
@@ -258,7 +266,10 @@ if __name__ == "__main__":
         type=Path,
         help="Use this Classify export, skip Label Studio",
     )
-    parser.add_argument("--run-id", default=None, help="Pipeline run id")
+    parser.add_argument("--run-id", default=None, help="Dataset (pipeline run) id")
+    parser.add_argument(
+        "--force", action="store_true", help="Don't reuse a matching dataset"
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
@@ -271,4 +282,5 @@ if __name__ == "__main__":
         detect_export=args.detect_export,
         classify_export=args.classify_export,
         run_id=args.run_id,
+        force=args.force,
     )

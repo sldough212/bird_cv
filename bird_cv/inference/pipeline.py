@@ -342,7 +342,7 @@ def run_infer(
         "standard_fps": standard_fps,
         "models": models.kinds(),
         "train_run_id": models.train_run_id,
-        "prepared": models.prepared,
+        "dataset": models.dataset,
         "sam_model_id": models.context.sam_model_id,
         "task_index": task_index,
         "num_tasks": num_tasks,

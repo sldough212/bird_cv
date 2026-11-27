@@ -1,10 +1,12 @@
-"""Build each role's training data from prepared data on the frozen split.
+"""Build each role's training data inside a prepared dataset.
 
-Uses prepare's sampled list. A dataset whose manifest matches is not rebuilt.
+Uses prepare's sampled list on its frozen split, and writes
+``datasets/{dataset_id}/{role}/{kind}/``. Training data whose manifest
+matches is not rebuilt.
 
 Usage::
 
-    python bird_cv/pipelines/build_datasets.py CONFIG --prepared ID \\
+    python bird_cv/pipelines/build_datasets.py CONFIG [--dataset ID | --run-id ID] \\
         [--role ROLE ...] [--processes N]
 """
 
@@ -20,10 +22,10 @@ import ijson
 import polars as pl
 
 from bird_cv.core.ids import get_local_path, parse_media_path
-from bird_cv.core.layout import Layout, Prepared, snapshot_files
+from bird_cv.core.layout import Layout, snapshot_files
 from bird_cv.core.manifest import new_manifest, read_manifest, write_manifest
 from bird_cv.pipelines.config import BirdCVConfig, ModelSpec, load_config
-from bird_cv.pipelines.prepare import config_hash, sampling_config
+from bird_cv.pipelines.prepare import config_hash, dataset_key, sampling_config
 from bird_cv.training.registry import DatasetMedia, get_trainer
 
 logger = logging.getLogger(__name__)
@@ -48,7 +50,7 @@ def export_media(export: Path) -> dict[tuple[str, str, str], Path]:
 def dataset_config(
     role: str,
     spec: ModelSpec,
-    prepared: Prepared,
+    key: dict[str, Any],
     split: pl.DataFrame,
     selection: pl.DataFrame,
     media: DatasetMedia,
@@ -66,7 +68,7 @@ def dataset_config(
         "role": role,
         "kind": spec.kind,
         "num_frames": spec.options.get("num_frames"),
-        "prepared": asdict(prepared),
+        "dataset_key": key,
         "split": [list(r) for r in split.sort("camera_id").iter_rows()],
         "selection_sha256": hashlib.sha256(selection.write_csv().encode()).hexdigest(),
         "media": {
@@ -80,7 +82,7 @@ def dataset_config(
 
 def build_datasets(
     cfg: BirdCVConfig,
-    prepared_id: str | None = None,
+    dataset_id: str | None = None,
     roles: list[str] | None = None,
     processes: int = 1,
     run_id: str | None = None,
@@ -89,43 +91,39 @@ def build_datasets(
 
     Args:
         cfg: Pipeline config; its sampling values must be the ones the
-            prepared data was sampled with.
-        prepared_id: :attr:`Prepared.id`; the last prepare output (logged)
-            if None.
+            dataset was sampled with.
+        dataset_id: The prepared dataset; ``run_id`` if None.
         roles: ``[models]`` roles; all if None.
         processes: Worker processes for the converters.
-        run_id: Pipeline run whose prepared id to use if ``prepared_id`` is None.
+        run_id: Pipeline run id, the dataset id if ``dataset_id`` is None.
 
     Returns:
-        The dataset directories.
+        The training data directories.
 
     Raises:
-        ValueError: If the config's sampling values differ from the prepared
-            data's, or a role is unknown.
+        ValueError: If the config's sampling values differ from the
+            dataset's, or a role is unknown.
         FileNotFoundError: If a selected cage's media (from the export) is
             missing; raised before any dataset is built.
     """
     layout = Layout(cfg.path_to_base_output)
-    prepared = layout.resolve_prepared(prepared_id, run_id)
+    dataset_id = layout.resolve_dataset(dataset_id, run_id)
+    data_key = dataset_key(layout, dataset_id)
     sampling = sampling_config(cfg)
-    if config_hash(sampling) != prepared.sampling_hash:
+    if config_hash(sampling) != data_key["sampling_hash"]:
         raise ValueError(
             f"The config's sampling values {sampling} hash to "
-            f"{config_hash(sampling)}, not the prepared data's "
-            f"{prepared.sampling_hash}; rerun prepare or restore the config"
+            f"{config_hash(sampling)}, not dataset {dataset_id}'s "
+            f"{data_key['sampling_hash']}; rerun prepare or restore the config"
         )
     roles = roles or list(cfg.models.roles())
     unknown = set(roles) - set(cfg.models.roles())
     if unknown:
         raise ValueError(f"Unknown roles {sorted(unknown)}")
 
-    ground_truth = pl.read_parquet(
-        layout.ground_truth(prepared.snapshot_hash, prepared.gt_version)
-    )
-    frozen = pl.read_parquet(layout.split(prepared.split_version))
-    detect_export, classify_export = snapshot_files(
-        layout.snapshot(prepared.snapshot_hash)
-    )
+    ground_truth = pl.read_parquet(layout.ground_truth(dataset_id))
+    frozen = pl.read_parquet(layout.dataset_split_file(dataset_id))
+    detect_export, classify_export = snapshot_files(layout.annotations(dataset_id))
     media = DatasetMedia(
         detect_export=detect_export,
         classify_export=classify_export,
@@ -140,7 +138,7 @@ def build_datasets(
         trainer = get_trainer(spec.kind)
         paths = export_media(trainer.dataset_export(media))
         split = frozen.select("camera_id", "split")
-        selection = pl.read_parquet(trainer.prepared_selection(layout, prepared))
+        selection = pl.read_parquet(trainer.prepared_selection(layout, dataset_id))
         cages = selection.select("camera_id", "video_id", "cage_id").unique()
         media_paths = []
         for key in cages.iter_rows():
@@ -149,7 +147,7 @@ def build_datasets(
             if path is None or not path.exists():
                 missing.add(str(path or key))
         config = dataset_config(
-            role, spec, prepared, split, selection, media, sorted(media_paths)
+            role, spec, data_key, split, selection, media, sorted(media_paths)
         )
         plans.append((role, spec, trainer, split, selection, config))
     if missing:
@@ -160,7 +158,7 @@ def build_datasets(
 
     built = []
     for role, spec, trainer, split, selection, config in plans:
-        out_dir = layout.dataset(prepared, role, spec.kind)
+        out_dir = layout.dataset(dataset_id, role, spec.kind)
         name = f"{role}/{spec.kind}"
         if (out_dir / "manifest.json").exists() and read_manifest(
             out_dir
@@ -172,8 +170,8 @@ def build_datasets(
             logger.info("Rebuilding stale dataset %s", out_dir)
             shutil.rmtree(out_dir)
         out_dir.mkdir(parents=True)
-        split.write_parquet(layout.dataset_split(prepared, role, spec.kind))
-        selection.write_parquet(layout.dataset_selection(prepared, role, spec.kind))
+        split.write_parquet(layout.dataset_split(dataset_id, role, spec.kind))
+        selection.write_parquet(layout.dataset_selection(dataset_id, role, spec.kind))
         logger.info("Building dataset %s: %d rows", name, selection.height)
         trainer.build_dataset(
             selection,
@@ -181,19 +179,17 @@ def build_datasets(
             spec,
             media,
             out_dir,
-            layout.dataset_guidance(prepared, role, spec.kind),
+            layout.dataset_guidance(dataset_id, role, spec.kind),
         )
         # Written last, so an interrupted build is rebuilt next time
         write_manifest(
             new_manifest(
                 "dataset",
-                snapshot_hash=prepared.snapshot_hash,
-                split_version=prepared.split_version,
+                snapshot_hash=data_key["snapshot_hash"],
+                split_version=data_key["split_version"],
                 config=config,
                 inputs={
-                    "ground_truth": str(
-                        layout.ground_truth(prepared.snapshot_hash, prepared.gt_version)
-                    ),
+                    "ground_truth": str(layout.ground_truth(dataset_id)),
                     "detect_export": str(detect_export),
                     "classify_export": str(classify_export),
                 },
@@ -208,7 +204,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("config_path", type=Path, help="Path to the TOML config")
     parser.add_argument(
-        "--prepared", default=None, help="Prepared-data id printed by prepare"
+        "--dataset", default=None, help="Dataset id (default: --run-id)"
     )
     parser.add_argument("--role", action="append", dest="roles", help="Repeatable")
     parser.add_argument("--processes", type=int, default=1)
@@ -218,7 +214,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     for out_dir in build_datasets(
         load_config(args.config_path, require_api_key=False),
-        args.prepared,
+        args.dataset,
         args.roles,
         args.processes,
         args.run_id,

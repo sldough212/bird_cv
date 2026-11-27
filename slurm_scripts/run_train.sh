@@ -2,7 +2,7 @@
 # Train one pipeline role's model from its [models.{role}] config table:
 # first argument is the role (detector, classifier), the rest go to train.py,
 # e.g.
-#   sbatch slurm_scripts/run_train.sh detector --run-id ID --prepared PREPARED_ID
+#   sbatch slurm_scripts/run_train.sh detector --run-id ID [--dataset DATASET_ID]
 #   sbatch slurm_scripts/run_train.sh classifier --hyperparameters RUN_DIR/best_hyperparameters.json
 #SBATCH --account=passerinagenome
 #SBATCH --job-name=train

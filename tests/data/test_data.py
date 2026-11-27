@@ -262,7 +262,7 @@ def test_rejects_non_interpolated_detect_export() -> None:
         parse_detect_task(task)
 
 
-def test_prepare_skips_and_recomputes_on_stride_change(
+def test_prepare_reuses_matching_dataset_and_resamples_on_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(API_KEY_ENV_VAR, "test")
@@ -272,7 +272,7 @@ def test_prepare_skips_and_recomputes_on_stride_change(
     detect.write_text(json.dumps(tasks))
     classify.write_text("[]")
 
-    def prepare(extra: str = "") -> Path:
+    def prepare(dataset_id: str, extra: str = "") -> str:
         config = tmp_path / "config.toml"
         lines = [
             f'path_to_base_output = "{tmp_path / "out"}"'
@@ -282,14 +282,24 @@ def test_prepare_skips_and_recomputes_on_stride_change(
         ]
         config.write_text("\n".join(lines) + "\n" + extra)
         return run_prepare(
-            load_config(config), detect_export=detect, classify_export=classify
+            load_config(config),
+            detect_export=detect,
+            classify_export=classify,
+            run_id=dataset_id,
         )
 
-    first = prepare()
-    assert prepare() == first
-    third = prepare("[prepare]\nyolo_uniform_stride = 3\n")
-    assert third != first
-    yolo = pl.read_parquet(third / "yolo_frames.parquet").filter(split="train")
+    datasets = tmp_path / "out" / "datasets"
+    assert prepare("d1") == "d1"
+    # Same inputs and config: d2 links to d1 instead of copying it
+    assert prepare("d2") == "d2"
+    assert (datasets / "d2").is_symlink()
+    assert (datasets / "d2").resolve() == (datasets / "d1").resolve()
+    # A sampling change makes a new dataset
+    prepare("d3", "[prepare]\nyolo_uniform_stride = 3\n")
+    assert not (datasets / "d3").is_symlink()
+    yolo = pl.read_parquet(datasets / "d3" / "yolo_frames.parquet").filter(
+        split="train"
+    )
     frames = yolo["frame"].to_list()
     assert frames == list(range(0, 30, 3))
 

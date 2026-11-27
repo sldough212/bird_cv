@@ -1,8 +1,8 @@
 """Evaluate predictions against ground truth (ADR 0005).
 
-Ground truth and split are the current prepared data
-(``prepared/current.json``); predictions are read from, and results written
-to, the run ``--run-id`` names in :class:`bird_cv.core.layout.Layout`.
+Ground truth and split come from ``datasets/{--dataset}`` (default: the run
+id); predictions are read from, and results written to, the run ``--run-id``
+names in :class:`bird_cv.core.layout.Layout`.
 
 Modes:
 
@@ -15,14 +15,13 @@ Modes:
   of its frozen-split dataset, for ``--role`` and the checkpoint of training
   run ``--run-id``.
 
-``--prepared`` is the id prepare prints last; without it the last prepare
-output is used, with a warning. The prepared data must match what the
-scored training or inference runs recorded in their manifests.
+The dataset must match (by key) what the scored training or inference runs
+recorded in their manifests.
 
 Usage::
 
     python bird_cv/pipelines/evaluate.py CONFIG {sweep,test,model} \\
-        --run-id ID --prepared ID [--role ROLE]
+        --run-id ID [--dataset ID] [--role ROLE]
 """
 
 import argparse
@@ -31,10 +30,11 @@ import logging
 from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 
-from bird_cv.core.layout import EvalRun, Layout, Prepared
+from bird_cv.core.layout import EvalRun, Layout
 from bird_cv.core.manifest import new_manifest, read_manifest_file, write_manifest
 from bird_cv.evaluation.e2e import (
     evaluate_e2e,
@@ -45,38 +45,41 @@ from bird_cv.evaluation.e2e import (
     write_e2e_result,
 )
 from bird_cv.pipelines.config import BirdCVConfig, load_config
+from bird_cv.pipelines.prepare import dataset_key
 from bird_cv.training.registry import TrainContext, get_trainer
 
 logger = logging.getLogger(__name__)
 
 
-def check_prepared(prepared: Prepared, manifests: Iterable[Path], what: str) -> None:
-    """Raise unless every manifest that records prepared data recorded ``prepared``.
+def check_dataset(
+    dataset: dict[str, Any], manifests: Iterable[Path], what: str
+) -> None:
+    """Raise unless every manifest that records a dataset recorded ``dataset``.
 
-    Manifests that record none (inference with configured, untrained
-    checkpoints) are logged, not rejected.
+    Datasets compare by key, so a reused (symlinked) dataset id matches the
+    one it links to. Manifests that record none (inference with configured,
+    untrained checkpoints) are logged, not rejected.
 
     Args:
-        prepared: The prepared data this evaluation scores against.
+        dataset: ``{"id", "key"}`` of the dataset this evaluation scores against.
         manifests: Manifest files of the runs being scored.
         what: The runs, for messages.
 
     Raises:
         FileNotFoundError: If there are no manifests.
-        ValueError: If a manifest recorded different prepared data.
+        ValueError: If a manifest recorded a different dataset.
     """
     paths = list(manifests)
     if not paths:
         raise FileNotFoundError(f"No manifests for {what}")
-    expected = asdict(prepared)
     for path in paths:
-        recorded = read_manifest_file(path).config.get("prepared")
+        recorded = read_manifest_file(path).config.get("dataset")
         if recorded is None:
-            logger.warning("%s records no prepared data; can't cross-check", path)
-        elif recorded != expected:
+            logger.warning("%s records no dataset; can't cross-check", path)
+        elif recorded["key"] != dataset["key"]:
             raise ValueError(
-                f"{what} used prepared data {Prepared(**recorded).id} ({path}), "
-                f"but this evaluation uses {prepared.id}"
+                f"{what} used dataset {recorded['id']} ({path}), but this "
+                f"evaluation uses {dataset['id']}, which differs"
             )
 
 
@@ -93,7 +96,7 @@ def run_evaluate(
     mode: str,
     run_id: str | None = None,
     role: str | None = None,
-    prepared_id: str | None = None,
+    dataset_id: str | None = None,
 ) -> Path:
     """Run one evaluation mode and write its outputs and manifest.
 
@@ -104,8 +107,7 @@ def run_evaluate(
         run_id: The pipeline run to score: its inference runs, or for
             ``model`` its training run of ``role``. Also names the output.
         role: A ``[models]`` role, for ``model``.
-        prepared_id: :attr:`Prepared.id` of the data to score against; the
-            last prepare output (logged) if ``None``.
+        dataset_id: The dataset to score against; ``run_id`` if ``None``.
 
     Returns:
         The output directory.
@@ -118,24 +120,25 @@ def run_evaluate(
         raise ValueError(f"{mode} mode needs the scored run's --run-id")
     if mode == "model" and role not in cfg.models.roles():
         raise ValueError(f"role must be one of {sorted(cfg.models.roles())}")
-    prepared = layout.resolve_prepared(prepared_id, run_id)
+    dataset_id = layout.resolve_dataset(dataset_id, run_id)
+    key = dataset_key(layout, dataset_id)
+    dataset = {"id": dataset_id, "key": key}
     out = layout.evaluation_run(mode, run_id, role)
     out.mkdir(parents=True, exist_ok=True)
     results = EvalRun(out)
     print(f"Run directory: {out}")
     inputs: dict[str, str] = {}
-    split_version = prepared.split_version
-    split = pl.read_parquet(layout.split(split_version))
+    split = pl.read_parquet(layout.dataset_split_file(dataset_id))
 
     if mode == "model":
         assert role is not None  # checked above
         spec = cfg.models.roles()[role]
         train_dir = layout.train_run(role, run_id)
-        check_prepared(
-            prepared, [train_dir / "manifest.json"], f"training run {train_dir}"
+        check_dataset(
+            dataset, [train_dir / "manifest.json"], f"training run {train_dir}"
         )
         checkpoint = get_trainer(spec.kind).checkpoint_path(train_dir)
-        dataset = layout.dataset(prepared, role, spec.kind)
+        data_dir = layout.dataset(dataset_id, role, spec.kind)
         context = TrainContext(
             device=cfg.train.device,
             select_conf=cfg.infer.det_conf,
@@ -145,7 +148,7 @@ def run_evaluate(
             split_name: get_trainer(spec.kind).evaluate(
                 checkpoint,
                 spec,
-                dataset,
+                data_dir,
                 split_name,
                 results.model_split(split_name),
                 context,
@@ -158,9 +161,9 @@ def run_evaluate(
                 {"role": role, "kind": spec.kind} | scores, indent=2, default=float
             )
         )
-        inputs = {"dataset": str(dataset), "checkpoint": str(checkpoint)}
+        inputs = {"dataset": str(data_dir), "checkpoint": str(checkpoint)}
     else:
-        truth_path = layout.ground_truth(prepared.snapshot_hash, prepared.gt_version)
+        truth_path = layout.ground_truth(dataset_id)
         truth = load_ground_truth(truth_path)
         inputs["ground_truth"] = str(truth_path)
 
@@ -179,8 +182,8 @@ def run_evaluate(
                 raise FileNotFoundError(f"Missing sweep settings: {missing}")
             predictions = {}
             for setting, infer_run in runs.items():
-                check_prepared(
-                    prepared, infer_run.task_manifests(), f"inference {infer_run.dir}"
+                check_dataset(
+                    dataset, infer_run.task_manifests(), f"inference {infer_run.dir}"
                 )
                 predictions[setting] = load_predictions(infer_run.predictions_dir)
             sweep_root = layout.sweep_root(run_id)
@@ -200,8 +203,8 @@ def run_evaluate(
 
         elif mode == "test":
             test_run = layout.test_infer_run(run_id)
-            check_prepared(
-                prepared, test_run.task_manifests(), f"inference {test_run.dir}"
+            check_dataset(
+                dataset, test_run.task_manifests(), f"inference {test_run.dir}"
             )
             pred_dir = test_run.predictions_dir
             result = evaluate_e2e(
@@ -218,12 +221,12 @@ def run_evaluate(
     write_manifest(
         new_manifest(
             kind="evaluate",
-            snapshot_hash=prepared.snapshot_hash,
-            split_version=split_version,
+            snapshot_hash=key["snapshot_hash"],
+            split_version=key["split_version"],
             config={
                 "mode": mode,
                 "evaluate": asdict(ev),
-                "prepared": asdict(prepared),
+                "dataset": dataset,
             },
             inputs=inputs,
         ),
@@ -241,7 +244,7 @@ def main() -> None:
     )
     parser.add_argument("--role", default=None, help="[models] role, for model")
     parser.add_argument(
-        "--prepared", default=None, help="Prepared-data id printed by prepare"
+        "--dataset", default=None, help="Dataset id (default: --run-id)"
     )
     args = parser.parse_args()
 
@@ -250,7 +253,7 @@ def main() -> None:
         args.mode,
         args.run_id,
         args.role,
-        args.prepared,
+        args.dataset,
     )
     print(f"Done: {out}")
 

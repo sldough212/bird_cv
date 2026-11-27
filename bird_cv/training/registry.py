@@ -30,7 +30,7 @@ from bird_cv.preprocessing.annotations_to_mae import (
     stream_annotations_to_mae,
 )
 
-from bird_cv.core.layout import Layout, Prepared
+from bird_cv.core.layout import Layout
 
 if TYPE_CHECKING:
     from bird_cv.pipelines.config import ModelSpec
@@ -135,7 +135,7 @@ class Trainer(Protocol):
         """
         ...
 
-    def prepared_selection(self, layout: "Layout", prepared: "Prepared") -> Path:
+    def prepared_selection(self, layout: Layout, dataset_id: str) -> Path:
         """The frame or clip list prepare sampled for this kind (frozen split)."""
         ...
 
@@ -293,8 +293,8 @@ class YoloTrainer:
             raise ValueError("yolo needs infer_options.tracker_path")
         return YoloDetector(model_path=checkpoint, **spec.infer_options)
 
-    def prepared_selection(self, layout, prepared) -> Path:
-        return layout.yolo_frames(prepared)
+    def prepared_selection(self, layout, dataset_id) -> Path:
+        return layout.yolo_frames(dataset_id)
 
     def dataset_export(self, media):
         return media.detect_export
@@ -435,8 +435,8 @@ class VideoMAETrainer:
             model_path=str(checkpoint), **(trained | spec.infer_options)
         )
 
-    def prepared_selection(self, layout, prepared) -> Path:
-        return layout.videomae_clips(prepared)
+    def prepared_selection(self, layout, dataset_id) -> Path:
+        return layout.videomae_clips(dataset_id)
 
     def dataset_export(self, media):
         return media.classify_export

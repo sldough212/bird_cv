@@ -1,4 +1,3 @@
-import dataclasses
 import json
 import re
 import sys
@@ -20,7 +19,7 @@ from bird_cv.pipelines.build_datasets import build_datasets
 from bird_cv.pipelines.config import API_KEY_ENV_VAR, load_config
 from bird_cv.pipelines.evaluate import run_evaluate
 from bird_cv.pipelines.infer import split_run
-from bird_cv.pipelines.prepare import run_prepare
+from bird_cv.pipelines.prepare import dataset_key, run_prepare
 from bird_cv.preprocessing.standardize import expected_standard_frames
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -68,13 +67,13 @@ def test_prepare_build_evaluate_connect(
     config = tmp_path / "config.toml"
     raw = tmp_path / "raw"
     text = re.sub(
-        r'^path_to_base_output = ".*"$',
+        r'^path_to_base_output = ".*"\s*$',
         f'path_to_base_output = "{base}"',
         CONFIG.read_text(),
         flags=re.M,
     )
     text = re.sub(
-        r'^path_to_raw_videos = ".*"$',
+        r'^path_to_raw_videos = ".*"\s*$',
         f'path_to_raw_videos = "{raw}"',
         text,
         flags=re.M,
@@ -100,16 +99,15 @@ def test_prepare_build_evaluate_connect(
             task["data"]["video"] = f"/data/local-files/?d={str(media)[1:]}"
     (tmp_path / "detect.json").write_text(json.dumps(detect))
     (tmp_path / "classify.json").write_text(json.dumps(classify))
+    run_id = "r1"
     run_prepare(
         cfg,
         detect_export=tmp_path / "detect.json",
         classify_export=tmp_path / "classify.json",
+        run_id=run_id,
     )
     layout = Layout(base)
-    prepared = layout.read_current()
-    truth = pl.read_parquet(
-        layout.ground_truth(prepared.snapshot_hash, prepared.gt_version)
-    )
+    truth = pl.read_parquet(layout.ground_truth(run_id))
     boxed = set(
         truth.filter(pl.col("bbox_left").is_not_null())
         .select("camera_id", "frame")
@@ -120,17 +118,17 @@ def test_prepare_build_evaluate_connect(
     moved = tmp_path / "legacy" / "cage_videos" / "a" / "v" / "0.mp4"
     moved.rename(moved.with_suffix(".bak"))
     with pytest.raises(FileNotFoundError, match="1 selected media"):
-        build_datasets(cfg, prepared.id, processes=1)
-    assert not list(base.rglob("datasets"))
+        build_datasets(cfg, run_id, processes=1)
+    assert not (layout.dataset_dir(run_id) / "detector").exists()
     moved.with_suffix(".bak").rename(moved)
 
-    built = build_datasets(cfg, prepared.id, processes=1)
-    assert build_datasets(cfg, prepared.id, processes=1) == built
+    built = build_datasets(cfg, run_id, processes=1)
+    assert build_datasets(cfg, run_id, processes=1) == built
 
     for role, spec in cfg.models.roles().items():
-        out = layout.dataset(prepared, role, spec.kind)
+        out = layout.dataset(run_id, role, spec.kind)
         split = dict(
-            pl.read_parquet(layout.dataset_split(prepared, role, spec.kind)).iter_rows()
+            pl.read_parquet(layout.dataset_split(run_id, role, spec.kind)).iter_rows()
         )
         # detector: images/{split}/{camera}_v_0_{frame}.jpg;
         # classifier: {split}/{label}/{camera}_v_0_s{i}_clip000/
@@ -149,7 +147,7 @@ def test_prepare_build_evaluate_connect(
         if role == "detector":
             # Image stem frame F is canonical F - 1; labeled iff boxed
             selected = set(
-                pl.read_parquet(layout.dataset_selection(prepared, role, spec.kind))
+                pl.read_parquet(layout.dataset_selection(run_id, role, spec.kind))
                 .select("camera_id", "frame")
                 .iter_rows()
             )
@@ -160,14 +158,14 @@ def test_prepare_build_evaluate_connect(
                 assert bool(label.read_text().strip()) == ((camera, frame) in boxed)
 
     # Evaluate through the layout: setting 1 perfect, the rest empty
-    run_id = "r1"
     predictions = truth.with_columns(
         label=pl.col("label").fill_null(VOCAB.no_bird), confidence=1.0, det_conf=1.0
     ).select(list(PREDICTION_SCHEMA))
     settings = sweep_settings(
         cfg.evaluate.sweep_gap_fill_frames, cfg.evaluate.sweep_det_conf
     )
-    manifest = new_manifest("infer", config={"prepared": dataclasses.asdict(prepared)})
+    dataset = {"id": run_id, "key": dataset_key(layout, run_id)}
+    manifest = new_manifest("infer", config={"dataset": dataset})
     runs = [
         (layout.sweep_infer_run(run_id, g, c), i == 1)
         for i, (g, c) in enumerate(settings)
@@ -181,15 +179,15 @@ def test_prepare_build_evaluate_connect(
         run.predictions("all", "all").parent.mkdir(parents=True)
         preds.write_parquet(run.predictions("all", "all"))
         run.task_manifest(0).write_bytes(msgspec.json.encode(manifest))
-    sweep = EvalRun(run_evaluate(cfg, "sweep", run_id, prepared_id=prepared.id))
+    sweep = EvalRun(run_evaluate(cfg, "sweep", run_id))
     best = json.loads(sweep.best_setting.read_text())
     assert (best["gap_fill_frames"], best["det_conf"]) == settings[1]
-    test = EvalRun(run_evaluate(cfg, "test", run_id, prepared_id=prepared.id))
+    test = EvalRun(run_evaluate(cfg, "test", run_id))
     assert json.loads(test.metrics.read_text())["macro_f1"] == 1.0
 
     # infer.py --split: labeled videos of the split's cameras, setting dirs
     frozen = dict(
-        pl.read_parquet(layout.split(prepared.split_version))
+        pl.read_parquet(layout.dataset_split_file(run_id))
         .select("camera_id", "split")
         .iter_rows()
     )
@@ -197,9 +195,7 @@ def test_prepare_build_evaluate_connect(
         ("val", 2, settings[2], layout.sweep_infer_run(run_id, *settings[2])),
         ("test", None, settings[1], layout.test_infer_run(run_id)),
     ):
-        videos, run_dir, infer_cfg, _ = split_run(
-            cfg, run_id, split_name, index, prepared.id
-        )
+        videos, run_dir, infer_cfg, _ = split_run(cfg, run_id, split_name, index, None)
         assert videos
         assert sorted(v.relative_to(raw).as_posix() for v in videos) == sorted(
             f"{c}/v.mp4" for c in cameras if frozen[c] == split_name

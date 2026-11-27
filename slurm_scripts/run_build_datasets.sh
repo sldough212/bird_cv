@@ -1,8 +1,8 @@
 #!/bin/bash
 # Build every [models] role's training data (frozen split) from
-# prepared data; arguments go to build_datasets.py, e.g.
-#   sbatch slurm_scripts/run_build_datasets.sh --prepared PREPARED_ID
-#   sbatch slurm_scripts/run_build_datasets.sh --prepared PREPARED_ID --role detector
+# a prepared dataset; arguments go to build_datasets.py, e.g.
+#   sbatch slurm_scripts/run_build_datasets.sh --dataset DATASET_ID
+#   sbatch slurm_scripts/run_build_datasets.sh --dataset DATASET_ID --role detector
 # CPU only: frames are decoded and written as JPEGs, no model runs.
 #SBATCH --account=passerinagenome
 #SBATCH --time=12:00:00
