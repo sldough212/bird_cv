@@ -12,11 +12,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+import motmetrics as mm
 import numpy as np
 import polars as pl
 
 from bird_cv.core.schemas import KEY_COLUMNS, PREDICTION_SCHEMA
-from bird_cv.detection.mot_evaluate import compute_mot_metrics
 
 
 def box_columns() -> tuple[str, ...]:
@@ -303,6 +303,64 @@ def detection_presence_metrics(
         "f1": f1,
         "mean_iou": float(ious[hit].mean()) if tp else float("nan"),
     }
+
+
+def compute_mot_metrics(
+    gt: np.ndarray,
+    pred: np.ndarray,
+) -> dict[str, float]:
+    """Compute MOT metrics for a single cage given GT and prediction MOT arrays.
+
+    Args:
+        gt: Ground-truth MOT array, one row per box:
+            ``frame, id, left, top, width, height``.
+        pred: Prediction MOT array, same columns.
+
+    Returns:
+        Dictionary of metric name → value.
+    """
+    acc = mm.MOTAccumulator(auto_id=True)
+
+    all_frames = np.union1d(
+        gt[:, 0].astype(int) if len(gt) else np.array([], dtype=int),
+        pred[:, 0].astype(int) if len(pred) else np.array([], dtype=int),
+    )
+
+    for frame in all_frames:
+        gt_dets = gt[gt[:, 0] == frame][:, 1:6] if len(gt) else np.empty((0, 5))
+        pred_dets = pred[pred[:, 0] == frame][:, 1:6] if len(pred) else np.empty((0, 5))
+
+        gt_ids = gt_dets[:, 0].astype(int).tolist()
+        pred_ids = pred_dets[:, 0].astype(int).tolist()
+
+        dist = mm.distances.iou_matrix(gt_dets[:, 1:], pred_dets[:, 1:], max_iou=0.5)
+        acc.update(gt_ids, pred_ids, dist)
+
+    mh = mm.metrics.create()
+    summary = mh.compute(
+        acc,
+        metrics=[
+            "num_frames",
+            "idf1",
+            "idp",
+            "idr",
+            "recall",
+            "precision",
+            "num_objects",
+            "mostly_tracked",
+            "partially_tracked",
+            "mostly_lost",
+            "num_false_positives",
+            "num_misses",
+            "num_switches",
+            "num_fragmentations",
+            "mota",
+            "motp",
+        ],
+        name="acc",
+    )
+
+    return summary.loc["acc"].to_dict()
 
 
 def _to_mot(df: pl.DataFrame, frame_offset: int, track_id: int) -> np.ndarray:
