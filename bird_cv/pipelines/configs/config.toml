@@ -11,8 +11,10 @@
 # ==========================================================================
 
 # ---- Core paths (required) ----
-path_to_base_output = "/gscratch/pdoughe1/full_pipeline/20260817" 
-# 20261019"
+# Every new-pipeline run lives here, by RUN_ID (see bird_cv/core/layout.py).
+# The Label Studio pre-labeling pipelines also derive their media paths from
+# it; their existing media is under full_pipeline/20260817.
+path_to_base_output = "/gscratch/pdoughe1/full_pipeline/pipeline_run"
 # Raw videos, {camera}/{video}.{ext}: inference standardizes them and prepare
 # computes expected standardized frame counts from their headers. Check with
 # `python bird_cv/pipelines/check_fps.py CONFIG` (the value below is the 900-frame
