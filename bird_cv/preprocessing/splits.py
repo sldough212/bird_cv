@@ -127,17 +127,18 @@ def _rank(
     cameras: tuple[str, ...],
     frames: Mapping[str, Mapping[str, int]],
     totals: Mapping[str, int],
+    share: float,
 ) -> tuple[float, int, int, tuple[str, ...]]:
-    """Rare-frame cost of holding ``cameras`` out of train (lower is better).
+    """How far holding ``cameras`` out is from ``share`` of every behavior.
 
-    The cost is the sum over behaviors of the cameras' share of that
-    behavior's frames, so taking a rare behavior's only stretches costs more
-    than taking a lot of resting. Ties go to fewer frames, then fewer
-    cameras, then names.
+    The cost is the sum over behaviors of (the cameras' share of that
+    behavior's frames - ``share``) squared, so a held-out split gets about
+    its ``split_ratio`` of every behavior, rare ones included. Lower is
+    better; ties go to fewer frames, then fewer cameras, then names.
     """
     held = {b: sum(frames[c].get(b, 0) for c in cameras) for b in totals}
     return (
-        sum(held[b] / totals[b] for b in totals),
+        sum((held[b] / totals[b] - share) ** 2 for b in totals),
         sum(held.values()),
         len(cameras),
         cameras,
@@ -146,10 +147,11 @@ def _rank(
 
 SPLIT_RULE = (
     "test: round(split_ratio test x cameras) cameras covering every behavior "
-    "with the lowest sum over behaviors of (test frames / total frames), ties "
-    "to fewer frames; val: round(split_ratio val x cameras) of the remaining "
-    "cameras covering the most behaviors, same score; train: the rest, which "
-    "must keep every behavior"
+    "with the lowest sum over behaviors of (test frames / total frames - "
+    "split_ratio test)^2, ties to fewer frames; val: round(split_ratio val x "
+    "cameras) of the remaining cameras covering the most behaviors, same "
+    "score with split_ratio val; train: the rest, which must keep every "
+    "behavior"
 )
 """How :func:`choose_initial_split` picks cameras, recorded in the manifest."""
 
@@ -161,15 +163,16 @@ def choose_initial_split(
     """Choose a scheme's first camera split by rule (see :data:`SPLIT_RULE`).
 
     Test is the ``split_ratio`` share of cameras (at least one) covering
-    every behavior that removes the fewest rare-behavior frames from
-    training; val is the ``split_ratio`` share of the remaining cameras
-    covering as many behaviors as possible, ranked the same way; train is
-    everything else. A candidate is only allowed if train keeps every
+    every behavior whose share of each behavior's frames is closest to its
+    ``split_ratio``; val is the ``split_ratio`` share of the remaining
+    cameras covering as many behaviors as possible, ranked the same way;
+    train is everything else. A candidate is only allowed if train keeps every
     behavior. Deterministic: ties go to fewer frames, then names.
 
     Args:
         frames: Frames of each behavior on each camera.
-        split_ratio: Fraction of cameras in each split.
+        split_ratio: Fraction of cameras, and target fraction of each
+            behavior's frames, in each split.
 
     Returns:
         Cameras in each split.
@@ -192,7 +195,7 @@ def choose_initial_split(
 
     tests = sorted(
         (
-            _rank(group, frames, totals)
+            _rank(group, frames, totals, split_ratio["test"])
             for group in combinations(cameras, n_test)
             if covers(group) == target
             and covers(c for c in cameras if c not in group) == target
@@ -207,7 +210,7 @@ def choose_initial_split(
 
     rest = [c for c in cameras if c not in test]
     vals = sorted(
-        (-len(covers(group)), *_rank(group, frames, totals))
+        (-len(covers(group)), *_rank(group, frames, totals, split_ratio["val"]))
         for group in combinations(rest, n_val)
         if covers(c for c in rest if c not in group) == target
     )

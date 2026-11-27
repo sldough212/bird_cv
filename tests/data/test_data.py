@@ -183,6 +183,12 @@ def test_split_is_frozen_and_append_only(tmp_path: Path) -> None:
     assert run("other") == 2
     with pytest.raises(ValueError, match="test cameras"):  # flying on one camera
         choose_initial_split({"a": {"flying": 1}, "b": {}, "c": {}}, ratio)
+    # Held-out splits get about split_ratio of every behavior (c2 holds 20%),
+    # not the camera that takes the fewest frames from train (c1)
+    even = {"c1": {"flying": 1, "resting": 1}, "c2": {"flying": 20, "resting": 20}}
+    even |= {f"c{i}": {"flying": 26, "resting": 26} for i in (3, 4, 5)}
+    fifth = {"train": 0.6, "val": 0.2, "test": 0.2}
+    assert choose_initial_split(even, fifth)["test"] == ["c2"]
 
     cameras |= {"new0": ["flying"], "new1": ["resting"]}
     assert run() == 3
