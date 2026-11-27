@@ -7,7 +7,7 @@ from typing import Any
 import polars as pl
 import pytest
 
-from bird_cv.core.labels import BEHAVIORS, NO_BIRD
+from bird_cv.core.labels import Behaviors
 from bird_cv.core.layout import split_file
 from bird_cv.core.schemas import GROUND_TRUTH_SCHEMA
 from bird_cv.preprocessing.ground_truth import build_ground_truth, parse_detect_task
@@ -25,6 +25,9 @@ from bird_cv.preprocessing.splits import (
 )
 from bird_cv.pipelines.config import API_KEY_ENV_VAR, load_config
 from bird_cv.pipelines.prepare import run_prepare
+
+VOCAB = Behaviors()
+
 
 CONFIG = Path(__file__).parents[2] / "bird_cv/pipelines/configs/config.toml"
 
@@ -127,7 +130,7 @@ def test_ground_truth_chain_with_mid_video_gap() -> None:
             ],
         )
     ]
-    result = build_ground_truth(detect + [misaligned], classify, 15)
+    result = build_ground_truth(detect + [misaligned], classify, 15, VOCAB)
     gt = result.table.filter(pl.col("cage_id") == "0")
     label = dict(gt.select("frame", "label").iter_rows())
 
@@ -135,14 +138,14 @@ def test_ground_truth_chain_with_mid_video_gap() -> None:
     assert all(
         label[f] == "walking___hopping" for f in [*range(158, 191), *range(219, 238)]
     )
-    assert all(label[f] == NO_BIRD for f in [*range(0, 45), *range(191, 219)])
+    assert all(label[f] == VOCAB.no_bird for f in [*range(0, 45), *range(191, 219)])
     assert label[157] is None and label[45] == "resting"
     assert label[47] is None and result.conflict_frames == 1  # resting + preening
     # crop frames -1, 0 and 242-245 fall outside the 241 boxed frames
     assert result.clipped_frames == 2 + 4
     assert result.misaligned_detect_tasks == 1
     empty = result.table.filter(pl.col("cage_id") == "1")
-    assert empty.height == 314 and (empty["label"] == NO_BIRD).all()
+    assert empty.height == 314 and (empty["label"] == VOCAB.no_bird).all()
     assert gt.filter(pl.col("frame") == 45).row(0, named=True)["bbox_left"] == 0.1
 
 
@@ -153,12 +156,12 @@ def _gt_for(cameras: dict[str, list[str]]) -> pl.DataFrame:
 
 
 def test_split_is_frozen_and_append_only(tmp_path: Path) -> None:
-    cameras = {f"c{i}": [b for b in BEHAVIORS if b != "flying"] for i in range(4)}
+    cameras = {f"c{i}": [b for b in VOCAB.names if b != "flying"] for i in range(4)}
     cameras |= {f"r{i}": ["resting"] for i in range(3)}
 
     def run() -> int:
         ratio = {"train": 0.7, "val": 0.15, "test": 0.15}
-        return update_split(_gt_for(cameras), tmp_path, ratio, seed=0)
+        return update_split(_gt_for(cameras), tmp_path, ratio, seed=0, vocab=VOCAB)
 
     assert run() == 1
     v1 = pl.read_parquet(split_file(tmp_path, 1))
@@ -182,7 +185,7 @@ def test_split_is_frozen_and_append_only(tmp_path: Path) -> None:
         "new1",
     }
     assert v2.filter(camera_id="new0")["split"].item() == "train"  # nobody had it
-    gaps = coverage_gaps(v2, camera_behaviors(_gt_for(cameras)))
+    gaps = coverage_gaps(v2, camera_behaviors(_gt_for(cameras), VOCAB))
     assert gaps == {"train": set(), "test": {"flying"}}
 
 
@@ -191,22 +194,22 @@ def test_sampling_caps() -> None:
         ["head_move"] * 10
         + ["preening"] * 4
         + ["resting"] * 30
-        + [NO_BIRD] * 20
+        + [VOCAB.no_bird] * 20
         + [None] * 3
     )
     frames = pl.concat(
         [
             gt_rows("c", "labeled", labeled, "train"),
-            gt_rows("c", "unlabeled", [NO_BIRD] * 7 + [None] * 13, "train"),
+            gt_rows("c", "unlabeled", [VOCAB.no_bird] * 7 + [None] * 13, "train"),
             gt_rows("c", "resting_only", ["resting"] * 30, "train"),
             gt_rows("t", "test", labeled, "test"),
         ]
     )
-    yolo = select_yolo_frames(frames, stride=5, seed=0)
+    yolo = select_yolo_frames(frames, stride=5, seed=0, vocab=VOCAB)
     counts = dict(
         yolo.filter(pl.col("video_id") == "labeled").group_by("label").len().iter_rows()
     )
-    assert counts == {"head_move": 10, "preening": 4, "resting": 10, NO_BIRD: 10}
+    assert counts == {"head_move": 10, "preening": 4, "resting": 10, VOCAB.no_bird: 10}
     assert yolo.filter(pl.col("video_id") == "unlabeled")["frame"].to_list() == [
         0,
         5,
@@ -218,7 +221,7 @@ def test_sampling_caps() -> None:
 
     # head_move and preening 1 clip each, so train's 6 resting windows (two
     # cages) are capped to 1 across the whole split
-    clips = select_videomae_clips(frames, num_frames=8, stride=8, seed=0)
+    clips = select_videomae_clips(frames, num_frames=8, stride=8, seed=0, vocab=VOCAB)
     train = clips.filter(pl.col("split") == "train")
     assert dict(train.group_by("label").len().iter_rows()) == {
         "head_move": 1,
@@ -296,19 +299,24 @@ def test_summary_counts() -> None:
         [
             # stretches: resting(0-2), no_bird(3), resting(5-6); frame 4 is a hole
             gt_rows(
-                "a", "v1", ["resting"] * 3 + [NO_BIRD, None] + ["resting"] * 2, "train"
+                "a",
+                "v1",
+                ["resting"] * 3 + [VOCAB.no_bird, None] + ["resting"] * 2,
+                "train",
             ),
-            gt_rows("b", "v2", ["preening", "preening", NO_BIRD], "train"),
-            gt_rows("c", "v3", [NO_BIRD, None, None], "train"),  # no Classify task
+            gt_rows("b", "v2", ["preening", "preening", VOCAB.no_bird], "train"),
+            gt_rows(
+                "c", "v3", [VOCAB.no_bird, None, None], "train"
+            ),  # no Classify task
         ]
     )
-    rows = {r["label"]: r for r in summarize(frames).iter_rows(named=True)}
+    rows = {r["label"]: r for r in summarize(frames, VOCAB).iter_rows(named=True)}
     assert {
         k: (v["frames"], v["stretches"], v["cameras"]) for k, v in rows.items()
     } == {
         "preening": (2, 1, 1),
         "resting": (5, 2, 1),
-        NO_BIRD: (3, 3, 3),
+        VOCAB.no_bird: (3, 3, 3),
         "total": (10, 6, 3),
     }
     assert rows["total"]["labeling_hole_frames"] == 1

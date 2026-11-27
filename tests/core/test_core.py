@@ -4,6 +4,7 @@ import pytest
 
 from bird_cv.core.frames import canonical_to_ls, ls_to_canonical
 from bird_cv.core.ids import parse_media_path, parse_raw_video_path
+from bird_cv.core.labels import Behaviors
 from bird_cv.core.manifest import new_manifest, read_manifest, write_manifest
 from bird_cv.pipelines.config import API_KEY_ENV_VAR, load_config
 
@@ -58,3 +59,15 @@ def test_config_api_key_optional_when_not_required(
 ) -> None:
     monkeypatch.delenv(API_KEY_ENV_VAR, raising=False)
     assert load_config(CONFIG, require_api_key=False).api_key == ""
+
+
+def test_behaviors_validate_vocabulary() -> None:
+    vocab = Behaviors(names=("a", "resting"))
+    assert vocab.classes == ("a", "resting", "no_bird")
+    assert vocab.active == ("a",)
+    with pytest.raises(ValueError, match="sorted"):
+        Behaviors(names=("resting", "a"))
+    with pytest.raises(ValueError, match="resting"):
+        Behaviors(names=("a", "b"))
+    with pytest.raises(ValueError, match="Unknown class"):
+        vocab.validate("b")

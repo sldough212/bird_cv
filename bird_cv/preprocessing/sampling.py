@@ -12,7 +12,7 @@ import logging
 
 import polars as pl
 
-from bird_cv.core.labels import ACTIVE_BEHAVIORS, BEHAVIORS, CLASSES, NO_BIRD, RESTING
+from bird_cv.core.labels import Behaviors
 from bird_cv.core.schemas import (
     CAGE_COLUMNS,
     SPLIT_SUMMARY_SCHEMA,
@@ -24,17 +24,19 @@ from bird_cv.core.schemas import (
 logger = logging.getLogger(__name__)
 
 
-def _active_cap(counts: pl.Expr) -> pl.Expr:
+def _active_cap(counts: pl.Expr, vocab: Behaviors) -> pl.Expr:
     """Per-cage max of ``counts`` over active-behavior rows (0 if there are none)."""
     return (
-        counts.filter(pl.col("label").is_in(ACTIVE_BEHAVIORS))
+        counts.filter(pl.col("label").is_in(vocab.active))
         .max()
         .over(CAGE_COLUMNS)
         .fill_null(0)
     )
 
 
-def select_yolo_frames(frames: pl.DataFrame, stride: int, seed: int) -> pl.DataFrame:
+def select_yolo_frames(
+    frames: pl.DataFrame, stride: int, seed: int, vocab: Behaviors
+) -> pl.DataFrame:
     """Select YOLO frames from ground truth with a ``split`` column.
 
     Train and val, per cage video: every active-behavior frame; resting and
@@ -47,6 +49,7 @@ def select_yolo_frames(frames: pl.DataFrame, stride: int, seed: int) -> pl.DataF
         frames: Ground truth rows with a ``split`` column.
         stride: Frame stride for cage videos with no active behavior.
         seed: Random seed for the capped samples.
+        vocab: The class vocabulary (``[behaviors]`` in config).
 
     Returns:
         Selected frames in :data:`YOLO_FRAMES_SCHEMA`.
@@ -54,14 +57,14 @@ def select_yolo_frames(frames: pl.DataFrame, stride: int, seed: int) -> pl.DataF
     frames = frames.sort([*CAGE_COLUMNS, "frame"])
     test = frames.filter(pl.col("split") == "test")
     fit = frames.filter(pl.col("split") != "test").with_columns(
-        active=pl.col("label").is_in(ACTIVE_BEHAVIORS).any().over(CAGE_COLUMNS),
+        active=pl.col("label").is_in(vocab.active).any().over(CAGE_COLUMNS),
         count=pl.len().over([*CAGE_COLUMNS, "label"]),
         rank=pl.int_range(pl.len()).shuffle(seed=seed).over([*CAGE_COLUMNS, "label"]),
     )
-    fit = fit.with_columns(cap=_active_cap(pl.col("count")))
+    fit = fit.with_columns(cap=_active_cap(pl.col("count"), vocab))
     keep = pl.when(~pl.col("active")).then(pl.col("frame") % stride == 0)
-    keep = keep.when(pl.col("label").is_in(ACTIVE_BEHAVIORS)).then(True)
-    keep = keep.when(pl.col("label").is_in([RESTING, NO_BIRD])).then(
+    keep = keep.when(pl.col("label").is_in(vocab.active)).then(True)
+    keep = keep.when(pl.col("label").is_in([vocab.resting, vocab.no_bird])).then(
         pl.col("rank") < pl.col("cap")
     )
     selected = fit.filter(keep.otherwise(False))
@@ -77,11 +80,12 @@ def select_yolo_frames(frames: pl.DataFrame, stride: int, seed: int) -> pl.DataF
     )
 
 
-def labeled_stretches(frames: pl.DataFrame) -> pl.DataFrame:
+def labeled_stretches(frames: pl.DataFrame, vocab: Behaviors) -> pl.DataFrame:
     """Contiguous same-behavior runs of canonical frames on each cage.
 
     Args:
         frames: Ground truth rows with a ``split`` column.
+        vocab: The class vocabulary (``[behaviors]`` in config).
 
     Returns:
         One row per stretch of a behavior (``no_bird`` and holes excluded),
@@ -97,7 +101,7 @@ def labeled_stretches(frames: pl.DataFrame) -> pl.DataFrame:
         .over(CAGE_COLUMNS)
     )
     return (
-        runs.filter(pl.col("label").is_in(BEHAVIORS))
+        runs.filter(pl.col("label").is_in(vocab.names))
         .group_by([*CAGE_COLUMNS, "run"])
         .agg(
             pl.col("label").first(),
@@ -110,7 +114,7 @@ def labeled_stretches(frames: pl.DataFrame) -> pl.DataFrame:
 
 
 def select_videomae_clips(
-    frames: pl.DataFrame, num_frames: int, stride: int, seed: int
+    frames: pl.DataFrame, num_frames: int, stride: int, seed: int, vocab: Behaviors
 ) -> pl.DataFrame:
     """Slice labeled stretches into VideoMAE clips, capping resting in train/val.
 
@@ -127,12 +131,13 @@ def select_videomae_clips(
         num_frames: Frames per clip.
         stride: Frames between consecutive clip starts.
         seed: Random seed for the resting cap.
+        vocab: The class vocabulary (``[behaviors]`` in config).
 
     Returns:
         Selected clips in :data:`VIDEOMAE_CLIPS_SCHEMA`.
     """
     clips = (
-        labeled_stretches(frames)
+        labeled_stretches(frames, vocab)
         .with_columns(
             frame_begin=pl.int_ranges(
                 pl.col("frame_begin"),
@@ -155,9 +160,9 @@ def select_videomae_clips(
             .over([*CAGE_COLUMNS, "label"])
         )
     )
-    capped = (pl.col("label") == RESTING) & (pl.col("split") != "test")
+    capped = (pl.col("label") == vocab.resting) & (pl.col("split") != "test")
     caps = (
-        clips.filter(pl.col("label").is_in(ACTIVE_BEHAVIORS))
+        clips.filter(pl.col("label").is_in(vocab.active))
         .group_by("split", "label")
         .len()
         .group_by("split")
@@ -200,7 +205,7 @@ def clip_frames(clips: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def summarize(frames: pl.DataFrame) -> pl.DataFrame:
+def summarize(frames: pl.DataFrame, vocab: Behaviors) -> pl.DataFrame:
     """Count frames, stretches, cameras, videos and cages per split and class.
 
     A stretch is a run of consecutive canonical frames with the same label
@@ -213,6 +218,7 @@ def summarize(frames: pl.DataFrame) -> pl.DataFrame:
     Args:
         frames: Table with ``camera_id``, ``video_id``, ``cage_id``, ``frame``,
             ``label`` and ``split`` columns.
+        vocab: The class vocabulary (``[behaviors]`` in config).
 
     Returns:
         One row per (split, class) present plus a ``"total"`` row per split,
@@ -225,7 +231,7 @@ def summarize(frames: pl.DataFrame) -> pl.DataFrame:
         )
         .over(["split", *CAGE_COLUMNS])
         .fill_null(True),
-        labeled_video=pl.col("label").is_in(BEHAVIORS).any().over(CAGE_COLUMNS),
+        labeled_video=pl.col("label").is_in(vocab.names).any().over(CAGE_COLUMNS),
     )
     group = {
         "frames": pl.len(),
@@ -253,7 +259,7 @@ def summarize(frames: pl.DataFrame) -> pl.DataFrame:
         )
         .with_columns(label=pl.lit("total"))
     )
-    order = {c: i for i, c in enumerate((*CLASSES, "total"))}
+    order = {c: i for i, c in enumerate((*vocab.classes, "total"))}
     split_frames = totals.select("split", split_frames="frames")
     summary = (
         pl.concat([per_class, totals], how="diagonal_relaxed")

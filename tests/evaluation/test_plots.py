@@ -2,6 +2,7 @@ from pathlib import Path
 
 import polars as pl
 
+from bird_cv.core.labels import Behaviors
 from bird_cv.core.schemas import TIMINGS_SCHEMA
 from bird_cv.evaluation.plots import (
     plot_confusion,
@@ -34,9 +35,9 @@ def test_plots_write_pngs(tmp_path: Path) -> None:
         schema=TIMINGS_SCHEMA,
         orient="row",
     )
-    plot_timeline(joined, tmp_path / "t.png")
-    plot_confusion(joined, tmp_path / "c.png")
-    plot_per_class(joined, tmp_path / "p.png")
+    plot_timeline(joined, tmp_path / "t.png", Behaviors())
+    plot_confusion(joined, tmp_path / "c.png", Behaviors())
+    plot_per_class(joined, tmp_path / "p.png", Behaviors())
     plot_timings(timings, tmp_path / "s.png")
     assert all(
         (tmp_path / f).stat().st_size > 0 for f in ("t.png", "c.png", "p.png", "s.png")

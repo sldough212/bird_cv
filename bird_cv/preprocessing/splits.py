@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 import polars as pl
 
-from bird_cv.core.labels import BEHAVIORS
+from bird_cv.core.labels import Behaviors
 from bird_cv.core.layout import (
     split_file,
     split_manifest_dir,
@@ -41,11 +41,14 @@ def latest_split_version(splits_dir: Path) -> int | None:
     return max(versions, default=None)
 
 
-def camera_behaviors(ground_truth: pl.DataFrame) -> dict[str, set[str]]:
+def camera_behaviors(
+    ground_truth: pl.DataFrame, vocab: Behaviors
+) -> dict[str, set[str]]:
     """Behaviors present on each camera in a ground truth table.
 
     Args:
         ground_truth: Table with ``camera_id`` and ``label`` columns.
+        vocab: The class vocabulary (``[behaviors]`` in config).
 
     Returns:
         The set of behaviors (not ``no_bird``) on each camera; every camera
@@ -55,7 +58,7 @@ def camera_behaviors(ground_truth: pl.DataFrame) -> dict[str, set[str]]:
         c: set() for c in ground_truth.get_column("camera_id").unique()
     }
     present = (
-        ground_truth.filter(pl.col("label").is_in(BEHAVIORS))
+        ground_truth.filter(pl.col("label").is_in(vocab.names))
         .select("camera_id", "label")
         .unique()
     )
@@ -68,11 +71,14 @@ def _covered(cameras: list[str], behaviors: Mapping[str, set[str]]) -> set[str]:
     return set().union(*(behaviors[c] for c in cameras))
 
 
-def camera_behavior_frames(ground_truth: pl.DataFrame) -> dict[str, dict[str, int]]:
+def camera_behavior_frames(
+    ground_truth: pl.DataFrame, vocab: Behaviors
+) -> dict[str, dict[str, int]]:
     """Frames of each behavior on each camera.
 
     Args:
         ground_truth: Table with ``camera_id`` and ``label`` columns.
+        vocab: The class vocabulary (``[behaviors]`` in config).
 
     Returns:
         ``{camera_id: {behavior: frames}}``; every camera in the table is a
@@ -82,7 +88,7 @@ def camera_behavior_frames(ground_truth: pl.DataFrame) -> dict[str, dict[str, in
         c: {} for c in ground_truth.get_column("camera_id").unique().sort()
     }
     counts = (
-        ground_truth.filter(pl.col("label").is_in(BEHAVIORS))
+        ground_truth.filter(pl.col("label").is_in(vocab.names))
         .group_by("camera_id", "label")
         .len()
         .sort("camera_id", "label")
@@ -264,18 +270,19 @@ def coverage_gaps(
 
 
 def split_behavior_frames(
-    split: pl.DataFrame, frames: Mapping[str, Mapping[str, int]]
+    split: pl.DataFrame, frames: Mapping[str, Mapping[str, int]], vocab: Behaviors
 ) -> dict[str, dict[str, int]]:
     """Frames of each behavior in each split.
 
     Args:
         split: Split assignment in :data:`~bird_cv.core.schemas.SPLIT_SCHEMA`.
         frames: Frames of each behavior on each camera.
+        vocab: The class vocabulary (``[behaviors]`` in config).
 
     Returns:
         ``{split: {behavior: frames}}`` for every split and every behavior.
     """
-    totals = {s: {b: 0 for b in BEHAVIORS} for s in SPLITS}
+    totals = {s: {b: 0 for b in vocab.names} for s in SPLITS}
     for camera_id, name in split.select("camera_id", "split").iter_rows():
         for b, n in frames.get(camera_id, {}).items():
             totals[name][b] += n
@@ -287,6 +294,7 @@ def update_split(
     splits_dir: Path,
     split_ratio: dict[str, float],
     seed: int,
+    vocab: Behaviors,
 ) -> int:
     """Return the split version covering every camera, writing a new one if needed.
 
@@ -300,12 +308,13 @@ def update_split(
         split_ratio: Target fraction of cameras per split, used only when
             appending cameras.
         seed: Base random seed for appending cameras.
+        vocab: The class vocabulary (``[behaviors]`` in config).
 
     Returns:
         The split version to use.
     """
-    behaviors = camera_behaviors(ground_truth)
-    behavior_frames = camera_behavior_frames(ground_truth)
+    behaviors = camera_behaviors(ground_truth, vocab)
+    behavior_frames = camera_behavior_frames(ground_truth, vocab)
     latest = latest_split_version(splits_dir)
 
     if latest is None:
@@ -365,7 +374,9 @@ def update_split(
                 "split_ratio": split_ratio,
                 "seed": seed,
                 "behavior_frames": behavior_frames,
-                "split_behavior_frames": split_behavior_frames(split, behavior_frames),
+                "split_behavior_frames": split_behavior_frames(
+                    split, behavior_frames, vocab
+                ),
             },
         ),
         split_manifest_dir(splits_dir, version),

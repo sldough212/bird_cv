@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 from dataclasses import asdict
+from typing import Any
 from pathlib import Path
 
 import polars as pl
@@ -36,7 +37,7 @@ from bird_cv.pipelines.config import BirdCVConfig, load_config, time
 logger = logging.getLogger(__name__)
 
 
-def sampling_config(cfg: BirdCVConfig) -> dict[str, int]:
+def sampling_config(cfg: BirdCVConfig) -> dict[str, Any]:
     """Every config value frame and clip selection reads.
 
     Args:
@@ -50,6 +51,7 @@ def sampling_config(cfg: BirdCVConfig) -> dict[str, int]:
         "videomae_clip_stride": cfg.prepare.videomae_clip_stride,
         "num_frames": clip_length(cfg),
         "seed": cfg.prepare.split_seed,
+        "behaviors": asdict(cfg.behaviors),
     }
 
 
@@ -121,6 +123,7 @@ def run_prepare(
         "path_to_raw_videos": str(cfg.path_to_raw_videos),
         "standardized_max_frames": pcfg.standardized_max_frames,
         "standard_fps": cfg.standard_fps,
+        "behaviors": asdict(cfg.behaviors),
     }
     gt_dir = gt_path.parent
     gt_current = (
@@ -144,6 +147,7 @@ def run_prepare(
             detect_tasks,
             json.loads(classify_path.read_text()),
             cfg.standard_fps,
+            cfg.behaviors,
             standard_counts=standard_counts(rates),
         )
         ground_truth = result.table
@@ -161,6 +165,7 @@ def run_prepare(
         layout.splits,
         split_ratio=pcfg.split_ratio,
         seed=pcfg.split_seed,
+        vocab=cfg.behaviors,
     )
     split = pl.read_parquet(layout.split(version))
     frames = with_split(ground_truth, split)
@@ -182,26 +187,33 @@ def run_prepare(
         logger.info("Sampled data exists: %s", out_dir)
     else:
         yolo = select_yolo_frames(
-            frames, stride=pcfg.yolo_uniform_stride, seed=pcfg.split_seed
+            frames,
+            stride=pcfg.yolo_uniform_stride,
+            seed=pcfg.split_seed,
+            vocab=cfg.behaviors,
         )
         clips = select_videomae_clips(
             frames,
             num_frames=clip_length(cfg),
             stride=pcfg.videomae_clip_stride,
             seed=pcfg.split_seed,
+            vocab=cfg.behaviors,
         )
         sampled = [
             summarize(
                 table.filter(pl.col("split") != "test").with_columns(
                     pl.col("split") + f"_{kind}_sampled"
-                )
+                ),
+                cfg.behaviors,
             )
             for kind, table in (("yolo", yolo), ("videomae", clip_frames(clips)))
         ]
         out_dir.mkdir(parents=True, exist_ok=True)
         yolo.write_parquet(yolo_path)
         clips.write_parquet(clips_path)
-        pl.concat([summarize(frames), *sampled]).write_parquet(summary_path)
+        pl.concat([summarize(frames, cfg.behaviors), *sampled]).write_parquet(
+            summary_path
+        )
 
     counts = json.loads(stats_path.read_text()) if stats_path.exists() else None
     log_summary(pl.read_parquet(summary_path), counts=counts)

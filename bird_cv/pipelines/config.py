@@ -7,6 +7,7 @@ import os
 import msgspec
 import tomllib
 
+from bird_cv.core.labels import Behaviors
 from bird_cv.inference.registry import segmenter_kinds, segmenter_option_keys
 from bird_cv.training.registry import check_search_space, get_trainer, trainer_kinds
 
@@ -346,6 +347,8 @@ class BirdCVConfig:
     models: ModelsConfig = field(default_factory=ModelsConfig)
     # Frame rate every raw video is standardized to; canonical frames index it
     standard_fps: int = 15
+    # Class vocabulary of ground truth and predictions; [behaviors] table
+    behaviors: Behaviors = field(default_factory=Behaviors)
     # Derived paths
     path_to_cage_videos: Path = field(init=False)
     path_to_bbox_videos: Path = field(init=False)
@@ -447,6 +450,7 @@ def load_config(
         ("prepare", PrepareConfig),
         ("evaluate", EvaluateConfig),
         ("train", TrainConfig),
+        ("behaviors", Behaviors),
     ):
         table = raw.pop(name, {})
         unknown = set(table) - {f.name for f in fields(typ)}

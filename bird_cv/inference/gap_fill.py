@@ -9,7 +9,7 @@ from collections.abc import Collection, Mapping, Sequence
 import polars as pl
 
 from bird_cv.classification.types import FramePrediction
-from bird_cv.core.labels import NO_BIRD, validate_class
+from bird_cv.core.labels import Behaviors
 from bird_cv.core.schemas import PREDICTION_SCHEMA
 from bird_cv.detection.types import Detection
 
@@ -69,6 +69,7 @@ def cage_predictions(
     cage_id: str,
     boxes: Sequence[Detection | None],
     labels: Mapping[int, FramePrediction],
+    vocab: Behaviors,
 ) -> pl.DataFrame:
     """Build the :data:`PREDICTION_SCHEMA` rows of one cage, one per canonical frame.
 
@@ -80,6 +81,7 @@ def cage_predictions(
         labels: Classifier prediction per boxed canonical frame. A boxed
             frame missing here or labeled None (no window covered it) is
             ``no_bird``.
+        vocab: The class vocabulary (``[behaviors]`` in config).
 
     Returns:
         One row per canonical frame, in frame order.
@@ -94,7 +96,7 @@ def cage_predictions(
                     "video_id": video_id,
                     "cage_id": cage_id,
                     "frame": frame,
-                    "label": NO_BIRD,
+                    "label": vocab.no_bird,
                 }
             )
             continue
@@ -104,7 +106,7 @@ def cage_predictions(
                 "video_id": video_id,
                 "cage_id": cage_id,
                 "frame": frame,
-                "label": validate_class(pred.label),
+                "label": vocab.validate(pred.label),
                 "confidence": pred.confidence,
                 "bbox_left": box.left,
                 "bbox_top": box.top,

@@ -10,7 +10,7 @@ and predictions carry boxes in the same convention.
 
 import json
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -145,6 +145,7 @@ class E2EResult:
 def evaluate_e2e(
     truth: pl.DataFrame,
     pred: pl.DataFrame,
+    classes: Sequence[str],
     iou_threshold: float = 0.5,
     with_mot: bool = True,
 ) -> E2EResult:
@@ -155,6 +156,7 @@ def evaluate_e2e(
             the cameras being evaluated).
         pred: ``PREDICTION_SCHEMA`` rows; rows for frames not in ``truth``
             are ignored.
+        classes: Class vocabulary (``Behaviors.classes``).
         iou_threshold: Minimum IoU for a presence hit. Defaults to 0.5.
         with_mot: Also compute MOT metrics (slower). Defaults to ``True``.
 
@@ -168,8 +170,8 @@ def evaluate_e2e(
     )
     pred_label = f"{prefix}label"
     return E2EResult(
-        frame=frame_metrics(joined, pred_col=pred_label),
-        per_camera=per_camera_frame_metrics(joined, pred_col=pred_label),
+        frame=frame_metrics(joined, classes, pred_col=pred_label),
+        per_camera=per_camera_frame_metrics(joined, classes, pred_col=pred_label),
         detection=detection_presence_metrics(
             truth, pred_boxes, iou_threshold=iou_threshold
         ),
@@ -211,6 +213,7 @@ def sweep_settings(
 def run_sweep(
     truth: pl.DataFrame,
     predictions_by_setting: Mapping[tuple[int, float], pl.DataFrame],
+    classes: Sequence[str],
     iou_threshold: float = 0.5,
 ) -> pl.DataFrame:
     """Score each (gap fill, det conf) setting on val, best first.
@@ -222,6 +225,7 @@ def run_sweep(
         truth: Validation ``GROUND_TRUTH_SCHEMA`` rows.
         predictions_by_setting: Predictions for each
             ``(gap_fill_frames, det_conf)`` setting.
+        classes: Class vocabulary (``Behaviors.classes``).
         iou_threshold: Minimum IoU for a presence hit.
 
     Returns:
@@ -230,7 +234,7 @@ def run_sweep(
     """
     rows = []
     for (gap, conf), pred in predictions_by_setting.items():
-        result = evaluate_e2e(truth, pred, iou_threshold, with_mot=False)
+        result = evaluate_e2e(truth, pred, classes, iou_threshold, with_mot=False)
         rows.append({"gap_fill_frames": gap, "det_conf": conf} | result.summary())
     return pl.DataFrame(rows, nan_to_null=True).sort(
         "macro_f1", descending=True, nulls_last=True

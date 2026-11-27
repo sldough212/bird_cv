@@ -20,7 +20,7 @@ import polars as pl
 from bird_cv.client.evaluate_label_studio_tracking import _select_annotation
 from bird_cv.core.frames import is_aligned_with_standard, ls_to_canonical
 from bird_cv.core.ids import parse_media_path
-from bird_cv.core.labels import NO_BIRD, validate_class
+from bird_cv.core.labels import Behaviors
 from bird_cv.core.schemas import GROUND_TRUTH_SCHEMA
 
 logger = logging.getLogger(__name__)
@@ -143,11 +143,14 @@ def parse_detect_task(task: dict[str, Any]) -> DetectTask:
     return parsed
 
 
-def behavior_by_crop_frame(task: dict[str, Any]) -> dict[int, list[str]]:
+def behavior_by_crop_frame(
+    task: dict[str, Any], vocab: Behaviors
+) -> dict[int, list[str]]:
     """Behaviors on each frame of a Classify task's bird-crop video.
 
     Args:
         task: One task of a Classify export.
+        vocab: The class vocabulary (``[behaviors]`` in config).
 
     Returns:
         For each 1-indexed crop frame inside any ``timelinelabels`` range
@@ -162,7 +165,7 @@ def behavior_by_crop_frame(task: dict[str, Any]) -> dict[int, list[str]]:
         if result.get("type") != "timelinelabels":
             continue
         for label in result["value"]["timelinelabels"]:
-            validate_class(label)
+            vocab.validate(label)
             for frame_range in result["value"]["ranges"]:
                 for frame in range(frame_range["start"], frame_range["end"] + 1):
                     labels[frame].append(label)
@@ -184,6 +187,7 @@ def build_ground_truth(
     detect_tasks: list[dict[str, Any]],
     classify_tasks: list[dict[str, Any]],
     standard_fps: float,
+    vocab: Behaviors,
     standard_counts: dict[tuple[str, str], int] | None = None,
     overshoot_tolerance: int = 8,
 ) -> GroundTruthResult:
@@ -197,6 +201,7 @@ def build_ground_truth(
         detect_tasks: Parsed interpolated Detect export.
         classify_tasks: Parsed Classify export.
         standard_fps: Frame rate of the standardized videos.
+        vocab: The class vocabulary (``[behaviors]`` in config).
         standard_counts: ``{(camera_id, video_id): frame_count}`` of the
             standardized videos, to catch cage videos with dropped frames.
             Tasks whose video is missing (or all tasks, if None) are only
@@ -263,7 +268,7 @@ def build_ground_truth(
             result.classify_dropped_with_detect += key in classify_by_key
             continue
 
-        labels: list[str | None] = [NO_BIRD] * n_frames
+        labels: list[str | None] = [vocab.no_bird] * n_frames
         boxes: list[Box | None] = [None] * n_frames
         boxed_ls = sorted(task.boxes)
         for ls_frame in boxed_ls:
@@ -271,7 +276,7 @@ def build_ground_truth(
             boxes[ls_to_canonical(ls_frame)] = task.boxes[ls_frame]
 
         behaviors_by_frame = (
-            behavior_by_crop_frame(classify_by_key[key])
+            behavior_by_crop_frame(classify_by_key[key], vocab)
             if key in classify_by_key
             else {}
         )

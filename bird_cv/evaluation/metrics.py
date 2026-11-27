@@ -15,7 +15,6 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from bird_cv.core.labels import CLASSES
 from bird_cv.core.schemas import KEY_COLUMNS, PREDICTION_SCHEMA
 from bird_cv.detection.mot_evaluate import compute_mot_metrics
 
@@ -75,7 +74,7 @@ class ClassificationMetrics:
 def classification_metrics(
     y_true: Sequence[str | None],
     y_pred: Sequence[str | None],
-    classes: Sequence[str] = CLASSES,
+    classes: Sequence[str],
 ) -> ClassificationMetrics:
     """Macro-F1, per-class scores and confusion matrix over named classes.
 
@@ -84,8 +83,8 @@ def classification_metrics(
             is excluded and counted.
         y_pred: Predicted class per item, aligned with ``y_true``. ``None``
             or a name outside ``classes`` is scored as a miss.
-        classes: Class vocabulary and report order. Defaults to the nine
-            frame classes.
+        classes: Class vocabulary and report order (e.g.
+            ``Behaviors.classes``).
 
     Returns:
         The scores, see :class:`ClassificationMetrics`.
@@ -162,7 +161,7 @@ def window_macro_f1(
 
 def frame_metrics(
     joined: pl.DataFrame,
-    classes: Sequence[str] = CLASSES,
+    classes: Sequence[str],
     truth_col: str = "label",
     pred_col: str = "pred_label",
 ) -> ClassificationMetrics:
@@ -172,7 +171,7 @@ def frame_metrics(
         joined: One row per canonical frame and cage with the true class in
             ``truth_col`` (null for a labeling hole) and the predicted class
             in ``pred_col`` (null if the frame has no prediction).
-        classes: Class vocabulary. Defaults to the nine frame classes.
+        classes: Class vocabulary.
         truth_col: Column holding the true class.
         pred_col: Column holding the predicted class.
 
@@ -186,7 +185,7 @@ def frame_metrics(
 
 def per_camera_frame_metrics(
     joined: pl.DataFrame,
-    classes: Sequence[str] = CLASSES,
+    classes: Sequence[str],
     truth_col: str = "label",
     pred_col: str = "pred_label",
 ) -> pl.DataFrame:

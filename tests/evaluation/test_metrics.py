@@ -3,6 +3,7 @@ import math
 import polars as pl
 import pytest
 
+from bird_cv.core.labels import Behaviors
 from bird_cv.evaluation.metrics import (
     detection_presence_metrics,
     frame_metrics,
@@ -32,7 +33,7 @@ def _joined() -> pl.DataFrame:
 
 
 def test_frame_macro_f1_hand_computed() -> None:
-    m = frame_metrics(_joined())
+    m = frame_metrics(_joined(), Behaviors().classes)
 
     # resting: TP1 FP1 FN1 -> 0.5; head_move: TP1 FP1 FN1 -> 0.5;
     # no_bird: TP0 FP1 FN1 -> 0; other classes absent -> excluded.
@@ -46,7 +47,7 @@ def test_frame_macro_f1_hand_computed() -> None:
     nb, rest = m.classes.index("no_bird"), m.classes.index("resting")
     assert m.confusion[nb, rest] == 1
 
-    per_camera = per_camera_frame_metrics(_joined())
+    per_camera = per_camera_frame_metrics(_joined(), Behaviors().classes)
     assert per_camera["camera_id"].to_list() == ["A", "B"]
     assert per_camera["macro_f1"].to_list() == pytest.approx([2 / 3, 0.0])
     assert per_camera["n_excluded"].to_list() == [0, 1]

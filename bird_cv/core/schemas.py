@@ -27,7 +27,8 @@ GROUND_TRUTH_SCHEMA = {
     "video_id": pl.String,
     "cage_id": pl.String,
     "frame": pl.Int64,
-    # A class from bird_cv.core.labels.CLASSES, or null for a labeling hole.
+    # A class from Behaviors.classes ([behaviors] config), or null for a
+    # labeling hole.
     "label": pl.String,
     # Annotated box normalized 0-1 to the cage video, top-left + size; null
     # when there is no box (label no_bird). Label Studio exports percentages,

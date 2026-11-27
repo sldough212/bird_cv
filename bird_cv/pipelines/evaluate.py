@@ -184,7 +184,9 @@ def run_evaluate(
                 )
                 predictions[setting] = load_predictions(infer_run.predictions_dir)
             sweep_root = layout.sweep_root(run_id)
-            sweep = run_sweep(val_truth, predictions, ev.iou_threshold)
+            sweep = run_sweep(
+                val_truth, predictions, cfg.behaviors.classes, ev.iou_threshold
+            )
             print(sweep)
             sweep.write_parquet(results.sweep)
             best = sweep.row(0, named=True)
@@ -205,6 +207,7 @@ def run_evaluate(
             result = evaluate_e2e(
                 _truth_for(truth, _cameras(split, "test")),
                 load_predictions(pred_dir),
+                cfg.behaviors.classes,
                 ev.iou_threshold,
             )
             print(json.dumps(result.summary(), indent=2, default=float))

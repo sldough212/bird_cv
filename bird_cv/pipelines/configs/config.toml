@@ -23,6 +23,14 @@ sam_model_id = "facebook/sam2.1-hiera-large"
 # Frame rate every raw video is standardized to; canonical frames index it.
 # standard_fps = 15
 
+# ---- Class vocabulary (optional; defaults shown) ----
+# Behavior names must match the Classify project's timelinelabels, sorted.
+# [behaviors]
+# names = ["flapping_wings", "fluffing", "flying", "head_move", "preening",
+#          "resting", "tail_wag", "walking___hopping"]
+# resting = "resting"
+# no_bird = "no_bird"
+
 # ---- Label Studio (required) ----
 # api_key is read from the LABEL_STUDIO_API_KEY environment variable.
 # A value here still works as a fallback, but never commit one.

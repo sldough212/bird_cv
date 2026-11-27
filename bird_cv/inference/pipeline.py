@@ -27,6 +27,7 @@ import polars as pl
 
 from bird_cv.classification.types import FramePrediction
 
+from bird_cv.core.labels import Behaviors
 from bird_cv.core.ids import parse_raw_video_path
 from bird_cv.core.layout import InferRun
 from bird_cv.core.manifest import new_manifest, write_manifest_file
@@ -70,6 +71,7 @@ def infer_video(
     timer: StageTimer,
     *,
     standard_fps: float,
+    vocab: Behaviors,
     max_frames: int | None = None,
 ) -> pl.DataFrame:
     """Run the full pipeline on one raw video and write its outputs.
@@ -86,6 +88,7 @@ def infer_video(
         cfg: Inference settings.
         timer: Collects one row per stage.
         standard_fps: Frame rate to standardize the video to.
+        vocab: The class vocabulary predictions are checked against.
         max_frames: Optionally truncate the standardized video.
 
     Returns:
@@ -201,6 +204,7 @@ def infer_video(
                     cage_id,
                     boxes[cage_id],
                     stitch_overlapping(windows[cage_id]),
+                    vocab,
                 )
                 for cage_id in cage_ids
             ]
@@ -286,6 +290,7 @@ def run_infer(
     cfg: InferConfig,
     *,
     standard_fps: float,
+    vocab: Behaviors,
     task_index: int = 0,
     num_tasks: int = 1,
     limit: int | None = None,
@@ -308,6 +313,7 @@ def run_infer(
             only if this task has videos.
         cfg: Inference settings.
         standard_fps: Frame rate to standardize videos to.
+        vocab: The class vocabulary predictions are checked against.
         task_index: This task's index (e.g. ``SLURM_ARRAY_TASK_ID``).
         num_tasks: Number of tasks sharing ``videos``.
         limit: The ``--limit`` that selected ``videos``, recorded in the
@@ -368,6 +374,7 @@ def run_infer(
                 cfg,
                 timer,
                 standard_fps=standard_fps,
+                vocab=vocab,
             )
         except Exception as e:
             print(f"FAILED {camera_id}/{video_id}:\n{traceback.format_exc()}")

@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 
-from bird_cv.core.labels import CLASSES
+from bird_cv.core.labels import Behaviors
 from bird_cv.core.layout import Layout
 from bird_cv.evaluation.e2e import (
     join_predictions,
@@ -25,13 +25,13 @@ from bird_cv.evaluation.metrics import frame_metrics
 from bird_cv.pipelines.config import load_config
 
 
-def class_colors() -> dict[str | None, str]:
+def class_colors(vocab: Behaviors) -> dict[str | None, str]:
     """A color per class, plus ``None`` (no prediction / labeling hole)."""
     cmap = plt.get_cmap("tab10")
     colors: dict[str | None, str] = {
-        c: matplotlib.colors.to_hex(cmap(i)) for i, c in enumerate(CLASSES[:-1])
+        c: matplotlib.colors.to_hex(cmap(i)) for i, c in enumerate(vocab.names)
     }
-    return colors | {"no_bird": "#d9d9d9", None: "#ffffff"}
+    return colors | {vocab.no_bird: "#d9d9d9", None: "#ffffff"}
 
 
 def _runs(
@@ -56,14 +56,15 @@ def _runs(
     return runs
 
 
-def plot_timeline(joined: pl.DataFrame, path: Path) -> None:
+def plot_timeline(joined: pl.DataFrame, path: Path, vocab: Behaviors) -> None:
     """One video's prediction (top) and truth (bottom) strip per cage.
 
     Args:
         joined: :func:`join_predictions` rows of a single video.
         path: PNG to write.
+        vocab: The class vocabulary.
     """
-    colors = class_colors()
+    colors = class_colors(vocab)
     cages = sorted(joined["cage_id"].unique().to_list(), key=int)
     fig, ax = plt.subplots(figsize=(14, 0.9 * len(cages) + 1.2))
     for row, cage in enumerate(cages):
@@ -84,12 +85,12 @@ def plot_timeline(joined: pl.DataFrame, path: Path) -> None:
     ax.set_xlabel("frame (top: prediction, bottom: truth)")
     camera, video = joined["camera_id"][0], joined["video_id"][0]
     ax.set_title(f"{camera} / {video}")
-    handles = [plt.Rectangle((0, 0), 1, 1, color=colors[c]) for c in CLASSES]
+    handles = [plt.Rectangle((0, 0), 1, 1, color=colors[c]) for c in vocab.classes]
     handles.append(plt.Rectangle((0, 0), 1, 1, fc="white", ec="#555555"))
     handles.append(plt.Rectangle((0, 0), 1, 1, fc="white", ec="#555555", hatch="////"))
     ax.legend(
         handles,
-        [*CLASSES, "no prediction", "unlabeled (excluded)"],
+        [*vocab.classes, "no prediction", "unlabeled (excluded)"],
         loc="upper left",
         bbox_to_anchor=(1.01, 1),
         fontsize=8,
@@ -99,19 +100,22 @@ def plot_timeline(joined: pl.DataFrame, path: Path) -> None:
     plt.close(fig)
 
 
-def plot_confusion(joined: pl.DataFrame, path: Path) -> None:
+def plot_confusion(joined: pl.DataFrame, path: Path, vocab: Behaviors) -> None:
     """Row-normalized confusion matrix over scored frames, with a column
     for frames that got no prediction.
 
     Args:
         joined: :func:`join_predictions` rows.
         path: PNG to write.
+        vocab: The class vocabulary.
     """
     scored = joined.filter(pl.col("label").is_not_null())
-    cols = [*CLASSES, None]
-    counts = np.zeros((len(CLASSES), len(cols)), dtype=int)
+    cols = [*vocab.classes, None]
+    counts = np.zeros((len(vocab.classes), len(cols)), dtype=int)
     for t, p, n in scored.group_by("label", "pred_label").len().rows():
-        counts[CLASSES.index(t), cols.index(p if p in CLASSES else None)] += n
+        counts[
+            vocab.classes.index(t), cols.index(p if p in vocab.classes else None)
+        ] += n
     totals = counts.sum(axis=1, keepdims=True)
     share = np.divide(counts, totals, out=np.zeros(counts.shape), where=totals > 0)
     fig, ax = plt.subplots(figsize=(10, 8))
@@ -128,10 +132,11 @@ def plot_confusion(joined: pl.DataFrame, path: Path) -> None:
                 color="white" if share[i, j] > 0.5 else "black",
             )
     ax.set_xticks(
-        range(len(cols)), [*CLASSES, "no prediction"], rotation=45, ha="right"
+        range(len(cols)), [*vocab.classes, "no prediction"], rotation=45, ha="right"
     )
     ax.set_yticks(
-        range(len(CLASSES)), [f"{c} ({t})" for c, t in zip(CLASSES, totals[:, 0])]
+        range(len(vocab.classes)),
+        [f"{c} ({t})" for c, t in zip(vocab.classes, totals[:, 0])],
     )
     ax.set_xlabel("predicted")
     ax.set_ylabel("true (frames)")
@@ -141,14 +146,15 @@ def plot_confusion(joined: pl.DataFrame, path: Path) -> None:
     plt.close(fig)
 
 
-def plot_per_class(joined: pl.DataFrame, path: Path) -> None:
+def plot_per_class(joined: pl.DataFrame, path: Path, vocab: Behaviors) -> None:
     """Precision, recall and F1 per class, labeled with support.
 
     Args:
         joined: :func:`join_predictions` rows.
         path: PNG to write.
+        vocab: The class vocabulary.
     """
-    metrics = frame_metrics(joined)
+    metrics = frame_metrics(joined, vocab.classes)
     per_class = metrics.per_class.with_columns(
         pl.col("precision", "recall", "f1").fill_null(0.0)
     )
@@ -219,8 +225,8 @@ def plot_test_run(
     out = layout.evaluation_run("test", run_id) / "plots"
     (out / "timelines").mkdir(parents=True, exist_ok=True)
 
-    plot_confusion(joined, out / "confusion.png")
-    plot_per_class(joined, out / "per_class.png")
+    plot_confusion(joined, out / "confusion.png", cfg.behaviors)
+    plot_per_class(joined, out / "per_class.png", cfg.behaviors)
     for camera, video in (
         joined.filter(pl.col("pred_label").is_not_null())
         .select("camera_id", "video_id")
@@ -232,6 +238,7 @@ def plot_test_run(
                 (pl.col("camera_id") == camera) & (pl.col("video_id") == video)
             ),
             out / "timelines" / f"{camera}__{video}.png",
+            cfg.behaviors,
         )
     timing_files = sorted(test_run.dir.glob("timings*.parquet"))
     if timing_files:

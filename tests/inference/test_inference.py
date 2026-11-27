@@ -7,13 +7,16 @@ import pytest
 
 import bird_cv.inference.chunks as chunks
 from bird_cv.classification.types import FramePrediction
-from bird_cv.core.labels import NO_BIRD
+from bird_cv.core.labels import Behaviors
 from bird_cv.detection.types import Detection
 from bird_cv.inference.cages import CageMasks, cage_frame, check_sam2_configs
 from bird_cv.inference.chunks import iter_chunks, stitch_overlapping
 from bird_cv.inference.classify import classify_runs
 from bird_cv.inference.gap_fill import cage_predictions, fill_gaps
 from bird_cv.preprocessing.crop import crop_cage_frame
+
+
+VOCAB = Behaviors()
 
 
 class EchoClassifier:
@@ -100,9 +103,9 @@ def test_gap_fill_carries_short_gaps_and_marks_the_rest_no_bird() -> None:
     assert boxes[9] == boxes[8]  # 9 is now a 1-frame gap
 
     labels = {f: FramePrediction(f, "resting", 1.0) for f, b in enumerate(boxes) if b}
-    df = cage_predictions("H7,I22", "54", "0", boxes, labels)
+    df = cage_predictions("H7,I22", "54", "0", boxes, labels, VOCAB)
     assert df["frame"].to_list() == list(range(14))
-    no_bird = df.filter(df["label"] == NO_BIRD)
+    no_bird = df.filter(df["label"] == VOCAB.no_bird)
     assert no_bird["frame"].to_list() == [4, 5, 6, 7, 11, 13]
     assert no_bird["bbox_left"].null_count() == no_bird.height
     assert no_bird["confidence"].null_count() == no_bird.height

@@ -10,7 +10,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from bird_cv.core.labels import NO_BIRD
+from bird_cv.core.labels import Behaviors
 from bird_cv.core.layout import EvalRun, Layout
 from bird_cv.core.manifest import new_manifest
 from bird_cv.core.schemas import PREDICTION_SCHEMA
@@ -25,6 +25,9 @@ from bird_cv.preprocessing.standardize import expected_standard_frames
 
 sys.path.insert(0, str(Path(__file__).parent))
 from test_data import CONFIG, classify_task, detect_task  # noqa: E402
+
+
+VOCAB = Behaviors()
 
 
 def test_expected_standard_frames_matches_ffmpeg() -> None:
@@ -159,7 +162,7 @@ def test_prepare_build_evaluate_connect(
     # Evaluate through the layout: setting 1 perfect, the rest empty
     run_id = "r1"
     predictions = truth.with_columns(
-        label=pl.col("label").fill_null(NO_BIRD), confidence=1.0, det_conf=1.0
+        label=pl.col("label").fill_null(VOCAB.no_bird), confidence=1.0, det_conf=1.0
     ).select(list(PREDICTION_SCHEMA))
     settings = sweep_settings(
         cfg.evaluate.sweep_gap_fill_frames, cfg.evaluate.sweep_det_conf
@@ -171,7 +174,9 @@ def test_prepare_build_evaluate_connect(
     ] + [(layout.test_infer_run(run_id), True)]
     for run, perfect in runs:
         preds = (
-            predictions if perfect else predictions.with_columns(label=pl.lit(NO_BIRD))
+            predictions
+            if perfect
+            else predictions.with_columns(label=pl.lit(VOCAB.no_bird))
         )
         run.predictions("all", "all").parent.mkdir(parents=True)
         preds.write_parquet(run.predictions("all", "all"))

@@ -6,7 +6,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from bird_cv.core.labels import CLASSES, NO_BIRD
+from bird_cv.core.labels import Behaviors
 from bird_cv.core.layout import InferRun
 from bird_cv.detection.track import track_video
 from bird_cv.inference.cages import WholeFrameSegmenter
@@ -15,6 +15,9 @@ from bird_cv.training.registry import get_trainer
 from bird_cv.core.schemas import DETECTION_SCHEMA, PREDICTION_SCHEMA
 from bird_cv.core.timing import StageTimer
 from bird_cv.pipelines.config import InferConfig, ModelsConfig
+
+VOCAB = Behaviors()
+
 
 ROOT = Path("/Users/sdougherty/Documents/code/bird_cv")
 CLIP = ROOT / "scratch/20260627/videos/H7,I22/54/1.mp4"
@@ -56,6 +59,7 @@ def test_e2e_smoke_on_single_cage_clip(tmp_path: Path) -> None:
         InferConfig(chunk_frames=12, chunk_overlap=4),
         timer,
         standard_fps=15,
+        vocab=VOCAB,
         max_frames=N_FRAMES,
     )
 
@@ -64,10 +68,10 @@ def test_e2e_smoke_on_single_cage_clip(tmp_path: Path) -> None:
     assert dets.schema == pl.Schema(DETECTION_SCHEMA) and dets.height > 0
     assert df["frame"].to_list() == list(range(N_FRAMES))
     assert set(df["cage_id"]) == {"0"} and set(df["camera_id"]) == {"H7,I22"}
-    assert set(df["label"]) <= set(CLASSES)
-    boxed = df.filter(pl.col("label") != NO_BIRD)
+    assert set(df["label"]) <= set(VOCAB.classes)
+    boxed = df.filter(pl.col("label") != VOCAB.no_bird)
     assert boxed["bbox_left"].null_count() == 0
-    assert df.filter(pl.col("label") == NO_BIRD)["bbox_left"].null_count() == (
+    assert df.filter(pl.col("label") == VOCAB.no_bird)["bbox_left"].null_count() == (
         df.height - boxed.height
     )
 
