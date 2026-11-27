@@ -11,7 +11,7 @@ from PIL import Image
 from bird_cv.preprocessing.image_utils import crop_and_mask_image
 from bird_cv.segmentation.frames import extract_all_frames
 from bird_cv.segmentation.utils import lookup_segment_idx
-from bird_cv.utils import extract_camera_video
+from bird_cv.core.ids import parse_raw_video_path
 
 
 def crop_cage_frame(
@@ -91,8 +91,8 @@ def crop_cages(
         for video_str, target_frames in split_guidance.select(
             "video_path", "target_frames"
         ).to_numpy():
-            camera_id, video_name = extract_camera_video(video_str=video_str)
-            video_id = Path(video_name).stem
+            camera_id, video_id = parse_raw_video_path(video_str)
+            video_name = Path(video_str).name
             image_output_path = clip_output_path / camera_id / video_id
             print(f"  Cropping {camera_id}/{video_id}")
 

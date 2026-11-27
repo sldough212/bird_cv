@@ -10,8 +10,7 @@ import numpy as np
 import polars as pl
 from tqdm import tqdm
 
-from bird_cv.client.utils import get_local_path
-from bird_cv.core.ids import parse_media_path
+from bird_cv.core.ids import get_local_path, parse_media_path, with_raw_video_ids
 
 
 def _extract_video_frames(video_path: Path) -> List[np.ndarray]:
@@ -90,16 +89,7 @@ def load_split_guidance(path_to_guidance: Path) -> Dict[Tuple[str, str], str]:
     Returns:
         Mapping from ``(camera_id, video_id)`` to split name.
     """
-    guidance_df = pl.read_parquet(path_to_guidance).with_columns(
-        video_id=pl.col("video_path")
-        .str.split("/")
-        .list.last()
-        .str.replace(r"\.[^.]+$", ""),
-        camera_id=pl.col("video_path")
-        .str.split("/")
-        .list.get(-2)
-        .str.replace_all("%2C", ","),
-    )
+    guidance_df = with_raw_video_ids(pl.read_parquet(path_to_guidance))
 
     guidance: Dict[Tuple[str, str], str] = {}
     for camera_id, video_id, split in guidance_df.select(

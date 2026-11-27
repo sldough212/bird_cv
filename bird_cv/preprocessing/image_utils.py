@@ -9,7 +9,7 @@ import numpy as np
 import polars as pl
 from PIL import Image
 
-from bird_cv.utils import extract_camera_video
+from bird_cv.core.ids import parse_raw_video_path
 
 
 def crop_and_mask_image(img, mask, black_out=True, padding=0):
@@ -157,8 +157,7 @@ def run_images_to_video(
     split_guidance = pl.read_parquet(split_guidance_path)
 
     for video_str, fps in split_guidance.select("video_path", "fps").iter_rows():
-        camera_id, video_name = extract_camera_video(video_str=video_str)
-        video_id = Path(video_name).stem
+        camera_id, video_id = parse_raw_video_path(video_str)
         image_output_path = clip_output_path / camera_id / video_id
 
         if not image_output_path.exists():

@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 import polars as pl
 
+from bird_cv.core.ids import with_raw_video_ids
 from bird_cv.core.labels import Behaviors
 from bird_cv.core.layout import (
     split_file,
@@ -472,10 +473,7 @@ def split_guidance_within_camera(
 
     # Extract a camera_id
     split_guidance = split_guidance.with_columns(
-        camera_id=pl.col("video_path")
-        .str.split("/")
-        .list.get(-2)
-        .str.replace_all("%2C", ","),
+        camera_id=with_raw_video_ids(split_guidance)["camera_id"]
     )
 
     splits = np.random.choice(

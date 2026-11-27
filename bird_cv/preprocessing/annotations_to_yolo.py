@@ -9,8 +9,7 @@ from collections import defaultdict
 from typing import Any, Dict, Optional
 import polars as pl
 
-from bird_cv.client.utils import get_local_path
-from bird_cv.core.ids import parse_media_path
+from bird_cv.core.ids import get_local_path, parse_media_path, with_raw_video_ids
 
 
 def crop_bird(
@@ -196,17 +195,7 @@ def process_item(
             video_id = str(Path(video_id).stem)
 
     # Load in the guidance
-    guidance = pl.read_parquet(path_to_guidance)
-    video_guidance = guidance.with_columns(
-        video_id=pl.col("video_path")
-        .str.split("/")
-        .list.last()
-        .str.replace(r"\.[^.]+$", ""),
-        camera_id=pl.col("video_path")
-        .str.split("/")
-        .list.get(-2)
-        .str.replace_all("%2C", ","),
-    )
+    video_guidance = with_raw_video_ids(pl.read_parquet(path_to_guidance))
 
     video_guidance = video_guidance.filter(
         (pl.col("camera_id") == camera_id) & (pl.col("video_id") == video_id)

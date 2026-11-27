@@ -21,7 +21,8 @@ from bird_cv.segmentation.visualize import (
 )
 from bird_cv.segmentation.smooth import smooth_masks
 from bird_cv.segmentation.utils import calculate_iou
-from bird_cv.utils import NumpyEncoder, extract_camera_video
+from bird_cv.core.ids import parse_raw_video_path
+from bird_cv.utils import NumpyEncoder
 from bird_cv.segmentation.frames import extract_all_frames
 
 
@@ -450,8 +451,8 @@ def run_segment(
         for video_str, target_frames in split_guidance.select(
             "video_path", "target_frames"
         ).to_numpy():
-            camera_id, video_name = extract_camera_video(video_str=video_str)
-            video_id = Path(video_name).stem
+            camera_id, video_id = parse_raw_video_path(video_str)
+            video_name = Path(video_str).name
             print(f"  Segmenting {camera_id}/{video_id}")
 
             frame_store_path = temp_path / camera_id / video_id

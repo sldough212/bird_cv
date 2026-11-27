@@ -9,11 +9,11 @@ from label_studio_ml.response import ModelResponse
 from label_studio_sdk.label_interface.objects import PredictionValue
 from ultralytics import YOLO
 
+from bird_cv.core.ids import get_local_path
 from bird_cv.client.utils import (
     close_server,
     find_open_port,
     get_label_studio_client,
-    get_local_path,
     get_project_id_from_name,
     get_video_info,
     process_lifespans,

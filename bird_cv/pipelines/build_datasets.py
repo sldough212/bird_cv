@@ -19,8 +19,7 @@ from typing import Any
 import ijson
 import polars as pl
 
-from bird_cv.client.utils import get_local_path
-from bird_cv.core.ids import parse_media_path
+from bird_cv.core.ids import get_local_path, parse_media_path
 from bird_cv.core.layout import Layout, Prepared, snapshot_files
 from bird_cv.core.manifest import new_manifest, read_manifest, write_manifest
 from bird_cv.pipelines.config import BirdCVConfig, ModelSpec, load_config
