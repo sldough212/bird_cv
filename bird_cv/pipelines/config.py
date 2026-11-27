@@ -197,6 +197,8 @@ class ModelsConfig:
             kind="yolo",
             pretrained="yolo11n.pt",
             epochs=60,
+            # One Ultralytics training run; set tune = true for a Ray Tune search
+            tune=False,
             tune_trials=30,
             # Empty: Ultralytics' default Ray Tune space.
             search_space={},

@@ -94,7 +94,7 @@ infer_options = { tracker_path = "/home/pdoughe1/bird_cv/bird_cv/detection/track
 # kind = "yolo"
 # pretrained = "yolo11n.pt"
 # epochs = 60
-# tune = true
+# tune = false
 # tune_trials = 30
 # # Empty means Ultralytics' default Ray Tune space.
 # search_space = {}
