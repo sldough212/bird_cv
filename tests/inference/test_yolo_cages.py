@@ -1,6 +1,5 @@
 """Trained cage segmenter (ADR 0007): labels, static masks, ordering, scoring, flow."""
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,11 +9,13 @@ import polars as pl
 import pytest
 import torch
 
+from bird_cv.core.layout import InferRun
 from bird_cv.evaluation.segments import compare_masks, evaluate_segments
 from bird_cv.preprocessing.sampling import select_cage_frames
 from bird_cv.segmentation.yolo_cages import YoloCageSegmenter
 from bird_cv.segmentation.cage_masks import (
     row_major_order,
+    save_keyframes,
     static_cage_masks,
     yolo_seg_label,
 )
@@ -38,15 +39,15 @@ GRID = [
 ]
 
 
-def _legacy(root: Path, camera: str, video: str, segments: list[list[np.ndarray]]):
-    video_dir = root / camera / video
-    video_dir.mkdir(parents=True)
-    index = {str(i): {"start": 10 * i, "end": 10 * i + 9} for i in range(len(segments))}
-    (video_dir / "segment_index.json").write_text(json.dumps(index))
-    for i, masks in enumerate(segments):
-        (video_dir / f"{i}_segmentation.json").write_text(
-            json.dumps({str(c): m.tolist() for c, m in enumerate(masks)})
-        )
+def _masks_run(run: InferRun, camera: str, video: str, keyframes: list[list]) -> None:
+    """A sam2 run's saved masks for one video: keyframes at 0, 10, 20, ..."""
+    save_keyframes(
+        run.segments(camera, video),
+        [
+            (10 * i, {str(c): m for c, m in enumerate(k)})
+            for i, k in enumerate(keyframes)
+        ],
+    )
 
 
 def _video(path: Path, n: int) -> Path:
@@ -90,43 +91,42 @@ def test_static_masks_vote_match_and_order_row_major() -> None:
 
 
 def test_segment_scores_match_cages_and_count_misses(tmp_path: Path) -> None:
-    # Standardized masks may be one px taller (odd sides padded)
-    padded = [np.pad(m, ((0, 1), (0, 0))) for m in GRID[::-1]]
-    assert compare_masks(padded, GRID)["min_iou"] == 1.0
+    assert compare_masks(GRID[::-1], GRID)["min_iou"] == 1.0
     missed = compare_masks(GRID[:3], GRID)
     assert missed["min_iou"] == 0.0 and missed["mean_iou"] == 0.75
 
-    _legacy(tmp_path / "legacy", "c1", "v1", [GRID, GRID[:3]])
-    segments = tmp_path / "infer" / "segments" / "c1" / "v1.npz"
-    segments.parent.mkdir(parents=True)
-    np.savez_compressed(segments, **{f"0_{i}": m for i, m in enumerate(GRID)})
-    table, summary = evaluate_segments(segments.parents[1], tmp_path / "legacy", {"c1"})
+    truth, run = InferRun(tmp_path / "sam2"), InferRun(tmp_path / "yolo")
+    _masks_run(truth, "c1", "v1", [GRID, GRID[:3]])
+    _masks_run(run, "c1", "v1", [GRID])
+    table, summary = evaluate_segments(run, truth, {"c1"})
     assert table.height == 2 and summary["count_accuracy"] == 0.5
     with pytest.raises(FileNotFoundError):
-        evaluate_segments(segments.parents[1], tmp_path / "legacy", {"other"})
+        evaluate_segments(run, truth, {"other"})
 
 
-def test_cage_frames_flow_from_legacy_masks_to_yolo_data(tmp_path: Path) -> None:
-    legacy = tmp_path / "legacy"
-    _legacy(legacy, "c1", "v1", [GRID, GRID])
-    video = _video(tmp_path / "raw" / "c1" / "v1.mp4", 20)
-    other = _video(tmp_path / "raw" / "c9" / "v1.mp4", 2)  # camera not in split
+def test_cage_frames_flow_from_sam2_masks_to_yolo_data(tmp_path: Path) -> None:
+    masks = InferRun(tmp_path / "sam2")
+    _masks_run(masks, "c1", "v1", [GRID, GRID[:3]])
+    _video(masks.standardized("c1", "v1"), 20)
+    raw = tmp_path / "raw" / "c1" / "v1.mp4"  # only its path is read
+    other = tmp_path / "raw" / "c9" / "v1.mp4"  # camera not in split
     split = pl.DataFrame({"camera_id": ["c1"], "split": ["train"]})
 
-    frames = select_cage_frames([video, other], split, legacy, per_video=3)
-    # Segments [0, 9] and [10, 19]: two frames from the first, one from the
-    # second; legacy frame i is raw frame i + 1
-    assert frames["raw_frame"].to_list() == [4, 7, 15]
+    frames = select_cage_frames([raw, other], split, masks, per_video=3)
+    # Keyframes [0, 9] and [10, 19]: two frames from the first, one from the second
+    assert frames["frame"].to_list() == [3, 6, 14]
+    assert frames["mask_start"].to_list() == [0, 0, 10]
     with pytest.raises(FileNotFoundError, match="c1/v2"):
-        select_cage_frames([_video(tmp_path / "raw/c1/v2.mp4", 2)], split, legacy, 3)
+        select_cage_frames([tmp_path / "raw/c1/v2.mp4"], split, masks, 3)
 
     out = tmp_path / "dataset"
     YoloSegTrainer().build_dataset(
         frames, None, None, None, out, tmp_path / "g.parquet"
     )
     labels = sorted((out / "labels" / "train").glob("*.txt"))
-    assert [p.stem for p in labels] == ["c1_v1_000004", "c1_v1_000007", "c1_v1_000015"]
-    assert len(labels[0].read_text().splitlines()) == 4
+    assert [p.stem for p in labels] == ["c1_v1_000003", "c1_v1_000006", "c1_v1_000014"]
+    # Each frame is labeled with its own keyframe's cages
+    assert [len(p.read_text().splitlines()) for p in labels] == [4, 4, 3]
     assert len(list((out / "images" / "train").glob("*.jpg"))) == 3
 
 

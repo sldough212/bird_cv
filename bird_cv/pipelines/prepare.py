@@ -61,7 +61,7 @@ def sampling_config(cfg: BirdCVConfig) -> dict[str, Any]:
     if cfg.models.cage_detector is not None:
         values |= {
             "cage_frames_per_video": cfg.prepare.cage_frames_per_video,
-            "path_to_cage_masks": str(cfg.prepare.path_to_cage_masks),
+            "cage_masks_run_id": cfg.prepare.cage_masks_run_id,
         }
     return values
 
@@ -79,6 +79,20 @@ def clip_length(cfg: BirdCVConfig) -> int:
             "length prepare samples and the classifier trains on"
         )
     return num_frames
+
+
+def cage_masks_run_id(cfg: BirdCVConfig) -> str:
+    """``[prepare] cage_masks_run_id``, the sam2 run cage masks come from.
+
+    Raises:
+        ValueError: If it isn't set.
+    """
+    if not cfg.prepare.cage_masks_run_id:
+        raise ValueError(
+            "[prepare] cage_masks_run_id must name a sam2 inference run over "
+            "every video (infer/{id}): the cage detector's masks"
+        )
+    return cfg.prepare.cage_masks_run_id
 
 
 def config_hash(values: dict[str, Any]) -> str:
@@ -233,11 +247,10 @@ def run_prepare(
     ]
     yolo.write_parquet(layout.yolo_frames(dataset_id))
     if cfg.models.cage_detector is not None:
-        assert pcfg.path_to_cage_masks is not None  # set by BirdCVConfig
         select_cage_frames(
             find_raw_videos(cfg.path_to_raw_videos),
             split,
-            pcfg.path_to_cage_masks,
+            layout.infer_run(cage_masks_run_id(cfg)),
             pcfg.cage_frames_per_video,
         ).write_parquet(layout.cage_frames(dataset_id))
     clips.write_parquet(layout.videomae_clips(dataset_id))

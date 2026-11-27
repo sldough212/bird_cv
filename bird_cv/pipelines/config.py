@@ -79,9 +79,9 @@ class PrepareConfig:
     standardized_max_frames: int | None = 900
     # Cage-detector frames per raw video (only with [models.cage_detector]).
     cage_frames_per_video: int = 3
-    # Legacy one-shot SAM2 masks, {camera}/{video}/; None means
-    # path_to_segmentation_output.
-    path_to_cage_masks: Path | None = None
+    # The sam2 inference run (infer/{id}) whose saved masks the cage
+    # detector trains on and `evaluate segments` scores against.
+    cage_masks_run_id: str | None = None
 
 
 @dataclass
@@ -417,8 +417,6 @@ class BirdCVConfig:
         self.path_to_segmentation_output = (
             self.path_to_base_output / "segmentations" / "segmentations.json"
         )
-        if self.prepare.path_to_cage_masks is None:
-            self.prepare.path_to_cage_masks = self.path_to_segmentation_output
         # Resolve sub-config paths
         self.detect.path_to_training_data = (
             self.path_to_base_output / "detect" / "training_data"

@@ -24,7 +24,7 @@ import cv2
 from ultralytics import YOLO
 from bird_cv.core.frames import canonical_to_ls
 from bird_cv.preprocessing.standardize import iter_canonical_frames
-from bird_cv.segmentation.cage_masks import load_legacy_masks, yolo_seg_label
+from bird_cv.segmentation.cage_masks import load_keyframes, yolo_seg_label
 from bird_cv.preprocessing.annotations_to_yolo import stream_annotations_to_yolo
 from bird_cv.classification.train_video_model import train_video_model
 from bird_cv.classification.tune_video_model import tune_video_model
@@ -365,8 +365,8 @@ class YoloTrainer:
 class YoloSegTrainer(YoloTrainer):
     """Ultralytics YOLO cage segmentation (ADR 0007), selected on val mask mAP50-95.
 
-    Trained on raw full frames labeled with the legacy one-shot SAM2 masks
-    (``cage_frames.parquet``); loaded for inference by the ``yolo_cages``
+    Trained on full standardized frames labeled with a ``sam2`` inference
+    run's masks (``cage_frames.parquet``); loaded for inference by the ``yolo_cages``
     segmenter. Options are as for :class:`YoloTrainer`.
     """
 
@@ -405,9 +405,9 @@ class YoloSegTrainer(YoloTrainer):
     def build_dataset(
         self, selection, ground_truth, spec, media, out_dir, guidance_path
     ) -> None:
-        """Raw full frames and polygon labels, ``images|labels/{split}/``.
+        """Full frames and polygon labels, ``images|labels/{split}/``.
 
-        One label line per cage of the frame's legacy keyframe; the selection
+        One label line per cage of the frame's keyframe; the selection
         doubles as the guidance file.
 
         Raises:
@@ -416,13 +416,10 @@ class YoloSegTrainer(YoloTrainer):
         selection.write_parquet(guidance_path)
         written = 0
         for (video_path,), rows in selection.group_by("video_path"):
-            wanted = {r["raw_frame"]: r for r in rows.iter_rows(named=True)}
-            masks: dict[str, list] = {}
+            wanted = {r["frame"]: r for r in rows.iter_rows(named=True)}
+            keyframes = dict(load_keyframes(Path(rows["mask_path"][0])))
             for frame_idx, frame in iter_canonical_frames(Path(video_path), wanted):
                 row = wanted[frame_idx]
-                if row["mask_path"] not in masks:
-                    legacy = load_legacy_masks(Path(row["mask_path"]))
-                    masks[row["mask_path"]] = list(legacy.values())
                 stem = f"{row['camera_id']}_{row['video_id']}_{frame_idx:06d}"
                 for sub, suffix in (("images", ".jpg"), ("labels", ".txt")):
                     (out_dir / sub / row["split"]).mkdir(parents=True, exist_ok=True)
@@ -430,7 +427,7 @@ class YoloSegTrainer(YoloTrainer):
                     str(out_dir / "images" / row["split"] / f"{stem}.jpg"), frame
                 )
                 (out_dir / "labels" / row["split"] / f"{stem}.txt").write_text(
-                    yolo_seg_label(masks[row["mask_path"]])
+                    yolo_seg_label(list(keyframes[row["mask_start"]].values()))
                 )
                 written += 1
         if written != selection.height:

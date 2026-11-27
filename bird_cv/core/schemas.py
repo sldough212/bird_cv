@@ -157,15 +157,14 @@ CAGE_FRAMES_SCHEMA = {
     "camera_id": pl.String,
     "video_id": pl.String,
     "split": pl.String,
-    # The raw video, and the 0-indexed raw frame to train on.
+    # The standardized video the masks were made on, and the frame to train on.
     "video_path": pl.String,
-    "raw_frame": pl.Int64,
-    # The legacy one-shot SAM2 segment whose keyframe masks label it.
+    "frame": pl.Int64,
+    # The sam2 run's keyframes file, and the keyframe in effect at ``frame``.
     "mask_path": pl.String,
+    "mask_start": pl.Int64,
 }
-"""Raw full frames selected for the cage detector, one row per frame. Not
-canonical: legacy segment frame ``i`` is raw frame ``i + 1``
-(``run_segment`` skips raw frame 0)."""
+"""Full frames selected for the cage detector, one row per frame."""
 
 TIMINGS_SCHEMA = {
     "camera_id": pl.String,

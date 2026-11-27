@@ -8,6 +8,7 @@ import pytest
 from bird_cv.core.layout import Layout
 from bird_cv.core.manifest import new_manifest, write_manifest
 from bird_cv.pipelines.evaluate import check_dataset
+from bird_cv.pipelines.prepare import cage_masks_run_id
 from bird_cv.inference.registry import inference_models
 from bird_cv.pipelines.config import ModelsConfig, load_config
 from bird_cv.training.registry import (
@@ -137,12 +138,13 @@ def test_cage_detector_role_is_opt_in_and_feeds_yolo_cages(tmp_path: Path) -> No
     path.write_text(path.read_text() + "\n[models.cage_detector]\nepochs = 5\n")
     cfg = load_config(path, require_api_key=False)
     spec = cfg.models.roles()["cage_detector"]
+    with pytest.raises(ValueError, match="cage_masks_run_id"):
+        cage_masks_run_id(cfg)
     assert (spec.kind, spec.pretrained, spec.epochs) == (
         "yolo_seg",
         "yolo11s-seg.pt",
         5,
     )
-    assert cfg.prepare.path_to_cage_masks == cfg.path_to_segmentation_output
     layout = Layout(tmp_path)
     for role in ("detector", "classifier", "cage_detector"):
         kind = cfg.models.roles()[role].kind

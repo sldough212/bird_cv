@@ -10,8 +10,8 @@ Modes:
   det_conf)`` in ``[evaluate]``, from :meth:`Layout.sweep_infer_run`;
   writes ``sweep.parquet`` and ``best_setting.json``.
 - ``test``: frozen-split test cameras, from :meth:`Layout.test_infer_run`.
-- ``segments``: that test run's cage masks against the legacy one-shot SAM2
-  masks (``[prepare] path_to_cage_masks``): matched IoU and cage counts.
+- ``segments``: that test run's cage masks against the ``sam2`` run's
+  (``[prepare] cage_masks_run_id``): matched IoU and cage counts.
 - ``model``: one role's model-level metrics (e.g. window macro-F1 for a
   clip classifier, presence F1 for a detector) on the val and test splits
   of its frozen-split dataset, for ``--role`` and the checkpoint of training
@@ -48,7 +48,7 @@ from bird_cv.evaluation.e2e import (
     write_e2e_result,
 )
 from bird_cv.pipelines.config import BirdCVConfig, load_config
-from bird_cv.pipelines.prepare import dataset_key
+from bird_cv.pipelines.prepare import cage_masks_run_id, dataset_key
 from bird_cv.training.registry import TrainContext, get_trainer
 
 logger = logging.getLogger(__name__)
@@ -168,15 +168,14 @@ def run_evaluate(
     elif mode == "segments":
         test_run = layout.test_infer_run(run_id)
         check_dataset(dataset, test_run.task_manifests(), f"inference {test_run.dir}")
-        masks_root = cfg.prepare.path_to_cage_masks
-        assert masks_root is not None  # set by BirdCVConfig
+        truth = layout.infer_run(cage_masks_run_id(cfg))
         table, summary = evaluate_segments(
-            test_run.dir / "segments", masks_root, set(_cameras(split, "test"))
+            test_run, truth, set(_cameras(split, "test"))
         )
         print(json.dumps(summary, indent=2, default=float))
         table.write_parquet(results.segments)
         results.metrics.write_text(json.dumps(summary, indent=2, default=float))
-        inputs = {"segments": str(test_run.dir / "segments"), "masks": str(masks_root)}
+        inputs = {"segments": str(test_run.dir), "masks": str(truth.dir)}
     else:
         truth_path = layout.ground_truth(dataset_id)
         truth = load_ground_truth(truth_path)

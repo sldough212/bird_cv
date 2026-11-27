@@ -143,7 +143,7 @@ class EvalRun:
 
     @property
     def segments(self) -> Path:
-        """Cage mask IoU per (video, legacy segment)."""
+        """Cage mask IoU per (video, ground-truth keyframe)."""
         return self.dir / "segments.parquet"
 
     @property

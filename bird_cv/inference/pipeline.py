@@ -53,6 +53,7 @@ from bird_cv.inference.protocols import (
     StreamingDetector,
 )
 from bird_cv.inference.registry import InferenceModels
+from bird_cv.segmentation.cage_masks import save_keyframes
 from bird_cv.preprocessing.standardize import (
     expected_standard_frames,
     standardize_video,
@@ -128,12 +129,7 @@ def infer_video(
         predictions = pl.DataFrame(schema=PREDICTION_SCHEMA)
         _write_parquet(predictions, out_path)
         return predictions
-    segments_path = out.segments(camera_id, video_id)
-    segments_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        segments_path,
-        **{f"{start}_{c}": m for start, cages in keyframes for c, m in cages.items()},
-    )
+    save_keyframes(out.segments(camera_id, video_id), keyframes)
     masks = CageMasks()
     masks.add(keyframes)
     shapes = masks.cage_frame_shapes()

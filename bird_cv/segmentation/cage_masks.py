@@ -1,44 +1,45 @@
-"""Cage masks without prompts: legacy ground truth, YOLO labels, static masks.
+"""Cage masks without prompts: saved keyframes, YOLO labels, static masks.
 
-Ground truth is the one-shot SAM2 output :func:`bird_cv.segmentation.segment.save_keyframe_segments`
-wrote per video (``segment_index.json`` plus ``{seg}_segmentation.json``,
-keyed by cage id, frames indexed as in ``run_segment``). Cages never move
-within a video, so a trained segmenter gives each cage one *static mask* per
-video, from a pixel-wise majority vote over a few sampled frames, and
-numbers cages in row-major order (ADR 0007).
+Ground truth is the keyframe masks a ``sam2`` inference run saved per video
+(:meth:`bird_cv.core.layout.InferRun.segments`, next to the standardized
+video they were made on). Cages never move within a video, so a trained
+segmenter gives each cage one *static mask* per video, from a pixel-wise
+majority vote over a few sampled frames, and numbers cages in row-major
+order (ADR 0007).
 """
 
-import json
 from pathlib import Path
 
 import cv2
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-LegacyKeyframes = list[tuple[int, dict[str, np.ndarray]]]
-"""``[(start, {cage_id: 2D bool mask})]`` per stable segment, legacy frame index."""
+Keyframes = list[tuple[int, dict[str, np.ndarray]]]
+"""``[(first canonical frame, {cage_id: 2D bool mask})]``, in frame order."""
 
 
-def load_legacy_masks(path: Path) -> dict[str, np.ndarray]:
-    """One ``{seg}_segmentation.json``: ``{cage_id: 2D bool mask}``."""
-    masks = json.loads(path.read_text())
-    return {c: np.asarray(m, dtype=bool).squeeze() for c, m in masks.items()}
+def save_keyframes(path: Path, keyframes: Keyframes) -> None:
+    """Write keyframes as ``.npz`` arrays named ``{start}_{cage_id}``."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        path, **{f"{s}_{c}": m for s, cages in keyframes for c, m in cages.items()}
+    )
 
 
-def load_legacy_keyframes(video_dir: Path) -> LegacyKeyframes:
-    """One-shot SAM2 keyframe masks of one video, in segment order.
+def keyframe_starts(path: Path) -> list[int]:
+    """First frames of the keyframes in a :func:`save_keyframes` file (no masks read)."""
+    with np.load(path) as data:
+        return sorted({int(k.split("_")[0]) for k in data.files})
 
-    Args:
-        video_dir: ``{segmentation_output}/{camera_id}/{video_id}/``.
 
-    Raises:
-        FileNotFoundError: If ``segment_index.json`` or a segment's mask is missing.
-    """
-    index = json.loads((video_dir / "segment_index.json").read_text())
-    return [
-        (index[seg]["start"], load_legacy_masks(video_dir / f"{seg}_segmentation.json"))
-        for seg in sorted(index, key=int)
-    ]
+def load_keyframes(path: Path) -> Keyframes:
+    """Read a :func:`save_keyframes` file, in frame order."""
+    keyframes: dict[int, dict[str, np.ndarray]] = {}
+    with np.load(path) as data:
+        for key in data.files:
+            start, cage_id = key.split("_")
+            keyframes.setdefault(int(start), {})[cage_id] = data[key]
+    return sorted(keyframes.items())
 
 
 def mask_iou(a: np.ndarray, b: np.ndarray) -> float:
