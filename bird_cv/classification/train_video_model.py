@@ -47,7 +47,8 @@ class ClassificationConfig(msgspec.Struct):
 class BehaviorClipDataset(Dataset):
     """Dataset of fixed-length frame clips for behavior classification.
 
-    Expects the directory structure produced by :func:`extract_behavior_clips`::
+    Expects the directory structure produced by
+    :func:`~bird_cv.preprocessing.annotations_to_mae.stream_annotations_to_mae`::
 
         clips_root/
           {split}/
@@ -147,13 +148,14 @@ def train_video_model(
 
     Args:
         clips_root: Root directory containing ``train/`` and ``val/``
-            split subdirectories produced by :func:`extract_behavior_clips`.
+            split subdirectories produced by
+            :func:`~bird_cv.preprocessing.annotations_to_mae.stream_annotations_to_mae`.
         output_root: Directory where run outputs will be saved.
         output_name: Name of the run — a subdirectory with this name is
             created under ``output_root``.
         model_checkpoint: Local path to load VideoMAE weights from.
         num_frames: Frames per clip — must match what was used in
-            :func:`extract_behavior_clips`. Defaults to 16.
+            :func:`~bird_cv.preprocessing.annotations_to_mae.stream_annotations_to_mae`. Defaults to 16.
         epochs: Number of training epochs. Defaults to 10.
         batch_size: Dataloader batch size. Defaults to 8.
         lr: Learning rate. Defaults to 1e-4.

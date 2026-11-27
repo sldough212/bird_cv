@@ -38,7 +38,7 @@ def evaluate_video_model(
 
     Args:
         clips_root: Root directory containing the ``test/`` split produced
-            by :func:`extract_behavior_clips`.
+            by :func:`~bird_cv.preprocessing.annotations_to_mae.stream_annotations_to_mae`.
         model_path: Path to the saved model directory (output of
             ``model.save_pretrained``).
         output_path: Directory where the confusion matrix and report are saved.
