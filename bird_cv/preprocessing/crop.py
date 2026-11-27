@@ -1,20 +1,45 @@
-"""Per-cage image and YOLO label cropping utilities."""
+"""Cage and bird crops: per-cage frames, bird-centered crops and clip windows."""
 
 import json
 import tempfile
 from pathlib import Path
 
+import cv2
 import numpy as np
 import polars as pl
 from PIL import Image
 
-from bird_cv.preprocessing.image_utils import (
-    crop_and_mask_image,
-    normalize_labels_for_crop,
-)
+from bird_cv.preprocessing.image_utils import crop_and_mask_image
 from bird_cv.segmentation.frames import extract_all_frames
 from bird_cv.segmentation.utils import lookup_segment_idx
-from bird_cv.utils import extract_camera_video
+from bird_cv.core.ids import parse_raw_video_path
+
+
+def crop_cage_frame(
+    frame: np.ndarray | Image.Image,
+    cage_mask: list | np.ndarray,
+    padding: int = 5,
+) -> np.ndarray | None:
+    """Crop one in-memory frame to one cage and black out pixels outside it.
+
+    The per-frame step of :func:`crop_cages`, usable on frames held in memory
+    (e.g. during inference). Channel order is preserved: an RGB frame gives an
+    RGB crop, a BGR frame a BGR crop.
+
+    Args:
+        frame: Full frame, as an ``(H, W[, C])`` array or a PIL image.
+        cage_mask: 2D boolean mask for the cage, the same size as ``frame``.
+        padding: Pixels to keep around the mask's bounding box.
+
+    Returns:
+        The cropped, masked frame, or None if the mask is empty (camera
+        starting up or cage significantly obstructed).
+    """
+    mask = np.asarray(cage_mask, dtype=bool)
+    if not mask.any():
+        return None
+    cropped_img, _ = crop_and_mask_image(frame, mask, black_out=True, padding=padding)
+    return np.asarray(cropped_img)
 
 
 def _load_cage_masks(seg_dir: Path, segment_index: dict, frame: int) -> dict | None:
@@ -38,219 +63,6 @@ def _load_cage_masks(seg_dir: Path, segment_index: dict, frame: int) -> dict | N
             return None
 
 
-def assign_cage(
-    mean_x: float,
-    mean_y: float,
-    cage_masks: dict,
-) -> str | None:
-    """Determine which cage a track belongs to via centroid pixel lookup.
-
-    Checks whether the track's mean bbox centroid falls within each cage's
-    boolean mask. Returns the first matching cage_id.
-
-    Args:
-        mean_x: Mean x-center of the track bbox, normalized 0–1.
-        mean_y: Mean y-center of the track bbox, normalized 0–1.
-        cage_masks: Mapping of cage_id to 2D boolean mask array.
-
-    Returns:
-        Matching cage_id string, or None if the centroid is not inside any cage.
-    """
-    for cage_id, cage_mask in cage_masks.items():
-        mask_arr = np.array(cage_mask, dtype=bool)
-        img_h, img_w = mask_arr.shape
-        cy = int(np.clip(mean_y * img_h, 0, img_h - 1))
-        cx = int(np.clip(mean_x * img_w, 0, img_w - 1))
-        if mask_arr[cy, cx]:
-            return cage_id
-    return None
-
-
-def crop_yolo_frame(
-    split: str,
-    yolo_data_path: Path,
-    yolo_output_path: Path,
-    frame: int,
-    video_id: str,
-    camera_id: str,
-    cage_id: str,
-    cage_mask: list,
-) -> None:
-    """Crop and save one frame's image and YOLO labels for a single cage.
-
-    Args:
-        split: Dataset split — ``"train"``, ``"val"``, or ``"test"``.
-        yolo_data_path: Root of the full-frame YOLO dataset.
-        yolo_output_path: Root of the per-cage cropped YOLO output dataset.
-        frame: Frame number to process.
-        video_id: Video identifier.
-        camera_id: Camera identifier (decoded, e.g. ``"H7,I22"``).
-        cage_id: Cage identifier.
-        cage_mask: 2D boolean mask for this cage.
-    """
-    yolo_camera_id = camera_id.replace(",", "%2C")
-
-    if split == "test":
-        label_output_path = (
-            yolo_output_path / "labels" / split / camera_id / video_id / str(cage_id)
-        )
-        image_output_path = (
-            yolo_output_path / "images" / split / camera_id / video_id / str(cage_id)
-        )
-    else:
-        label_output_path = yolo_output_path / "labels" / split
-        image_output_path = yolo_output_path / "images" / split
-    label_output_path.mkdir(exist_ok=True, parents=True)
-    image_output_path.mkdir(exist_ok=True, parents=True)
-
-    stem = f"{yolo_camera_id}.{video_id}_frame_{frame:05d}_cage_{cage_id}"
-    label_path = (
-        yolo_data_path
-        / "labels"
-        / split
-        / f"{yolo_camera_id}.{video_id}_frame_{frame:05d}.txt"
-    )
-    image_path = (
-        yolo_data_path
-        / "images"
-        / split
-        / f"{yolo_camera_id}.{video_id}_frame_{frame:05d}.jpg"
-    )
-
-    labels = []
-    with open(label_path, "r") as f:
-        for line in f:
-            parts = line.strip().split()
-            labels.append((int(parts[0]), list(map(float, parts[1:]))))
-
-    img = Image.open(image_path)
-    cropped_img, crop_coords = crop_and_mask_image(
-        img, cage_mask, black_out=True, padding=5
-    )
-    labels_crop = normalize_labels_for_crop(labels, crop_coords, img.size[::-1])
-
-    cropped_img.save(image_output_path / f"{stem}.jpg")
-    with open(label_output_path / f"{stem}.txt", "w") as f:
-        for label in labels_crop:
-            f.write(" ".join(map(str, label)) + "\n")
-
-
-def run_crop_yolo(
-    clip_index_path: Path,
-    yolo_data_path: Path,
-    yolo_output_path: Path,
-    video_segments_path: Path,
-    clip_output_path: Path | None = None,
-) -> None:
-    """Crop YOLO labels and images per cage, driven by the behavior clip index.
-
-    For each track in the clip index, assigns the track to a cage using its mean
-    bbox centroid, then crops every frame in the clip range to that cage region.
-    Crops are deduplicated so frames shared across tracks are only processed once.
-    Optionally writes the clip index with ``cage_id`` added.
-
-    Args:
-        clip_index_path: Path to the clip index parquet from ``build_clip_index``.
-        yolo_data_path: Root of the full-frame YOLO dataset.
-        yolo_output_path: Root of the per-cage cropped YOLO output dataset.
-        video_segments_path: Path to the SAM2 segmentation JSON files.
-        clip_output_path: Optional path to write the clip index with ``cage_id`` added.
-    """
-    clip_index = pl.read_parquet(clip_index_path)
-
-    # Step 1: Assign cage_id to each track via centroid pixel lookup
-    records = []
-    for (camera_id, video_id), group in clip_index.group_by(["camera_id", "video_id"]):
-        seg_dir = video_segments_path / camera_id / video_id
-        seg_index_path = seg_dir / "segment_index.json"
-        if not seg_index_path.exists():
-            print(f"Skipping {camera_id}/{video_id}: segment_index.json not found")
-            continue
-        with seg_index_path.open("r") as f:
-            segment_index = json.load(f)
-
-        ref_frame = group["frame_begin"].min()
-        cage_masks = _load_cage_masks(seg_dir, segment_index, ref_frame)
-        if cage_masks is None:
-            print(
-                f"Skipping {camera_id}/{video_id}: could not load masks at frame {ref_frame}"
-            )
-            continue
-
-        for track in group.iter_rows(named=True):
-            matched_cage_id = assign_cage(track["mean_x"], track["mean_y"], cage_masks)
-            records.append({**track, "cage_id": matched_cage_id})
-
-    clip_with_cages = pl.DataFrame(records).filter(pl.col("cage_id").is_not_null())
-
-    if clip_output_path is not None:
-        clip_output_path.parent.mkdir(exist_ok=True, parents=True)
-        clip_with_cages.write_parquet(clip_output_path)
-
-    # Step 2: Explode to per-frame rows and deduplicate crops
-    frames_to_crop = (
-        clip_with_cages.with_columns(
-            pl.int_ranges(pl.col("frame_begin"), pl.col("frame_end") + 1).alias("frame")
-        )
-        .explode("frame")
-        .select("camera_id", "video_id", "cage_id", "frame", "split")
-        .unique(subset=["camera_id", "video_id", "cage_id", "frame"])
-    )
-
-    # Step 3: Crop frames grouped by video; cache seg file across consecutive frames
-    for (camera_id, video_id), group in frames_to_crop.group_by(
-        ["camera_id", "video_id"]
-    ):
-        seg_dir = video_segments_path / camera_id / video_id
-        with (seg_dir / "segment_index.json").open("r") as f:
-            segment_index = json.load(f)
-
-        current_seg_idx: int | None = None
-        frame_cage_masks: dict | None = None
-
-        for row in group.sort("frame").iter_rows(named=True):
-            frame = row["frame"]
-            cage_id: str = row["cage_id"]
-            split = row["split"]
-            yolo_camera_id = camera_id.replace(",", "%2C")
-
-            stem = f"{yolo_camera_id}.{video_id}_frame_{frame:05d}_cage_{cage_id}"
-            if split == "test":
-                out_img = (
-                    yolo_output_path
-                    / "images"
-                    / split
-                    / camera_id
-                    / video_id
-                    / str(cage_id)
-                    / f"{stem}.jpg"
-                )
-            else:
-                out_img = yolo_output_path / "images" / split / f"{stem}.jpg"
-            if out_img.exists():
-                continue
-
-            seg_idx = lookup_segment_idx(segment_index, frame)
-            if seg_idx != current_seg_idx:
-                frame_cage_masks = _load_cage_masks(seg_dir, segment_index, frame)
-                current_seg_idx = seg_idx
-
-            if frame_cage_masks is None or cage_id not in frame_cage_masks:
-                print(f"Skipping frame {frame} cage {cage_id}: mask not available")
-                continue
-
-            crop_yolo_frame(
-                split=split,
-                yolo_data_path=yolo_data_path,
-                yolo_output_path=yolo_output_path,
-                frame=frame,
-                video_id=video_id,
-                camera_id=camera_id,
-                cage_id=cage_id,
-                cage_mask=frame_cage_masks[cage_id],
-            )
-
-
 def crop_cages(
     split_guidance_path: Path,
     video_segments_path: Path,
@@ -262,7 +74,8 @@ def crop_cages(
     For each video in the split guidance, extracts all frames to a temporary
     directory, loads the corresponding SAM2 cage masks, and saves a cropped
     JPEG per cage per frame under ``clip_output_path/{camera_id}/{video_id}/{cage_id}/``.
-    Frames with missing segmentation masks are skipped.
+    Frames with missing segmentation masks, or whose cage mask is empty, are
+    skipped.
 
     Args:
         split_guidance_path: Path to the split guidance parquet produced by
@@ -279,8 +92,8 @@ def crop_cages(
         for video_str, target_frames in split_guidance.select(
             "video_path", "target_frames"
         ).to_numpy():
-            camera_id, video_name = extract_camera_video(video_str=video_str)
-            video_id = Path(video_name).stem
+            camera_id, video_id = parse_raw_video_path(video_str)
+            video_name = Path(video_str).name
             image_output_path = clip_output_path / camera_id / video_id
             print(f"  Cropping {camera_id}/{video_id}")
 
@@ -306,16 +119,127 @@ def crop_cages(
                 img = Image.open(frame_store_path / f"{frame:05d}.jpg")
 
                 for cage_id, cage_mask in frame_cage_masks.items():
-                    # If there is no detecged mask (camera starting up or significantly obstructed)
-                    # Then do not crop
-                    if not any(item for sublist in cage_mask for item in sublist):
+                    # An empty mask (camera starting up or significantly obstructed)
+                    # gives no crop: skip it
+                    cropped = crop_cage_frame(img, cage_mask)
+                    if cropped is None:
                         continue
-
-                    cropped_img, _ = crop_and_mask_image(
-                        img, cage_mask, black_out=True, padding=5
-                    )
 
                     crop_output = image_output_path / cage_id
                     crop_output.mkdir(exist_ok=True, parents=True)
 
-                    cropped_img.save(crop_output / f"{frame:05d}.jpg")
+                    Image.fromarray(cropped).save(crop_output / f"{frame:05d}.jpg")
+
+
+def crop_bird(
+    frame: np.ndarray, cx_norm: float, cy_norm: float, crop_size: int = 224
+) -> np.ndarray:
+    """Crop a fixed square centered on a bird, padding with black past the edges.
+
+    Args:
+        frame: Frame as an ``(H, W[, C])`` array (e.g. BGR from cv2).
+        cx_norm: Crop center x, normalized 0-1 to the frame width.
+        cy_norm: Crop center y, normalized 0-1 to the frame height.
+        crop_size: Side length in pixels of the square crop.
+
+    Returns:
+        The ``crop_size`` x ``crop_size`` crop (for even ``crop_size``).
+    """
+    frame_h, frame_w = frame.shape[:2]
+    half = crop_size // 2
+
+    cx = int(cx_norm * frame_w)
+    cy = int(cy_norm * frame_h)
+
+    x1, y1 = cx - half, cy - half
+    x2, y2 = cx + half, cy + half
+
+    pad_left = max(0, -x1)
+    pad_top = max(0, -y1)
+    pad_right = max(0, x2 - frame_w)
+    pad_bottom = max(0, y2 - frame_h)
+
+    crop = frame[max(0, y1) : min(frame_h, y2), max(0, x1) : min(frame_w, x2)]
+
+    if pad_left or pad_top or pad_right or pad_bottom:
+        crop = cv2.copyMakeBorder(
+            crop,
+            pad_top,
+            pad_bottom,
+            pad_left,
+            pad_right,
+            cv2.BORDER_CONSTANT,
+            value=0,
+        )
+    return crop
+
+
+def smooth_centers(
+    cx: np.ndarray, cy: np.ndarray, window: int = 5
+) -> tuple[np.ndarray, np.ndarray]:
+    """Smooth box-center sequences with an edge-padded moving average.
+
+    The window shrinks to ``min(window, len(cx))`` for short sequences.
+
+    Args:
+        cx: Box x-centers, one per frame, in frame order.
+        cy: Box y-centers, one per frame, the same length as ``cx``.
+        window: Moving-average window length in frames; at least 1.
+
+    Returns:
+        Smoothed ``(cx, cy)``, each the same length as the input (empty
+        arrays for empty input).
+
+    Raises:
+        ValueError: If ``window`` is less than 1.
+    """
+    if window < 1:
+        raise ValueError(f"window must be at least 1, got {window}")
+    n = len(cx)
+    if n == 0:
+        return np.empty(0), np.empty(0)
+    k = min(window, n)
+    kernel = np.ones(k) / k
+    pad = k // 2
+    cx_smooth = np.convolve(np.pad(cx, pad, mode="edge"), kernel, mode="valid")
+    cy_smooth = np.convolve(np.pad(cy, pad, mode="edge"), kernel, mode="valid")
+    # An even window yields one extra trailing value; drop it
+    return cx_smooth[:n], cy_smooth[:n]
+
+
+def center_window(
+    start: int, end: int, num_frames: int, total_frames: int
+) -> tuple[int, int]:
+    """Symmetrically expand a ``[start, end)`` range to length ``num_frames``.
+
+    Extends into real neighboring frames from the source video on both
+    sides so the labeled segment ends up centered in the window, rather
+    than pinned to one edge. If one side runs out of room against a video
+    boundary, the remaining deficit is shifted to the other side. If the
+    video itself has fewer than ``num_frames`` frames, the returned range
+    simply covers the whole video (the caller pads the rest).
+
+    Args:
+        start: Inclusive start index (0-based) of the labeled segment.
+        end: Exclusive end index (0-based) of the labeled segment.
+        num_frames: Desired window length.
+        total_frames: Number of frames available in the source video.
+
+    Returns:
+        ``(new_start, new_end)``, clamped to ``[0, total_frames)``.
+    """
+    deficit = num_frames - (end - start)
+    left_pad = deficit // 2
+    right_pad = deficit - left_pad
+
+    new_start = start - left_pad
+    new_end = end + right_pad
+
+    if new_start < 0:
+        new_end += -new_start
+        new_start = 0
+    if new_end > total_frames:
+        new_start -= new_end - total_frames
+        new_end = total_frames
+
+    return max(new_start, 0), new_end

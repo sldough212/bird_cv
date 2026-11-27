@@ -1,0 +1,47 @@
+#!/bin/bash
+# Shebang indicating this is a bash script.
+# Do NOT put a comment after the shebang, this will cause an error.
+#SBATCH --account=passerinagenome
+#SBATCH --job-name=infer
+#SBATCH --time=12:00:00
+#SBATCH --partition=mb-l40s,mb-a30,mb-h100,mb-a6000
+#SBATCH --gres=gpu:1
+#SBATCH --mem=64G
+#SBATCH --array=0-3
+
+# End-to-end inference, videos split across array tasks; every task writes
+# into the same run directory: infer/infer_<array job id> by default, or the
+# layout's dir for --run-id / --split (see bird_cv/core/layout.py). Models come
+# from the config; extra arguments go to infer.py, e.g.:
+#   sbatch slurm_scripts/run_infer_array.sh --camera H7,I22 --limit 4
+#   sbatch slurm_scripts/run_infer_array.sh --split test --run-id RUN_ID --train-run-id RUN_ID
+
+echo "SLURM_JOB_ID:" $SLURM_JOB_ID "TASK:" $SLURM_ARRAY_TASK_ID
+start=$(date +'%D %T')
+echo "Start:" $start
+module purge
+module load gcc/14.2.0 python/3.12.0
+
+cd $SLURM_SUBMIT_DIR
+
+source .venv/bin/activate
+
+export PYTHONUNBUFFERED=1
+
+CONFIG=${CONFIG:-bird_cv/pipelines/configs/config.toml}
+RUN_ID="infer_${SLURM_ARRAY_JOB_ID}"
+for ((i = 1; i <= $#; i++)); do
+    case "${!i}" in
+        --run-id) j=$((i + 1)); RUN_ID=${!j} ;;
+        --run-id=*) RUN_ID=${!i#--run-id=} ;;
+    esac
+done
+source slurm_scripts/run_logs.sh "$RUN_ID"
+python3 bird_cv/pipelines/infer.py "$CONFIG" \
+    --run-id "$RUN_ID" \
+    --task-index "${SLURM_ARRAY_TASK_ID}" \
+    --num-tasks "${SLURM_ARRAY_TASK_COUNT}" \
+    "$@"
+
+end=$(date +'%D %T')
+echo "End:" $end

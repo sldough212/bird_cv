@@ -9,6 +9,9 @@ from collections import defaultdict
 from typing import Any, Dict, Optional
 import polars as pl
 
+from bird_cv.preprocessing.crop import crop_bird, smooth_centers
+from bird_cv.core.ids import get_local_path, parse_media_path, with_raw_video_ids
+
 
 def _save_cropped_bird_frame(
     frame: Any,
@@ -30,34 +33,14 @@ def _save_cropped_bird_frame(
         cx_norm: Optional smoothed x-center override (normalized 0-1).
         cy_norm: Optional smoothed y-center override (normalized 0-1).
     """
-    frame_h, frame_w = frame.shape[:2]
-    half = crop_size // 2
-
     for i, line in enumerate(yolo_lines):
         parts = line.strip().split()
-        cx = int((cx_norm if cx_norm is not None else float(parts[1])) * frame_w)
-        cy = int((cy_norm if cy_norm is not None else float(parts[2])) * frame_h)
-
-        x1, y1 = cx - half, cy - half
-        x2, y2 = cx + half, cy + half
-
-        pad_left = max(0, -x1)
-        pad_top = max(0, -y1)
-        pad_right = max(0, x2 - frame_w)
-        pad_bottom = max(0, y2 - frame_h)
-
-        crop = frame[max(0, y1) : min(frame_h, y2), max(0, x1) : min(frame_w, x2)]
-
-        if pad_left or pad_top or pad_right or pad_bottom:
-            crop = cv2.copyMakeBorder(
-                crop,
-                pad_top,
-                pad_bottom,
-                pad_left,
-                pad_right,
-                cv2.BORDER_CONSTANT,
-                value=0,
-            )
+        crop = crop_bird(
+            frame,
+            cx_norm if cx_norm is not None else float(parts[1]),
+            cy_norm if cy_norm is not None else float(parts[2]),
+            crop_size=crop_size,
+        )
 
         suffix = f"_bird_{i}" if len(yolo_lines) > 1 else ""
         cv2.imwrite(str(frame_file.with_stem(frame_file.stem + suffix)), crop)
@@ -69,6 +52,8 @@ def process_item(
     path_to_output: Path,
     path_to_guidance: Path,
     crop_size: int | None = None,
+    *,
+    by_cage: bool = False,
 ) -> None:
     """Process a single annotation item and write YOLO-format labels per frame.
 
@@ -85,7 +70,7 @@ def process_item(
             the JSON file. This must include video metadata under `item["data"]`
             and annotation data under `item["annotations"]`.
         path_to_videos: Root directory containing all video files referenced
-            in the annotation JSON.
+            in the annotation JSON. Unused with ``by_cage``.
         path_to_output: Directory where output files will be written. In YOLO
             mode, one image and label file is created per frame. In crop mode,
             one cropped JPEG is saved per annotated frame.
@@ -95,45 +80,53 @@ def process_item(
             pixels) centered on each bird bbox instead of the full frame and
             YOLO label. Bbox centers are smoothed across frames to reduce
             YOLO jitter before cropping.
+        by_cage: Match guidance rows on a ``cage_id`` column too, so each
+            cage video gets its own ``target_frames`` (default: one row per
+            camera video, shared by its cages). Also the canonical mode for
+            aligned media: ids come from
+            :func:`~bird_cv.core.ids.parse_media_path` as in ground truth,
+            frame ``f`` of the cage video takes Label Studio frame ``f``
+            (both canonical + 1), and it raises if the cage video isn't 15
+            fps, the task has more than one non-cancelled annotation, or a
+            frame has more than one box.
 
-    Returns:
-        None. Files are written to disk as a side effect.
+    Files are written to disk as a side effect.
     """
-    # Get video path and clean it
-    video_path = (
-        item["data"]["video"].split(f"{path_to_videos.name}/")[-1].replace("%2C", ",")
-    )
-    full_video_path = path_to_videos / video_path
+    if by_cage:
+        # Same ids as ground truth; media from the export's local-files URL
+        camera_id, video_id, cage = parse_media_path(item["data"]["video"])
+        full_video_path = get_local_path(item["data"]["video"])
+        video_path = str(full_video_path)
+    else:
+        # Get video path and clean it
+        video_path = (
+            item["data"]["video"]
+            .split(f"{path_to_videos.name}/")[-1]
+            .replace("%2C", ",")
+        )
+        full_video_path = path_to_videos / video_path
 
-    # Where the annotation filenames are based
-    video_path_base = path_to_videos.stem
+        # Where the annotation filenames are based
+        video_path_base = path_to_videos.stem
 
-    # Get the camera and video from the video_filename
-    dirs = str(full_video_path).split(video_path_base)[-1]
-    dirs_names = dirs.split("/")
-    camera_id = dirs_names[1]
-    video_id = dirs_names[2]
-    cage = full_video_path.stem
-    # Remove optional extension from the video_id
-    if not (path_to_videos / camera_id / video_id).is_dir():
-        video_id = str(Path(video_id).stem)
+        # Get the camera and video from the video_filename
+        dirs = str(full_video_path).split(video_path_base)[-1]
+        dirs_names = dirs.split("/")
+        camera_id = dirs_names[1]
+        video_id = dirs_names[2]
+        cage = full_video_path.stem
+        # Remove optional extension from the video_id
+        if not (path_to_videos / camera_id / video_id).is_dir():
+            video_id = str(Path(video_id).stem)
 
     # Load in the guidance
-    guidance = pl.read_parquet(path_to_guidance)
-    video_guidance = guidance.with_columns(
-        video_id=pl.col("video_path")
-        .str.split("/")
-        .list.last()
-        .str.replace(r"\.[^.]+$", ""),
-        camera_id=pl.col("video_path")
-        .str.split("/")
-        .list.get(-2)
-        .str.replace_all("%2C", ","),
-    )
+    video_guidance = with_raw_video_ids(pl.read_parquet(path_to_guidance))
 
     video_guidance = video_guidance.filter(
         (pl.col("camera_id") == camera_id) & (pl.col("video_id") == video_id)
     )
+    if by_cage:
+        video_guidance = video_guidance.filter(pl.col("cage_id") == cage)
 
     print(f"Working on {video_path}")
     if video_guidance.is_empty():
@@ -155,7 +148,15 @@ def process_item(
     # Collect annotations per frame
     frame_annotations: Dict[int, list[str]] = defaultdict(list)
 
-    for ann in item["annotations"]:
+    annotations = item["annotations"]
+    if by_cage:
+        annotations = [a for a in annotations if not a.get("was_cancelled")]
+        if len(annotations) > 1:
+            raise ValueError(
+                f"{video_path}: {len(annotations)} non-cancelled annotations; "
+                "by_cage needs exactly one"
+            )
+    for ann in annotations:
         for result in ann["result"]:
             label: Optional[str] = (  # noqa
                 result["value"]["labels"][0] if result["value"].get("labels") else None
@@ -195,31 +196,37 @@ def process_item(
     # Open video to extract frames
     cap = cv2.VideoCapture(full_video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
+    if by_cage:
+        multi = sorted(f for f, lines in frame_annotations.items() if len(lines) > 1)
+        if multi:
+            cap.release()
+            raise ValueError(
+                f"{video_path}: frames {multi[:10]} have more than one box"
+            )
+        if abs(fps - ls_fps) > 0.01 * ls_fps:
+            cap.release()
+            raise ValueError(
+                f"{full_video_path}: {fps} fps; by_cage needs the guidance's "
+                f"{ls_fps} fps"
+            )
 
     # Smooth bbox centers across target frames to reduce YOLO jitter
     smoothed_centers: dict[int, tuple[float, float]] = {}
     if crop_size:
+        # Same video-to-annotation frame mapping as the extraction loop below
         annotated = [
-            (f, int(f * ls_fps / fps))
+            (f, af)
             for f in sorted(target_frames)
-            if frame_annotations[int(f * ls_fps / fps)]
+            if frame_annotations[af := f if by_cage else int(f * ls_fps / fps)]
         ]
         if len(annotated) >= 2:
-            k = min(5, len(annotated))
-            kernel = np.ones(k) / k
             cx_seq = np.array(
                 [float(frame_annotations[af][0].split()[1]) for _, af in annotated]
             )
             cy_seq = np.array(
                 [float(frame_annotations[af][0].split()[2]) for _, af in annotated]
             )
-            pad = k // 2
-            cx_smooth = np.convolve(
-                np.pad(cx_seq, pad, mode="edge"), kernel, mode="valid"
-            )
-            cy_smooth = np.convolve(
-                np.pad(cy_seq, pad, mode="edge"), kernel, mode="valid"
-            )
+            cx_smooth, cy_smooth = smooth_centers(cx_seq, cy_seq, window=5)
             smoothed_centers = {
                 vf: (cx_smooth[i], cy_smooth[i]) for i, (vf, _) in enumerate(annotated)
             }
@@ -237,7 +244,9 @@ def process_item(
             continue
 
         # Need to inverse the fps correction to get the correct annotation frame
-        frame_num_ann = int(frame_num * ls_fps / fps)
+        # by_cage: aligned media, video frame = Label Studio frame (canonical
+        # + 1); the rescale truncates to F - 1 for fps slightly above 15
+        frame_num_ann = frame_num if by_cage else int(frame_num * ls_fps / fps)
         lines = frame_annotations[frame_num_ann]
 
         if crop_size:
@@ -271,6 +280,8 @@ def stream_annotations_to_yolo(
     path_to_guidance: Path,
     processes: int = 4,
     crop_size: int | None = None,
+    *,
+    by_cage: bool = False,
 ) -> None:
     """Stream a large JSON annotation file and convert it to YOLO format.
 
@@ -280,11 +291,15 @@ def stream_annotations_to_yolo(
 
     Args:
         path_to_videos: Root directory containing all referenced video files.
+            Unused with ``by_cage``.
         path_to_annotations: Path to the JSON annotation file to be processed.
         path_to_output: Output directory where YOLO `.txt` files will be written.
         processes: Number of worker processes to use. If set to 1, processing
             runs serially (useful for testing and debugging). Values greater
             than 1 enable multiprocessing.
+        crop_size: If provided, save bird crops instead of YOLO frames and
+            labels (see :func:`process_item`).
+        by_cage: Guidance has one row per cage video (see :func:`process_item`).
 
     Returns:
         None. YOLO annotation files are written to disk as a side effect.
@@ -308,6 +323,7 @@ def stream_annotations_to_yolo(
                     path_to_output=path_to_output,
                     path_to_guidance=path_to_guidance,
                     crop_size=crop_size,
+                    by_cage=by_cage,
                 )
         else:
             # Parallel execution
@@ -317,12 +333,12 @@ def stream_annotations_to_yolo(
                 path_to_output=path_to_output,
                 path_to_guidance=path_to_guidance,
                 crop_size=crop_size,
+                by_cage=by_cage,
             )
 
             with Pool(processes=processes) as pool:
-                for output_file in tqdm(
+                for _ in tqdm(
                     pool.imap(worker_func, items, chunksize=1),
                     desc="Processing videos",
                 ):
-                    if output_file:
-                        print(f"Processed {output_file}")
+                    pass

@@ -1,0 +1,165 @@
+"""Parquet schemas exchanged between pipeline stages.
+
+Every stage that writes one of these tables builds it with the matching
+schema (e.g. ``pl.DataFrame(rows, schema=PREDICTION_SCHEMA)``) so readers
+never have to guess column names or types. All frame columns hold
+canonical frames (see :mod:`bird_cv.core.frames`).
+"""
+
+import polars as pl
+
+CAGE_COLUMNS = ("camera_id", "video_id", "cage_id")
+"""Columns that identify one cage video (formats as in :data:`KEY_COLUMNS`)."""
+
+KEY_COLUMNS = (*CAGE_COLUMNS, "frame")
+"""Columns that identify one cage on one canonical frame.
+
+Formats (always build them with :mod:`bird_cv.core.ids`):
+
+- ``camera_id``: decoded camera folder name, e.g. ``"H7,I22"`` (never ``%2C``).
+- ``video_id``: raw video name without extension, e.g. ``"IMG_0016"``.
+- ``cage_id``: cage index as a decimal string, e.g. ``"0"``.
+- ``frame``: canonical frame.
+"""
+
+GROUND_TRUTH_SCHEMA = {
+    "camera_id": pl.String,
+    "video_id": pl.String,
+    "cage_id": pl.String,
+    "frame": pl.Int64,
+    # A class from Behaviors.classes ([behaviors] config), or null for a
+    # labeling hole.
+    "label": pl.String,
+    # Annotated box normalized 0-1 to the cage video, top-left + size; null
+    # when there is no box (label no_bird). Label Studio exports percentages,
+    # so divide its x/y/width/height by 100.
+    "bbox_left": pl.Float64,
+    "bbox_top": pl.Float64,
+    "bbox_width": pl.Float64,
+    "bbox_height": pl.Float64,
+}
+
+PREDICTION_SCHEMA = {
+    "camera_id": pl.String,
+    "video_id": pl.String,
+    "cage_id": pl.String,
+    "frame": pl.Int64,
+    # Never null: frames with no usable detection, or not covered by any
+    # classifier window, are no_bird.
+    "label": pl.String,
+    # Classifier confidence, 0-1; null when label is no_bird.
+    "confidence": pl.Float64,
+    # Box normalized 0-1 to the cage video, top-left + size; null when no_bird.
+    # Gap-filled frames carry the source detection's box and det_conf.
+    "bbox_left": pl.Float64,
+    "bbox_top": pl.Float64,
+    "bbox_width": pl.Float64,
+    "bbox_height": pl.Float64,
+    "det_conf": pl.Float64,
+}
+
+DETECTION_SCHEMA = {
+    "camera_id": pl.String,
+    "video_id": pl.String,
+    "cage_id": pl.String,
+    # The fields of bird_cv.detection.types.Detection, in order, named as in
+    # PREDICTION_SCHEMA (see detection_columns).
+    "frame": pl.Int64,
+    "track_id": pl.Int64,
+    "bbox_left": pl.Float64,
+    "bbox_top": pl.Float64,
+    "bbox_width": pl.Float64,
+    "bbox_height": pl.Float64,
+    "det_conf": pl.Float64,
+    # The detector's own class name (e.g. "bird"), not a behavior class.
+    "label": pl.String,
+}
+"""Raw tracker output before confidence filter and gap fill (inference
+``detections/``): one row per tracked box per canonical frame of a cage."""
+
+
+def detection_columns() -> dict[str, str]:
+    """The :data:`DETECTION_SCHEMA` column of each ``Detection`` field, in order.
+
+    Boxes and confidence use the ``bbox_*`` / ``det_conf`` names of
+    :data:`PREDICTION_SCHEMA` and :data:`GROUND_TRUTH_SCHEMA`, so the three
+    tables compare without renaming.
+    """
+    return {
+        "frame": "frame",
+        "track_id": "track_id",
+        "left": "bbox_left",
+        "top": "bbox_top",
+        "width": "bbox_width",
+        "height": "bbox_height",
+        "conf": "det_conf",
+        "label": "label",
+    }
+
+
+SPLIT_SCHEMA = {
+    "camera_id": pl.String,
+    # "train", "val" or "test".
+    "split": pl.String,
+    # Split version in which this camera was first assigned.
+    "assigned_in_version": pl.Int64,
+}
+
+SPLIT_SUMMARY_SCHEMA = {
+    # "train", "val", "test", or e.g. "train_yolo_sampled".
+    "split": pl.String,
+    # A class, or "total" for the per-split totals row.
+    "label": pl.String,
+    "frames": pl.Int64,
+    "frac_of_split": pl.Float64,
+    "stretches": pl.Int64,
+    "cameras": pl.Int64,
+    "videos": pl.Int64,
+    "cages": pl.Int64,
+    # Only set on "total" rows: boxed frames with no behavior label, in cage
+    # videos that have Classify labels.
+    "labeling_hole_frames": pl.Int64,
+    # Only set on "total" rows: boxed frames in cage videos with no Classify
+    # labels at all (not yet labeled, rather than a hole).
+    "unlabeled_video_frames": pl.Int64,
+}
+
+YOLO_FRAMES_SCHEMA = {
+    "camera_id": pl.String,
+    "video_id": pl.String,
+    "cage_id": pl.String,
+    "frame": pl.Int64,
+    # Ground truth class, or null for a boxed frame with no behavior label.
+    "label": pl.String,
+    "split": pl.String,
+    # Ground truth box, as in GROUND_TRUTH_SCHEMA; null on no_bird frames.
+    "bbox_left": pl.Float64,
+    "bbox_top": pl.Float64,
+    "bbox_width": pl.Float64,
+    "bbox_height": pl.Float64,
+}
+"""Canonical cage-video frames selected for YOLO, one row per frame."""
+
+VIDEOMAE_CLIPS_SCHEMA = {
+    "camera_id": pl.String,
+    "video_id": pl.String,
+    "cage_id": pl.String,
+    "label": pl.String,
+    "split": pl.String,
+    # Inclusive canonical frames, inside one labeled stretch. Shorter than
+    # the clip length only when the stretch is; the consumer pads those.
+    "frame_begin": pl.Int64,
+    "frame_end": pl.Int64,
+}
+"""VideoMAE training clips, one row per clip."""
+
+TIMINGS_SCHEMA = {
+    "camera_id": pl.String,
+    "video_id": pl.String,
+    "stage": pl.String,
+    "seconds": pl.Float64,
+    "frames": pl.Int64,
+    "gpu": pl.String,
+}
+
+SPLITS = ("train", "val", "test")

@@ -1,6 +1,7 @@
 from functools import partial
 from multiprocessing import Pool
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, Dict, List, Tuple
 
 import cv2
@@ -8,6 +9,9 @@ import ijson
 import numpy as np
 import polars as pl
 from tqdm import tqdm
+
+from bird_cv.preprocessing.crop import center_window
+from bird_cv.core.ids import get_local_path, parse_media_path, with_raw_video_ids
 
 
 def _extract_video_frames(video_path: Path) -> List[np.ndarray]:
@@ -30,44 +34,6 @@ def _extract_video_frames(video_path: Path) -> List[np.ndarray]:
     return frames
 
 
-def _center_window(
-    start: int, end: int, num_frames: int, total_frames: int
-) -> Tuple[int, int]:
-    """Symmetrically expand a ``[start, end)`` range to length ``num_frames``.
-
-    Extends into real neighboring frames from the source video on both
-    sides so the labeled segment ends up centered in the window, rather
-    than pinned to one edge. If one side runs out of room against a video
-    boundary, the remaining deficit is shifted to the other side. If the
-    video itself has fewer than ``num_frames`` frames, the returned range
-    simply covers the whole video (the caller pads the rest).
-
-    Args:
-        start: Inclusive start index (0-based) of the labeled segment.
-        end: Exclusive end index (0-based) of the labeled segment.
-        num_frames: Desired window length.
-        total_frames: Number of frames available in the source video.
-
-    Returns:
-        ``(new_start, new_end)``, clamped to ``[0, total_frames)``.
-    """
-    deficit = num_frames - (end - start)
-    left_pad = deficit // 2
-    right_pad = deficit - left_pad
-
-    new_start = start - left_pad
-    new_end = end + right_pad
-
-    if new_start < 0:
-        new_end += -new_start
-        new_start = 0
-    if new_end > total_frames:
-        new_start -= new_end - total_frames
-        new_end = total_frames
-
-    return max(new_start, 0), new_end
-
-
 def load_split_guidance(path_to_guidance: Path) -> Dict[Tuple[str, str], str]:
     """Load a split guidance parquet and index it by (camera_id, video_id).
 
@@ -78,24 +44,15 @@ def load_split_guidance(path_to_guidance: Path) -> Dict[Tuple[str, str], str]:
 
     Args:
         path_to_guidance: Path to a ``split_guidance.parquet`` file (e.g.
-            produced by ``get_split_guidance.split_camera_data`` or
-            ``segment_videos.split_guidance_within_camera``), containing at
+            produced by :func:`~bird_cv.preprocessing.splits.simulate_split_guidance`
+            or :func:`~bird_cv.preprocessing.splits.split_guidance_within_camera`), containing at
             least ``video_path`` (path to the *source* camera video, e.g.
             ``"I20%2CI38/32.mp4"``) and ``split`` columns.
 
     Returns:
         Mapping from ``(camera_id, video_id)`` to split name.
     """
-    guidance_df = pl.read_parquet(path_to_guidance).with_columns(
-        video_id=pl.col("video_path")
-        .str.split("/")
-        .list.last()
-        .str.replace(r"\.[^.]+$", ""),
-        camera_id=pl.col("video_path")
-        .str.split("/")
-        .list.get(-2)
-        .str.replace_all("%2C", ","),
-    )
+    guidance_df = with_raw_video_ids(pl.read_parquet(path_to_guidance))
 
     guidance: Dict[Tuple[str, str], str] = {}
     for camera_id, video_id, split in guidance_df.select(
@@ -106,6 +63,59 @@ def load_split_guidance(path_to_guidance: Path) -> Dict[Tuple[str, str], str]:
     return guidance
 
 
+ClipRange = Tuple[str, int, int]
+"""``(label, start, end)``: a behavior on inclusive 1-indexed video frames."""
+
+
+def _write_range_clips(
+    frames: List[np.ndarray],
+    start: int,
+    end: int,
+    num_frames: int,
+    stride: int,
+    clip_root: Path,
+    clip_stem: str,
+) -> None:
+    """Write the clips of one labeled range ``[start, end)`` (0-based frames).
+
+    Ranges shorter than ``num_frames`` are centered in real neighboring
+    frames, then padded by repeating the first/last frame if the video
+    itself is too short; windows of ``num_frames`` step by ``stride``. Each
+    clip goes to ``clip_root / f"{clip_stem}_clip{idx:03d}"``.
+    """
+    if end - start < num_frames:
+        # Prefer expanding into real neighboring frames from the
+        # source video on both sides, so the labeled behavior
+        # ends up centered in the clip.
+        start, end = center_window(start, end, num_frames, len(frames))
+
+    candidates = frames[start:end]
+
+    if len(candidates) < num_frames:
+        # Video itself is shorter than num_frames even at full
+        # length — pad the remainder symmetrically by repeating
+        # the first/last frame.
+        remaining = num_frames - len(candidates)
+        left_pad = remaining // 2
+        right_pad = remaining - left_pad
+        candidates = (
+            [candidates[0]] * left_pad + candidates + [candidates[-1]] * right_pad
+        )
+
+    starts = range(0, len(candidates) - num_frames + 1, stride)
+    for clip_idx, clip_start in enumerate(starts):
+        window = candidates[clip_start : clip_start + num_frames]
+        clip_dir = clip_root / f"{clip_stem}_clip{clip_idx:03d}"
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        for out_idx, frame in enumerate(window):
+            cv2.imwrite(str(clip_dir / f"{out_idx:05d}.jpg"), frame)
+
+
+def label_dir_name(label: str) -> str:
+    """Directory name clips of ``label`` go in."""
+    return label.replace("/", "_").replace(" ", "_").lower()
+
+
 def process_item(
     item: Dict[str, Any],
     path_to_videos: Path,
@@ -113,6 +123,8 @@ def process_item(
     guidance: Dict[Tuple[str, str], str],
     num_frames: int = 16,
     stride: int = 8,
+    *,
+    ranges_by_cage: Mapping[Tuple[str, str, str], List[ClipRange]] | None = None,
 ) -> None:
     """Convert one Label Studio behavior task into VideoMAE training clips.
 
@@ -144,6 +156,7 @@ def process_item(
             annotations under ``item["annotations"]``.
         path_to_videos: Root directory containing the cropped per-cage
             videos, structured as ``{camera_id}/{video_id}/{cage_id}.mp4``.
+            Unused with ``ranges_by_cage``.
         path_to_output: Directory where clip frames will be written.
         guidance: Split guidance mapping produced by :func:`load_split_guidance`.
         num_frames: Number of frames per clip. Must match what
@@ -151,21 +164,37 @@ def process_item(
             Defaults to 16.
         stride: Number of frames to advance the sliding window each step.
             Defaults to 8.
+        ranges_by_cage: If given, clip these ranges (by ``(camera_id,
+            video_id, cage)`` as :func:`~bird_cv.core.ids.parse_media_path`
+            reads them) instead of the task's annotations; cages not in it
+            are skipped. Clip directories are named
+            ``{camera_id}_{video_id}_{cage}_s{range_idx}_clip{idx}``. A
+            range shorter than ``num_frames`` widens into neighbouring
+            frames, as annotation ranges do.
 
     Returns:
         None. Clip frames are written to disk as a side effect.
     """
     video_field = item["data"]["video"]
-    video_path = video_field.split(f"{path_to_videos.name}/")[-1].replace("%2C", ",")
-    full_video_path = path_to_videos / video_path
+    if ranges_by_cage is not None:
+        # Same ids as ground truth; media from the export's local-files URL
+        camera_id, video_id, cage = parse_media_path(video_field)
+        full_video_path = get_local_path(video_field)
+        video_path = str(full_video_path)
+        if (camera_id, video_id, cage) not in ranges_by_cage:
+            return
+    else:
+        video_path = video_field.split(f"{path_to_videos.name}/")[-1].replace(
+            "%2C", ","
+        )
+        full_video_path = path_to_videos / video_path
 
-    video_path_base = path_to_videos.stem
-    dirs = str(full_video_path).split(video_path_base)[-1]
-    dirs_names = dirs.split("/")
-    camera_id = dirs_names[1]
-    video_id = dirs_names[2]
-    cage = full_video_path.stem
-
+        video_path_base = path_to_videos.stem
+        dirs = str(full_video_path).split(video_path_base)[-1]
+        dirs_names = dirs.split("/")
+        camera_id = dirs_names[1]
+        video_id = dirs_names[2]
+        cage = full_video_path.stem
     split = guidance.get((camera_id, video_id))
     if split is None:
         print(f"Video {video_path} not in split guidance, skipping.")
@@ -178,6 +207,25 @@ def process_item(
     frames = _extract_video_frames(full_video_path)
     if not frames:
         print(f"No frames read from {full_video_path}, skipping.")
+        return
+
+    if ranges_by_cage is not None:
+        for range_idx, (label, first, last) in enumerate(
+            ranges_by_cage[(camera_id, video_id, cage)]
+        ):
+            start, end = max(first - 1, 0), min(last, len(frames))
+            if end <= start:
+                print(f"Range {camera_id}/{video_id}/{cage} {first}-{last} is empty")
+                continue
+            _write_range_clips(
+                frames,
+                start,
+                end,
+                num_frames,
+                stride,
+                path_to_output / split / label_dir_name(label),
+                f"{camera_id}_{video_id}_{cage}_s{range_idx}",
+            )
         return
 
     for annotation in item.get("annotations", []):
@@ -196,7 +244,7 @@ def process_item(
                 continue
 
             label = labels[0]
-            label_dir = label.replace("/", "_").replace(" ", "_").lower()
+            label_dir = label_dir_name(label)
 
             for frame_range in value.get("ranges", []):
                 start = max(int(frame_range["start"]) - 1, 0)
@@ -210,42 +258,15 @@ def process_item(
                     )
                     continue
 
-                if end - start < num_frames:
-                    # Prefer expanding into real neighboring frames from the
-                    # source video on both sides, so the labeled behavior
-                    # ends up centered in the clip.
-                    start, end = _center_window(start, end, num_frames, len(frames))
-
-                candidates = frames[start:end]
-
-                if len(candidates) < num_frames:
-                    # Video itself is shorter than num_frames even at full
-                    # length — pad the remainder symmetrically by repeating
-                    # the first/last frame.
-                    remaining = num_frames - len(candidates)
-                    left_pad = remaining // 2
-                    right_pad = remaining - left_pad
-                    candidates = (
-                        [candidates[0]] * left_pad
-                        + candidates
-                        + [candidates[-1]] * right_pad
-                    )
-
-                starts = range(0, len(candidates) - num_frames + 1, stride)
-                for clip_idx, clip_start in enumerate(starts):
-                    window = candidates[clip_start : clip_start + num_frames]
-                    clip_dir = (
-                        path_to_output
-                        / split
-                        / label_dir
-                        / (
-                            f"{camera_id}_{video_id}_{cage}_a{annotation_id}"
-                            f"_r{result_idx}_clip{clip_idx:03d}"
-                        )
-                    )
-                    clip_dir.mkdir(parents=True, exist_ok=True)
-                    for out_idx, frame in enumerate(window):
-                        cv2.imwrite(str(clip_dir / f"{out_idx:05d}.jpg"), frame)
+                _write_range_clips(
+                    frames,
+                    start,
+                    end,
+                    num_frames,
+                    stride,
+                    path_to_output / split / label_dir,
+                    f"{camera_id}_{video_id}_{cage}_a{annotation_id}_r{result_idx}",
+                )
 
 
 def stream_annotations_to_mae(
@@ -256,6 +277,8 @@ def stream_annotations_to_mae(
     num_frames: int = 16,
     stride: int = 8,
     processes: int = 4,
+    *,
+    ranges_by_cage: Mapping[Tuple[str, str, str], List[ClipRange]] | None = None,
 ) -> None:
     """Stream a behavior annotation JSON and build VideoMAE train/val/test clips.
 
@@ -267,6 +290,7 @@ def stream_annotations_to_mae(
     Args:
         path_to_videos: Root directory containing the cropped per-cage
             videos, structured as ``{camera_id}/{video_id}/{cage_id}.mp4``.
+            Unused with ``ranges_by_cage``.
         path_to_annotations: Path to the behavior annotation JSON exported
             from Label Studio.
         path_to_guidance: Path to the split guidance parquet (see
@@ -278,6 +302,8 @@ def stream_annotations_to_mae(
         processes: Number of worker processes to use. If set to 1, processing
             runs serially (useful for testing and debugging). Values greater
             than 1 enable multiprocessing.
+        ranges_by_cage: Clip these ranges instead of the annotations (see
+            :func:`process_item`).
 
     Returns:
         None. Clip frames are written to disk as a side effect.
@@ -298,6 +324,7 @@ def stream_annotations_to_mae(
                     guidance=guidance,
                     num_frames=num_frames,
                     stride=stride,
+                    ranges_by_cage=ranges_by_cage,
                 )
         else:
             # Parallel execution
@@ -308,6 +335,7 @@ def stream_annotations_to_mae(
                 guidance=guidance,
                 num_frames=num_frames,
                 stride=stride,
+                ranges_by_cage=ranges_by_cage,
             )
 
             with Pool(processes=processes) as pool:

@@ -1,0 +1,3 @@
+# Metrics and selection objectives
+
+The headline metric is end-to-end frame-level macro-F1 over the nine classes on canonical frames, because frame-by-frame labels are what the research uses and macro averaging keeps rare behaviors from being drowned out by resting (87% of labeled frames). Detection is judged by per-frame bird presence precision and recall (a box is a hit at IoU ≥ 0.5) with mean IoU on matched frames as a crop-quality check; MOTA and IDF1 are reported but not optimized, since a cage holds at most one bird. VideoMAE is selected and tuned on validation window-level macro-F1 (not accuracy), YOLO on validation presence F1, and the pipeline's gap-fill length and detection confidence threshold on validation end-to-end macro-F1.

@@ -6,12 +6,11 @@ import subprocess
 import time
 from pathlib import Path
 
-from urllib.parse import unquote
-
-import cv2
 
 from label_studio_sdk import LabelStudio
 
+
+from bird_cv.preprocessing.standardize import video_header
 
 logger = logging.getLogger(__name__)
 
@@ -189,20 +188,6 @@ def get_project_id_from_name(client: LabelStudio, project_name: str) -> int:
     raise ValueError(f"Project '{project_name}' not found")
 
 
-def get_local_path(video_url: str) -> Path:
-    """Resolve a Label Studio local-files video URL to an absolute filesystem path.
-
-    Args:
-        video_url (str): Label Studio video URL in the
-            `/data/local-files/?d=<url-encoded-path>` format.
-
-    Returns:
-        Path: Absolute local filesystem path to the video file.
-    """
-    local_url = video_url.split("?d=")[-1]
-    return Path("/" + unquote(local_url))
-
-
 def get_video_info(path: Path | str) -> tuple[int, float]:
     """Get the frame count and duration of a video file.
 
@@ -212,10 +197,7 @@ def get_video_info(path: Path | str) -> tuple[int, float]:
     Returns:
         tuple[int, float]: The total frame count and duration in seconds.
     """
-    cap = cv2.VideoCapture(str(path))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    frames_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap.release()
+    fps, frames_count = video_header(Path(path))
     return frames_count, frames_count / fps
 
 

@@ -1,0 +1,43 @@
+#!/bin/bash
+# Train one pipeline role's model from its [models.{role}] config table:
+# first argument is the role (detector, classifier), the rest go to train.py,
+# e.g.
+#   sbatch slurm_scripts/run_train.sh detector --run-id ID [--dataset DATASET_ID]
+#   sbatch slurm_scripts/run_train.sh classifier --hyperparameters RUN_DIR/best_hyperparameters.json
+#SBATCH --account=passerinagenome
+#SBATCH --job-name=train
+#SBATCH --time=48:00:00
+#SBATCH --mem=64G
+#SBATCH --cpus-per-task=8
+#SBATCH --partition=mb-l40s,mb-a30,mb-h100,mb-a6000
+#SBATCH --gres=gpu:1
+
+echo "SLURM_JOB_ID:" $SLURM_JOB_ID
+start=$(date +'%D %T')
+echo "Start:" $start
+module purge
+module load gcc/14.2.0 python/3.12.0
+
+cd $SLURM_SUBMIT_DIR
+
+source .venv/bin/activate
+
+export PYTHONUNBUFFERED=1
+# Ray (started by init_job_ray in Python) keeps its files per job
+export RAY_TMPDIR=/tmp/ray_${SLURM_JOB_ID}
+export OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4
+
+CONFIG=${CONFIG:-bird_cv/pipelines/configs/config.toml}
+RUN_ID=$(date +%Y%m%d_%H%M%S)
+for ((i = 1; i <= $#; i++)); do
+    case "${!i}" in
+        --run-id) j=$((i + 1)); RUN_ID=${!j} ;;
+        --run-id=*) RUN_ID=${!i#--run-id=} ;;
+    esac
+done
+source slurm_scripts/run_logs.sh "$RUN_ID"
+python3 bird_cv/pipelines/train.py $CONFIG "$@" --run-id "$RUN_ID"
+status=$?
+end=$(date +'%D %T')
+echo "End:" $end
+exit $status

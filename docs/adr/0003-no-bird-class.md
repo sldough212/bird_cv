@@ -1,0 +1,3 @@
+# `no_bird` is a ninth class, scored like any other
+
+Ground truth and predictions share one vocabulary: the eight Classify behaviors plus `no_bird`. A canonical frame with no Detect box is `no_bird` in ground truth; a frame where the pipeline has no usable detection (gap longer than the carry-forward limit, or empty cage) is `no_bird` in predictions. Scoring follows from that: a false-positive detection (truth `no_bird`, predicted behavior) and a missed bird (truth behavior, predicted `no_bird`) are ordinary errors in the confusion matrix. The only frames excluded from scoring are boxed frames with no behavior label (a labeling hole, not a model error), and their count is always reported.

@@ -3,7 +3,7 @@ from pathlib import Path
 
 from bird_cv.segmentation.segment import run_segment
 from bird_cv.client.upload_tasks import upload_video_tasks
-from bird_cv.preprocessing.get_split_guidance import simulate_split_guidance
+from bird_cv.preprocessing.splits import simulate_split_guidance
 from bird_cv.preprocessing.crop import crop_cages
 from bird_cv.preprocessing.image_utils import run_images_to_video
 from bird_cv.pipelines.config import BirdCVConfig, load_config

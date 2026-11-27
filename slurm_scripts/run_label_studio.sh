@@ -2,7 +2,7 @@
 # Shebang indicating this is a bash script.
 # Do NOT put a comment after the shebang, this will cause an error.
 #SBATCH --account=passerinagenome
-#SBATCH --time=2:00:00
+#SBATCH --time=8:00:00
 #SBATCH --mem=16G
 
 echo "SLURM_JOB_ID:" $SLURM_JOB_ID        # Can access Slurm related Environment variables.

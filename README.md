@@ -1,13 +1,10 @@
 # bird_cv
 
-Computer vision pipeline for detecting and classifying migratory songbird behavior from cage-mounted camera footage. Built around YOLOv11 for detection and VideoMAE for behavior classification.
-
-## Overview
-
-1. **Preprocessing** — Convert Label Studio annotations to YOLO format, run SAM2 cage segmentation, crop images per cage, and extract fixed-length behavior clips
-2. **Detection** — Train a YOLO model to detect birds in cropped cage images
-3. **Classification** — Fine-tune VideoMAE on labeled behavior clips (foraging, preening, resting, etc.)
-4. **Evaluation** — Run YOLO tracking on the test set, compute MOT metrics, and evaluate VideoMAE classification
+Computer vision pipeline for detecting and classifying migratory songbird
+behavior in cage-mounted camera footage. Each raw video is standardized to a
+fixed frame rate, split into cages (SAM2), searched for birds (YOLO) and
+classified per frame (VideoMAE), then scored against Label Studio
+annotations.
 
 ## Setup
 
@@ -15,49 +12,87 @@ Computer vision pipeline for detecting and classifying migratory songbird behavi
 make init
 ```
 
-Requires `uv`. On the cluster, install the CUDA torch wheel after syncing:
+Requires `uv`. On Linux, `uv sync` installs the CUDA 12.4 torch wheels.
+
+## Running the pipeline
+
+Everything reads one config, `bird_cv/pipelines/configs/config.toml`. On the
+cluster, submit the whole chain as SLURM jobs:
 
 ```bash
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --force-reinstall
+./slurm_scripts/submit.sh            # full run
+./slurm_scripts/submit.sh --smoke    # 2 epochs, 2 videos per inference run
 ```
 
-## Running Pipelines
+`submit.sh` chains these stages, each one also runnable by itself as
+`python bird_cv/pipelines/<stage>.py CONFIG ...`:
 
-Each pipeline reads from a `config.toml` in its directory. Set `run_id` to reuse an existing run directory, or leave it empty to auto-generate a timestamp.
+1. **prepare**: snapshot the Label Studio exports, build ground truth on
+   canonical frames, assign cameras to the frozen split, sample training
+   frames and clips.
+2. **build_datasets**: write the YOLO and VideoMAE training data.
+3. **train** (one job per `[models]` role) and its model evaluation.
+4. **infer**: run end to end on the val cameras for every `[evaluate]`
+   (gap fill, det_conf) setting, then on the test cameras at the best one.
+5. **evaluate**: pick the best sweep setting, then score the test run.
 
-```bash
-python bird_cv/pipelines/preprocessing/pipeline.py
-python bird_cv/pipelines/detection/pipeline.py
-python bird_cv/pipelines/classification/pipeline.py
-python bird_cv/pipelines/evaluation/pipeline.py
+Useful options:
+
+- `RUN_ID=name`: the run's id (default: a timestamp). Every stage writes under it.
+- `--dataset ID` (or `DATASET=ID`): skip prepare and train on an existing dataset.
+- `--detect-export F --classify-export F`: use existing exports instead of
+  pulling them from Label Studio.
+
+Models are picked in config: `[models.detector]` and `[models.classifier]`
+`kind`, and `[infer.segmenter]`. Ray Tune is off unless a model sets
+`tune = true`. `standard_fps` and the `[behaviors]` table set the frame rate
+and class vocabulary.
+
+### Label Studio pipelines
+
+`upload_for_detect`, `upload_for_classify`, `upload_for_retrain_detect`,
+`retrain_classify` and `detect` create pre-labels and retrain models
+for Label Studio. They have their own `slurm_scripts/run_*.sh` and still use
+the older paths derived from `path_to_base_output`.
+
+## Output layout
+
+Under `path_to_base_output`:
+
+```
+splits/split_v{n}.parquet        frozen camera split, shared by every run
+datasets/{id}/                   prepare + build_datasets output; a symlink if
+                                 an identical dataset already exists
+models/{role}/{id}/              a training run
+infer/{id}/val_sweep/gap*_conf*/ val inference per sweep setting
+infer/{id}/test/                 test inference at the chosen setting
+eval/{id}/{sweep,test,detector,classifier}/   metrics
+slurm_logs/{id}/                 job logs
 ```
 
-## Project Structure
+See `bird_cv/core/layout.py` for every file.
+
+## Project structure
 
 ```
 bird_cv/
-  classification/     — VideoMAE dataset, training, and evaluation
-  detection/          — YOLO training, tracking, and MOT evaluation
-  pipelines/          — End-to-end pipeline scripts and TOML configs
-    preprocessing/
-    detection/
-    classification/
-    evaluation/
-  preprocessing/      — Label table generation, split guidance, YOLO cropping
-  segmentation/       — SAM2 segmentation utilities
+  core/            layout, manifests, ids, frames, class vocabulary, schemas
+  preprocessing/   snapshots, ground truth, splits, sampling, standardize, crop
+  training/        model registry and training entry points
+  detection/       YOLO backend
+  classification/  VideoMAE backend
+  segmentation/    SAM2 cage segmentation
+  inference/       end-to-end inference on raw videos
+  evaluation/      all metrics and plots
+  client/          Label Studio client
+  pipelines/       entry points and config
+slurm_scripts/     SLURM job scripts and submit.sh
+docs/adr/          design decisions
 ```
 
-## Data Layout
+## Development
 
-Each pipeline run outputs to `{base_path}/{run_id}/`:
-
-```
-{run_id}/
-  intermediate/       — Label tables, split guidance, clip/behavior index
-  yolo_store/         — Full-frame YOLO images and labels
-  yolo_crop/          — Per-cage cropped YOLO images and labels
-  video_crop/         — Fixed-length behavior clips for VideoMAE
-  segmentations/      — SAM2 cage mask JSONs
-  training/           — Model checkpoints
-  evaluation/         — Metrics, classification reports, confusion matrices
+```bash
+uv run pre-commit run --all-files   # ruff, ruff-format, mypy
+uv run pytest tests
 ```
