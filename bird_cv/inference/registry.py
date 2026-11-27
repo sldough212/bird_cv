@@ -23,9 +23,8 @@ from bird_cv.inference.cages import (
     Sam2CageSegmenter,
     WholeFrameSegmenter,
     check_sam2_configs,
-    sam2_config_path,
-    sam2_reference_frame,
 )
+from bird_cv.segmentation.segment import sam2_config_path, sam2_reference_frame
 from bird_cv.inference.protocols import (
     CageSegmenter,
     FrameClassifier,

@@ -200,6 +200,29 @@ def find_segment_boundaries(
     return boundaries
 
 
+def keyframe_segments(
+    video_segments: dict, iou_threshold: float
+) -> tuple[dict, list[int]]:
+    """Smooth SAM2 masks, drop the reference frame (frame 0) and find segments.
+
+    Args:
+        video_segments: :func:`set_sam_and_predict` output, frame 0 being the
+            frame the prompts were drawn on.
+        iou_threshold: See :func:`find_segment_boundaries`.
+
+    Returns:
+        The smoothed masks renumbered from 0, and the first frame of each
+        stable segment.
+    """
+    video_segments = smooth_masks(video_segments=video_segments)
+    video_segments.pop(0)
+    video_segments = {ii: value for ii, value in enumerate(video_segments.values())}
+    boundaries = find_segment_boundaries(
+        video_segments=video_segments, iou_threshold=iou_threshold
+    )
+    return video_segments, boundaries
+
+
 def save_keyframe_segments(
     output_path: Path,
     video_segments: dict[int, dict[int, np.ndarray]],
@@ -400,21 +423,10 @@ def segment(
             device=device,
         )
 
-        # Smooth the SAM2 segmentaitons with a polygon approximation
-        video_segments = smooth_masks(video_segments=video_segments)
-
-        # Remove the first frame, this was the config frame
-        video_segments.pop(0)
+        # Drop the config frame; find disruption boundaries
         (temp_path / "00000.jpg").unlink()
-
-        # Move keys up
-        video_segments = {ii: value for ii, value in enumerate(video_segments.values())}
-
-        # Find disruption boundaries and save one keyframe mask per segment
-        boundaries = find_segment_boundaries(
-            video_segments=video_segments,
-            iou_threshold=iou_threshold,
-        )
+        video_segments, boundaries = keyframe_segments(video_segments, iou_threshold)
+        # Save one keyframe mask per segment
         save_keyframe_segments(
             output_path=output_path,
             video_segments=video_segments,
@@ -484,9 +496,7 @@ def run_segment(
                     iter((segmentation_configs_path / "frames" / camera_id).glob("*/"))
                 ).name
                 segment(
-                    config_path=segmentation_configs_path
-                    / "configs"
-                    / f"{camera_id}.json",
+                    config_path=sam2_config_path(segmentation_configs_path, camera_id),
                     x0_frame_path=segmentation_configs_path
                     / "frames"
                     / camera_id
@@ -498,3 +508,26 @@ def run_segment(
                     device="cuda",
                     visualize=False,
                 )
+
+
+def sam2_config_path(segmentation_configs_path: Path, camera_id: str) -> Path:
+    """Path of a camera's SAM2 prompt config."""
+    return segmentation_configs_path / "configs" / f"{camera_id}.json"
+
+
+def sam2_reference_frame(segmentation_configs_path: Path, camera_id: str) -> Path:
+    """Path of the frame a camera's SAM2 prompts were drawn on.
+
+    The first video folder (sorted) under ``frames/{camera_id}/``, frame
+    ``00001.jpg``. ``run_segment`` keeps its own filesystem-order lookup so
+    Label Studio media stays unchanged (ADR 0002); the two agree whenever a
+    camera has one reference folder.
+
+    Raises:
+        FileNotFoundError: If the camera has no reference frame folder.
+    """
+    frames_dir = segmentation_configs_path / "frames" / camera_id
+    video_dirs = sorted(p for p in frames_dir.glob("*/") if p.is_dir())
+    if not video_dirs:
+        raise FileNotFoundError(f"No SAM2 reference frame folder in {frames_dir}")
+    return video_dirs[0] / "00001.jpg"

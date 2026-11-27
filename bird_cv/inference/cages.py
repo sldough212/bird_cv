@@ -22,32 +22,15 @@ from sam2.sam2_video_predictor import SAM2VideoPredictor
 from bird_cv.core.ids import cage_id_from_index
 from bird_cv.preprocessing.crop import crop_cage_frame
 from bird_cv.preprocessing.image_utils import crop_and_mask_image
-from bird_cv.segmentation.segment import find_segment_boundaries, set_sam_and_predict
-from bird_cv.segmentation.smooth import smooth_masks
+from bird_cv.segmentation.segment import (
+    keyframe_segments,
+    sam2_config_path,
+    sam2_reference_frame,
+    set_sam_and_predict,
+)
 
 Keyframe = tuple[int, dict[str, np.ndarray]]
 """``(first canonical frame, {cage_id: 2D bool mask})`` of one stable mask segment."""
-
-
-def sam2_config_path(segmentation_configs_path: Path, camera_id: str) -> Path:
-    """Path of a camera's SAM2 prompt config."""
-    return segmentation_configs_path / "configs" / f"{camera_id}.json"
-
-
-def sam2_reference_frame(segmentation_configs_path: Path, camera_id: str) -> Path:
-    """Path of the frame a camera's SAM2 prompts were drawn on.
-
-    Mirrors ``run_segment``: the first video folder under
-    ``frames/{camera_id}/``, frame ``00001.jpg``.
-
-    Raises:
-        FileNotFoundError: If the camera has no reference frame folder.
-    """
-    frames_dir = segmentation_configs_path / "frames" / camera_id
-    video_dirs = sorted(p for p in frames_dir.glob("*/") if p.is_dir())
-    if not video_dirs:
-        raise FileNotFoundError(f"No SAM2 reference frame folder in {frames_dir}")
-    return video_dirs[0] / "00001.jpg"
 
 
 def check_sam2_configs(
@@ -237,12 +220,8 @@ class Sam2CageSegmenter:
                 predictor=self.predictor,
             )
 
-        video_segments = smooth_masks(video_segments=video_segments)
-        # Drop the reference frame and renumber from 0, as segment() does
-        video_segments.pop(0)
-        video_segments = {ii: v for ii, v in enumerate(video_segments.values())}
-        boundaries = find_segment_boundaries(
-            video_segments=video_segments, iou_threshold=self.iou_threshold
+        video_segments, boundaries = keyframe_segments(
+            video_segments, self.iou_threshold
         )
         return [
             (
