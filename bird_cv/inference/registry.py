@@ -3,9 +3,10 @@
 The detector and classifier come from the ``[models.detector]`` and
 ``[models.classifier]`` :class:`~bird_cv.pipelines.config.ModelSpec` tables
 through :func:`bird_cv.training.registry.get_trainer` (one ``kind`` mapping
-per role, shared by training and inference). The cage segmenter, which is
-never trained, has its own mapping here (:func:`_segmenters`), picked by
-``[infer.segmenter] kind``.
+per role, shared by training and inference). The cage segmenter has its
+own mapping here (:func:`_segmenters`), picked by ``[infer.segmenter]
+kind``; one that loads a trained model names its role (``trained_role``),
+whose checkpoint is resolved like the detector's.
 """
 
 import inspect
@@ -24,6 +25,7 @@ from bird_cv.inference.cages import (
     WholeFrameSegmenter,
     check_sam2_configs,
 )
+from bird_cv.segmentation.yolo_cages import YoloCageSegmenter
 from bird_cv.segmentation.segment import sam2_config_path, sam2_reference_frame
 from bird_cv.inference.protocols import (
     CageSegmenter,
@@ -43,10 +45,14 @@ class SegmenterContext:
     Attributes:
         segmentation_configs: ``path_to_segmentation_configs``.
         sam_model_id: ``sam_model_id``.
+        trained: The ``trained_role`` spec, if the segmenter has one.
+        checkpoint: That role's resolved checkpoint.
     """
 
     segmentation_configs: Path
     sam_model_id: str
+    trained: "ModelSpec | None" = None
+    checkpoint: Path | None = None
 
 
 class Segmenters(Protocol):
@@ -135,9 +141,65 @@ class WholeFrameSegmenters:
         return WholeFrameSegmenter()
 
 
+class YoloCageSegmenters:
+    """The trained ``[models.cage_detector]`` model, no prompt configs (ADR 0007).
+
+    ``options`` are :class:`~bird_cv.segmentation.yolo_cages.YoloCageSegmenter`
+    arguments; ``expected_cages`` is an int for every camera or a
+    ``{camera_id: int}`` table (cameras not in it: automatic).
+    """
+
+    trained_role = "cage_detector"
+
+    def __init__(
+        self,
+        context: SegmenterContext,
+        conf: float = 0.5,
+        sample_frames: int = 5,
+        expected_cages: int | dict[str, int] | None = None,
+    ) -> None:
+        self.context = context
+        self.conf = conf
+        self.sample_frames = sample_frames
+        self.expected_cages = expected_cages or {}
+        self._model: Any = None
+
+    @classmethod
+    def option_keys(cls) -> set[str]:
+        return {"conf", "sample_frames", "expected_cages"}
+
+    def check_cameras(self, camera_ids: Iterable[str]) -> None:
+        if self.context.trained is None or self.context.checkpoint is None:
+            raise ValueError("yolo_cages needs a [models.cage_detector] model")
+
+    def load(self) -> None:
+        assert self.context.trained and self.context.checkpoint  # check_cameras
+        trainer = get_trainer(self.context.trained.kind)
+        self._model = trainer.load_for_inference(
+            self.context.checkpoint, self.context.trained
+        )
+
+    def for_camera(self, camera_id: str) -> "CageSegmenter":
+        if self._model is None:
+            raise RuntimeError("Call YoloCageSegmenters.load() before for_camera()")
+        expected = self.expected_cages
+        return YoloCageSegmenter(
+            self._model,
+            expected_cages=expected
+            if isinstance(expected, int)
+            else expected.get(camera_id),
+            conf=self.conf,
+            sample_frames=self.sample_frames,
+        )
+
+
 def _segmenters() -> dict[str, Any]:
     """The segmenter registry: ``[infer.segmenter] kind`` to class."""
-    return {"sam2": Sam2Segmenters, "whole_frame": WholeFrameSegmenters}
+    return {
+        "sam2": Sam2Segmenters,
+        "yolo_cages": YoloCageSegmenters,
+        "whole_frame": WholeFrameSegmenters,
+    }
 
 
 def segmenter_kinds() -> list[str]:
@@ -234,14 +296,28 @@ def inference_models(
     Returns:
         The resolved, unloaded models.
 
+    The segmenter's ``trained_role`` (if any) is resolved the same way.
+
     Raises:
-        ValueError: If a role has neither a training run nor a ``checkpoint``.
+        ValueError: If a role has neither a training run nor a ``checkpoint``,
+            or the segmenter's role isn't configured.
         FileNotFoundError: If a role's checkpoint doesn't exist.
         ValueError: If the training runs of the roles used different
             datasets.
     """
     layout = Layout(cfg.path_to_base_output)
     specs = {"detector": cfg.models.detector, "classifier": cfg.models.classifier}
+    trained_role = getattr(
+        _segmenters()[cfg.infer.segmenter.kind], "trained_role", None
+    )
+    if trained_role is not None:
+        trained = cfg.models.roles().get(trained_role)
+        if trained is None:
+            raise ValueError(
+                f"[infer.segmenter] kind {cfg.infer.segmenter.kind!r} needs "
+                f"[models.{trained_role}]"
+            )
+        specs[trained_role] = trained
     checkpoints: dict[str, Path] = {}
     datasets: dict[str, dict[str, Any] | None] = {}
     for role, spec in specs.items():
@@ -278,6 +354,8 @@ def inference_models(
         context=SegmenterContext(
             segmentation_configs=cfg.path_to_segmentation_configs,
             sam_model_id=cfg.sam_model_id,
+            trained=specs.get(trained_role) if trained_role else None,
+            checkpoint=checkpoints.get(trained_role) if trained_role else None,
         ),
         train_run_id=train_run_id,
         dataset=next(iter(datasets.values()), None),

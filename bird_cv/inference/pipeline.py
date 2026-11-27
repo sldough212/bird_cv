@@ -3,7 +3,8 @@
 Per video, in three passes over the standardized video, ``chunk_frames``
 canonical frames at a time:
 
-1. ``sam2``: cage keyframe masks per chunk.
+1. ``sam2``: cage keyframe masks (any segmenter kind; the stage keeps its
+   name), saved for ``evaluate segments``.
 2. ``detect``: each cage's frames (cropped, masked, padded to one size per
    cage) through its own tracker, whose state carries across chunks.
 3. ``classify``: after confidence filtering and gap fill over the whole
@@ -52,6 +53,7 @@ from bird_cv.inference.protocols import (
     StreamingDetector,
 )
 from bird_cv.inference.registry import InferenceModels
+from bird_cv.segmentation.cage_masks import save_keyframes
 from bird_cv.preprocessing.standardize import (
     expected_standard_frames,
     standardize_video,
@@ -120,17 +122,16 @@ def infer_video(
     approx_frames = video_header(std_path)[1]
 
     # Pass 1: cage masks
-    masks = CageMasks()
-    n_frames = 0
     with timer.stage(camera_id, video_id, "sam2", frames=approx_frames):
-        for start, frames in iter_chunks(std_path, cfg.chunk_frames):
-            masks.add(segmenter.segment_chunk(frames, start))
-            n_frames = start + len(frames)
-    if n_frames == 0:
+        keyframes = segmenter.segment_video(std_path, cfg.chunk_frames)
+    if not keyframes:
         print(f"{raw_video_path}: standardized video has no frames")
         predictions = pl.DataFrame(schema=PREDICTION_SCHEMA)
         _write_parquet(predictions, out_path)
         return predictions
+    save_keyframes(out.segments(camera_id, video_id), keyframes)
+    masks = CageMasks()
+    masks.add(keyframes)
     shapes = masks.cage_frame_shapes()
     cage_ids = masks.cage_ids
 
@@ -138,8 +139,10 @@ def infer_video(
     trackers = {c: detector.frame_tracker() for c in shapes}
     detections: dict[str, list[Detection]] = {c: [] for c in cage_ids}
     empty: dict[str, set[int]] = {c: set() for c in cage_ids}
-    with timer.stage(camera_id, video_id, "detect", frames=n_frames):
+    n_frames = 0
+    with timer.stage(camera_id, video_id, "detect", frames=approx_frames):
         for start, frames in iter_chunks(std_path, cfg.chunk_frames):
+            n_frames = start + len(frames)
             for cage_id, tracker in trackers.items():
                 idx: list[int] = []
                 crops: list[np.ndarray] = []

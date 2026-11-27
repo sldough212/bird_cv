@@ -1,5 +1,9 @@
 """Cage segmentation for inference: SAM2 prompt configs, keyframe masks, cage frames.
 
+The ``yolo_cages`` segmenter
+(:class:`bird_cv.segmentation.yolo_cages.YoloCageSegmenter`) needs no prompt
+config: a trained model finds the cages (ADR 0007).
+
 A camera's SAM2 prompt config lives at
 ``{segmentation_configs}/configs/{camera_id}.json`` with its reference frame
 under ``{segmentation_configs}/frames/{camera_id}/<video>/00001.jpg`` (the
@@ -20,8 +24,10 @@ import numpy as np
 from sam2.sam2_video_predictor import SAM2VideoPredictor
 
 from bird_cv.core.ids import cage_id_from_index
+from bird_cv.inference.chunks import iter_chunks
 from bird_cv.preprocessing.crop import crop_cage_frame
 from bird_cv.preprocessing.image_utils import crop_and_mask_image
+from bird_cv.preprocessing.standardize import iter_canonical_frames
 from bird_cv.segmentation.segment import (
     keyframe_segments,
     sam2_config_path,
@@ -205,6 +211,14 @@ class Sam2CageSegmenter:
         self.device = device
         self.iou_threshold = iou_threshold
 
+    def segment_video(self, video_path: Path, chunk_frames: int) -> list[Keyframe]:
+        """Every chunk's keyframes, in frame order."""
+        return [
+            keyframe
+            for start, frames in iter_chunks(video_path, chunk_frames)
+            for keyframe in self.segment_chunk(frames, start)
+        ]
+
     def segment_chunk(self, frames: Sequence[np.ndarray], start: int) -> list[Keyframe]:
         """Return the keyframes of ``frames`` (BGR), the chunk starting at ``start``."""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -241,15 +255,9 @@ class WholeFrameSegmenter:
     For videos that already show a single cage, e.g. the smoke test.
     """
 
-    def segment_chunk(self, frames: Sequence[np.ndarray], start: int) -> list[Keyframe]:
-        """One keyframe at ``start`` whose single mask covers the whole frame.
-
-        Args:
-            frames: BGR frames of the chunk; only the first's size is used.
-            start: Canonical frame of ``frames[0]``.
-
-        Returns:
-            ``[(start, {"0": all-True mask})]``.
-        """
-        h, w = frames[0].shape[:2]
-        return [(start, {cage_id_from_index(0): np.ones((h, w), dtype=bool)})]
+    def segment_video(self, video_path: Path, chunk_frames: int) -> list[Keyframe]:
+        """``[(0, {"0": all-True mask})]`` sized to the first frame; [] if none."""
+        for _, frame in iter_canonical_frames(video_path, [0]):
+            h, w = frame.shape[:2]
+            return [(0, {cage_id_from_index(0): np.ones((h, w), dtype=bool)})]
+        return []

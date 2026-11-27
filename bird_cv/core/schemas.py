@@ -153,6 +153,19 @@ VIDEOMAE_CLIPS_SCHEMA = {
 }
 """VideoMAE training clips, one row per clip."""
 
+CAGE_FRAMES_SCHEMA = {
+    "camera_id": pl.String,
+    "video_id": pl.String,
+    "split": pl.String,
+    # The standardized video the masks were made on, and the frame to train on.
+    "video_path": pl.String,
+    "frame": pl.Int64,
+    # The sam2 run's keyframes file, and the keyframe in effect at ``frame``.
+    "mask_path": pl.String,
+    "mask_start": pl.Int64,
+}
+"""Full frames selected for the cage detector, one row per frame."""
+
 TIMINGS_SCHEMA = {
     "camera_id": pl.String,
     "video_id": pl.String,

@@ -2,7 +2,7 @@
 # Submit the whole pipeline as afterok-chained SLURM jobs:
 # prepare -> build datasets -> train each [models] role (+ model metrics)
 # -> val-sweep inference array -> evaluate sweep -> test inference at the
-# chosen setting -> evaluate test.
+# chosen setting -> evaluate test (+ cage masks vs the one-shot SAM2 masks).
 #
 #   bash slurm_scripts/submit.sh [--smoke] [--dataset ID] [PREPARE_ARGS...]
 #
@@ -95,9 +95,11 @@ infer_test=$(sbatch --parsable $(alog infer_test) "${DEP[@]}" "afterok:$eval_swe
     slurm_scripts/run_infer_array.sh --split test "${INFER[@]}")
 eval_test=$(sbatch --parsable $(log evaluate_test) "${DEP[@]}" "afterok:$infer_test" \
     slurm_scripts/run_evaluate.sh test "${RUN[@]}")
-JOBS+=("$sweep" "$eval_sweep" "$infer_test" "$eval_test")
+eval_segments=$(sbatch --parsable $(log evaluate_segments) "${DEP[@]}" "afterok:$infer_test" \
+    slurm_scripts/run_evaluate.sh segments "${RUN[@]}")
+JOBS+=("$sweep" "$eval_sweep" "$infer_test" "$eval_test" "$eval_segments")
 echo "infer_sweep=$sweep ($N_SWEEP settings) evaluate_sweep=$eval_sweep"
-echo "infer_test=$infer_test evaluate_test=$eval_test"
+echo "infer_test=$infer_test evaluate_test=$eval_test evaluate_segments=$eval_segments"
 echo "Logs: $LOGS"
 echo "Dataset: $BASE/datasets/${DATASET:-$RUN_ID}"
 echo "Predictions: $INFER_DIR/{val_sweep,test}  Sweep: $SWEEP_DIR  Test: $TEST_DIR"

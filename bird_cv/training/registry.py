@@ -4,8 +4,9 @@ Pipelines only ever talk to the :class:`Trainer` protocol, so swapping in a
 different detector or classifier means writing one class here and pointing
 ``[models.detector]`` or ``[models.classifier]`` at its ``kind``; training
 and inference (:meth:`Trainer.load_for_inference`) then both use it.
-:func:`_trainers` is the one place detector and classifier names live (the
-segmenter, which is never trained, is in :mod:`bird_cv.inference.registry`).
+:func:`_trainers` is the one place trained model names live (segmenter kinds
+are in :mod:`bird_cv.inference.registry`; ``yolo_cages`` loads the
+``[models.cage_detector]`` model trained here).
 Config loading uses it to validate kinds and search spaces.
 """
 
@@ -15,11 +16,15 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from bird_cv.core.layout import TrainRun
 from ray import tune
-from bird_cv.detection.train_yolo import train_select_yolo
-from bird_cv.detection.evaluate_yolo import yolo_presence_metrics
+from bird_cv.detection.train_yolo import train_select_yolo, write_dataset_yaml
+from bird_cv.detection.evaluate_yolo import yolo_presence_metrics, yolo_seg_metrics
 from bird_cv.detection.track import YoloDetector
 import polars as pl
+import cv2
+from ultralytics import YOLO
 from bird_cv.core.frames import canonical_to_ls
+from bird_cv.preprocessing.standardize import iter_canonical_frames
+from bird_cv.segmentation.cage_masks import load_keyframes, yolo_seg_label
 from bird_cv.preprocessing.annotations_to_yolo import stream_annotations_to_yolo
 from bird_cv.classification.train_video_model import train_video_model
 from bird_cv.classification.tune_video_model import tune_video_model
@@ -139,8 +144,11 @@ class Trainer(Protocol):
         """The frame or clip list prepare sampled for this kind (frozen split)."""
         ...
 
-    def dataset_export(self, media: DatasetMedia) -> Path:
-        """The export whose tasks' media :meth:`build_dataset` reads."""
+    def dataset_export(self, media: DatasetMedia) -> Path | None:
+        """The export whose tasks' media :meth:`build_dataset` reads.
+
+        None if the selection names its media itself (``video_path``).
+        """
         ...
 
     def build_dataset(
@@ -235,6 +243,10 @@ class YoloTrainer:
     def checkpoint_path(self, run_dir: Path) -> Path:
         return run_dir / "best.pt"
 
+    def _selection(self, run_dir: Path, context: TrainContext) -> dict[str, Any]:
+        """Extra :func:`train_select_yolo` arguments: class names, selection."""
+        return {}
+
     def _fit(
         self,
         spec: "ModelSpec",
@@ -258,6 +270,7 @@ class YoloTrainer:
             search_space=build_search_space(spec.search_space) if tune else None,
             train_options=spec.options,
             tune_options=spec.tune_options if tune else None,
+            **self._selection(run_dir, context),
         )
         return TrainResult(
             checkpoint=Path(best.pop("best_checkpoint")),
@@ -346,6 +359,80 @@ class YoloTrainer:
             raise RuntimeError(
                 f"{len(missing)} of {expected.height} selected frames were not "
                 f"written to {out_dir}, e.g. {missing[:10]}"
+            )
+
+
+class YoloSegTrainer(YoloTrainer):
+    """Ultralytics YOLO cage segmentation (ADR 0007), selected on val mask mAP50-95.
+
+    Trained on full standardized frames labeled with a ``sam2`` inference
+    run's masks (``cage_frames.parquet``); loaded for inference by the ``yolo_cages``
+    segmenter. Options are as for :class:`YoloTrainer`.
+    """
+
+    names = {0: "cage"}
+
+    def _selection(self, run_dir, context) -> dict[str, Any]:
+        def score(checkpoint: Path, data_yaml: Path) -> dict[str, Any]:
+            return yolo_seg_metrics(
+                data_yaml, checkpoint, "val", context.device, run_dir / "selection_val"
+            )
+
+        return {"names": self.names, "score": score, "score_key": "mask_map"}
+
+    def evaluate(
+        self, checkpoint, spec, dataset, split, output_dir, context
+    ) -> dict[str, Any]:
+        data_yaml = write_dataset_yaml(dataset, output_dir / "data.yaml", self.names)
+        return yolo_seg_metrics(
+            data_yaml, checkpoint, split, context.device, output_dir
+        )
+
+    def infer_option_keys(self) -> set[str]:
+        """None: the ``yolo_cages`` segmenter's options configure inference."""
+        return set()
+
+    def load_for_inference(self, checkpoint: Path, spec: "ModelSpec") -> Any:
+        """The Ultralytics ``YOLO`` model."""
+        return YOLO(str(checkpoint))
+
+    def prepared_selection(self, layout, dataset_id) -> Path:
+        return layout.cage_frames(dataset_id)
+
+    def dataset_export(self, media):
+        return None
+
+    def build_dataset(
+        self, selection, ground_truth, spec, media, out_dir, guidance_path
+    ) -> None:
+        """Full frames and polygon labels, ``images|labels/{split}/``.
+
+        One label line per cage of the frame's keyframe; the selection
+        doubles as the guidance file.
+
+        Raises:
+            RuntimeError: If a selected frame could not be read.
+        """
+        selection.write_parquet(guidance_path)
+        written = 0
+        for (video_path,), rows in selection.group_by("video_path"):
+            wanted = {r["frame"]: r for r in rows.iter_rows(named=True)}
+            keyframes = dict(load_keyframes(Path(rows["mask_path"][0])))
+            for frame_idx, frame in iter_canonical_frames(Path(video_path), wanted):
+                row = wanted[frame_idx]
+                stem = f"{row['camera_id']}_{row['video_id']}_{frame_idx:06d}"
+                for sub, suffix in (("images", ".jpg"), ("labels", ".txt")):
+                    (out_dir / sub / row["split"]).mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(
+                    str(out_dir / "images" / row["split"] / f"{stem}.jpg"), frame
+                )
+                (out_dir / "labels" / row["split"] / f"{stem}.txt").write_text(
+                    yolo_seg_label(list(keyframes[row["mask_start"]].values()))
+                )
+                written += 1
+        if written != selection.height:
+            raise RuntimeError(
+                f"Wrote {written} of {selection.height} selected cage frames to {out_dir}"
             )
 
 
@@ -513,7 +600,11 @@ class VideoMAETrainer:
 
 def _trainers() -> dict[str, type]:
     """The registry: ``ModelSpec.kind`` to trainer class."""
-    return {"yolo": YoloTrainer, "videomae": VideoMAETrainer}
+    return {
+        "yolo": YoloTrainer,
+        "yolo_seg": YoloSegTrainer,
+        "videomae": VideoMAETrainer,
+    }
 
 
 def trainer_kinds() -> list[str]:

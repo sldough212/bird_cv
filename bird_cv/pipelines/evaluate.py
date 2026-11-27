@@ -10,6 +10,8 @@ Modes:
   det_conf)`` in ``[evaluate]``, from :meth:`Layout.sweep_infer_run`;
   writes ``sweep.parquet`` and ``best_setting.json``.
 - ``test``: frozen-split test cameras, from :meth:`Layout.test_infer_run`.
+- ``segments``: that test run's cage masks against the ``sam2`` run's
+  (``[prepare] cage_masks_run_id``): matched IoU and cage counts.
 - ``model``: one role's model-level metrics (e.g. window macro-F1 for a
   clip classifier, presence F1 for a detector) on the val and test splits
   of its frozen-split dataset, for ``--role`` and the checkpoint of training
@@ -20,7 +22,7 @@ recorded in their manifests.
 
 Usage::
 
-    python bird_cv/pipelines/evaluate.py CONFIG {sweep,test,model} \\
+    python bird_cv/pipelines/evaluate.py CONFIG {sweep,test,segments,model} \\
         --run-id ID [--dataset ID] [--role ROLE]
 """
 
@@ -36,6 +38,7 @@ import polars as pl
 
 from bird_cv.core.layout import EvalRun, Layout
 from bird_cv.core.manifest import new_manifest, read_manifest_file, write_manifest
+from bird_cv.evaluation.segments import evaluate_segments
 from bird_cv.evaluation.e2e import (
     evaluate_e2e,
     load_ground_truth,
@@ -45,7 +48,7 @@ from bird_cv.evaluation.e2e import (
     write_e2e_result,
 )
 from bird_cv.pipelines.config import BirdCVConfig, load_config
-from bird_cv.pipelines.prepare import dataset_key
+from bird_cv.pipelines.prepare import cage_masks_run_id, dataset_key
 from bird_cv.training.registry import TrainContext, get_trainer
 
 logger = logging.getLogger(__name__)
@@ -103,7 +106,7 @@ def run_evaluate(
     Args:
         cfg: Pipeline config; uses ``[evaluate]`` (and ``[models]`` for
             ``model``).
-        mode: ``"sweep"``, ``"test"`` or ``"model"``.
+        mode: ``"sweep"``, ``"test"``, ``"segments"`` or ``"model"``.
         run_id: The pipeline run to score: its inference runs, or for
             ``model`` its training run of ``role``. Also names the output.
         role: A ``[models]`` role, for ``model``.
@@ -114,7 +117,7 @@ def run_evaluate(
     """
     ev = cfg.evaluate
     layout = Layout(cfg.path_to_base_output)
-    if mode not in ("sweep", "test", "model"):
+    if mode not in ("sweep", "test", "segments", "model"):
         raise ValueError(f"Unknown mode {mode!r}")
     if not run_id:
         raise ValueError(f"{mode} mode needs the scored run's --run-id")
@@ -162,6 +165,17 @@ def run_evaluate(
             )
         )
         inputs = {"dataset": str(data_dir), "checkpoint": str(checkpoint)}
+    elif mode == "segments":
+        test_run = layout.test_infer_run(run_id)
+        check_dataset(dataset, test_run.task_manifests(), f"inference {test_run.dir}")
+        truth = layout.infer_run(cage_masks_run_id(cfg))
+        table, summary = evaluate_segments(
+            test_run, truth, set(_cameras(split, "test"))
+        )
+        print(json.dumps(summary, indent=2, default=float))
+        table.write_parquet(results.segments)
+        results.metrics.write_text(json.dumps(summary, indent=2, default=float))
+        inputs = {"segments": str(test_run.dir), "masks": str(truth.dir)}
     else:
         truth_path = layout.ground_truth(dataset_id)
         truth = load_ground_truth(truth_path)
@@ -238,7 +252,7 @@ def run_evaluate(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("config_path", type=Path, help="Path to the TOML config")
-    parser.add_argument("mode", choices=("sweep", "test", "model"))
+    parser.add_argument("mode", choices=("sweep", "test", "segments", "model"))
     parser.add_argument(
         "--run-id", default=None, help="Pipeline run to score (and output name)"
     )
