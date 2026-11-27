@@ -8,21 +8,18 @@ a path changes here or nowhere::
     snapshots/{snapshot_hash}/                detect.json, classify.json, manifest.json
     splits/split_v{n}.parquet                 SPLIT_SCHEMA
     splits/split_v{n}/manifest.json
-    splits/cv_folds_v{n}.parquet              CV_FOLD_SCHEMA
     prepared/current.json                     the last prepare output (fallback only)
     prepared/runs/{run_id}.id                 the prepared id a pipeline run uses
     prepared/{snapshot_hash}/gt_v{g}/         ground_truth.parquet, ground_truth_stats.json
         split_v{n}/sampling_{cfghash}/        split_summary, yolo_frames, videomae_clips
                                               (.parquet), manifest.json
             datasets/{role}/{kind}/frozen/    training data on the frozen split, with
-            datasets/{role}/{kind}/fold{k}/   split, selection, split_guidance (.parquet)
-                                              and manifest.json; one dir per CV fold
+                                              split, selection, split_guidance (.parquet)
+                                              and manifest.json
     train/{role}/{run_id}/                    frozen-split training run
-    train/{role}/fold{k}/{run_id}/            CV fold training run
     infer/{run_id}/                           an ad-hoc inference run, or the root of:
         val_sweep/gap{g}_conf{c}/             one val-sweep setting
         test/                                 test cameras at the chosen setting
-        cv/fold{k}/                           one CV fold's test cameras
     evaluation/{mode}/{run_id}/[{role}/]
 
 Files inside run directories are named by :class:`TrainRun`,
@@ -55,11 +52,6 @@ def split_version_of(path: Path) -> int | None:
 def split_manifest_dir(splits_dir: Path, version: int) -> Path:
     """Directory holding split version ``version``'s ``manifest.json``."""
     return splits_dir / f"split_v{version}"
-
-
-def cv_folds_file(splits_dir: Path, version: int) -> Path:
-    """CV folds belonging to split version ``version``."""
-    return splits_dir / f"cv_folds_v{version}.parquet"
 
 
 def snapshot_files(directory: Path) -> tuple[Path, Path]:
@@ -128,7 +120,7 @@ class TrainRun:
 
     @property
     def best_hyperparameters(self) -> Path:
-        """Selected training arguments, reusable for CV folds."""
+        """Selected training arguments, reusable with ``--hyperparameters``."""
         return self.dir / "best_hyperparameters.json"
 
     @property
@@ -192,15 +184,6 @@ class EvalRun:
     def best_setting(self) -> Path:
         """The (gap fill, det_conf) setting chosen on val."""
         return self.dir / "best_setting.json"
-
-    @property
-    def per_fold(self) -> Path:
-        return self.dir / "per_fold.parquet"
-
-    @property
-    def cv_summary(self) -> Path:
-        """Pooled CV scores and which cameras tuning saw."""
-        return self.dir / "cv.json"
 
     @property
     def model_metrics(self) -> Path:
@@ -287,16 +270,12 @@ class Layout:
 
     @property
     def splits(self) -> Path:
-        """Directory of every split version and its CV folds."""
+        """Directory of every split version."""
         return self.base / "splits"
 
     def split(self, version: int) -> Path:
         """Split version ``version`` (``SPLIT_SCHEMA``)."""
         return split_file(self.splits, version)
-
-    def cv_folds(self, version: int) -> Path:
-        """CV folds of split version ``version`` (``CV_FOLD_SCHEMA``)."""
-        return cv_folds_file(self.splits, version)
 
     # Prepared data
 
@@ -334,30 +313,22 @@ class Layout:
         """Sampled classifier training clips (``VIDEOMAE_CLIPS_SCHEMA``)."""
         return self.sampling_dir(prepared) / "videomae_clips.parquet"
 
-    def dataset(
-        self, prepared: Prepared, role: str, kind: str, fold: int | None = None
-    ) -> Path:
-        """Training data of one role's model kind: frozen split or CV fold ``fold``."""
+    def dataset(self, prepared: Prepared, role: str, kind: str) -> Path:
+        """Training data of one role's model kind on the frozen split."""
         root = self.sampling_dir(prepared) / "datasets" / role / kind
-        return root / ("frozen" if fold is None else f"fold{fold}")
+        return root / "frozen"
 
-    def dataset_split(
-        self, prepared: Prepared, role: str, kind: str, fold: int | None = None
-    ) -> Path:
+    def dataset_split(self, prepared: Prepared, role: str, kind: str) -> Path:
         """The camera split a dataset was built from (``camera_id``, ``split``)."""
-        return self.dataset(prepared, role, kind, fold) / "split.parquet"
+        return self.dataset(prepared, role, kind) / "split.parquet"
 
-    def dataset_selection(
-        self, prepared: Prepared, role: str, kind: str, fold: int | None = None
-    ) -> Path:
+    def dataset_selection(self, prepared: Prepared, role: str, kind: str) -> Path:
         """The sampled frames or clips a dataset was built from."""
-        return self.dataset(prepared, role, kind, fold) / "selection.parquet"
+        return self.dataset(prepared, role, kind) / "selection.parquet"
 
-    def dataset_guidance(
-        self, prepared: Prepared, role: str, kind: str, fold: int | None = None
-    ) -> Path:
+    def dataset_guidance(self, prepared: Prepared, role: str, kind: str) -> Path:
         """The split-guidance parquet handed to the dataset converter."""
-        return self.dataset(prepared, role, kind, fold) / "split_guidance.parquet"
+        return self.dataset(prepared, role, kind) / "split_guidance.parquet"
 
     @property
     def current_prepared(self) -> Path:
@@ -423,10 +394,10 @@ class Layout:
 
     # Training
 
-    def train_run(self, role: str, run_id: str, fold: int | None = None) -> Path:
-        """One training run of a role, on the frozen split or a CV fold."""
+    def train_run(self, role: str, run_id: str) -> Path:
+        """One training run of a role."""
         root = self.base / "train" / role
-        return (root if fold is None else root / f"fold{fold}") / run_id
+        return root / run_id
 
     # Inference
 
@@ -449,14 +420,6 @@ class Layout:
     def test_infer_run(self, run_id: str) -> InferRun:
         """Inference on test cameras at the setting chosen on val."""
         return InferRun(self.infer_run(run_id).dir / "test")
-
-    def cv_root(self, run_id: str) -> Path:
-        """Parent of every CV fold's inference run."""
-        return self.infer_run(run_id).dir / "cv"
-
-    def cv_infer_run(self, run_id: str, fold: int) -> InferRun:
-        """Inference on one CV fold's test cameras with that fold's models."""
-        return InferRun(self.cv_root(run_id) / f"fold{fold}")
 
     # Evaluation
 

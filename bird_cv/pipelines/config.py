@@ -68,7 +68,6 @@ class PrepareConfig:
         default_factory=lambda: {"train": 0.70, "val": 0.15, "test": 0.15}
     )
     split_seed: int = 42
-    cv_folds: int = 3
     # Every k-th frame for Detect videos that have no Classify labels yet.
     yolo_uniform_stride: int = 5
     # Frames between consecutive VideoMAE clip starts within a labeled stretch.
@@ -122,8 +121,6 @@ class EvaluateConfig:
     sweep_gap_fill_frames: list[int] = field(default_factory=lambda: [0, 8, 16])
     sweep_det_conf: list[float] = field(default_factory=lambda: [0.05, 0.25, 0.5])
     # Inputs and outputs are located by bird_cv.core.layout.Layout.
-    # Non-test cameras held out as val within each CV fold.
-    cv_val_cameras: int = 1
 
 
 @dataclass

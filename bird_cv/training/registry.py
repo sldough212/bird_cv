@@ -46,8 +46,8 @@ class TrainResult:
     Attributes:
         checkpoint: The selected checkpoint (file or directory).
         hyperparameters: Training arguments that produced it, reusable as
-            ``train(..., hyperparameters=...)`` (e.g. for CV folds); empty
-            means the trainer's defaults.
+            ``train(..., hyperparameters=...)``; empty means the trainer's
+            defaults.
         metrics: Validation scores of the selected checkpoint.
     """
 
@@ -76,13 +76,6 @@ class Trainer(Protocol):
 
     def checkpoint_path(self, run_dir: Path) -> Path:
         """Where :meth:`train` and :meth:`tune` put the selected checkpoint."""
-        ...
-
-    def dataset_cameras(self, dataset: Path) -> set[str]:
-        """Cameras visible in a dataset's train and val data, from its layout.
-
-        Used to catch CV fold leaks; empty if the layout doesn't show them.
-        """
         ...
 
     def train(
@@ -129,16 +122,6 @@ class Trainer(Protocol):
 
     def prepared_selection(self, layout: "Layout", prepared: "Prepared") -> Path:
         """The frame or clip list prepare sampled for this kind (frozen split)."""
-        ...
-
-    def select(
-        self, frames: "pl.DataFrame", sampling: dict[str, int]
-    ) -> "pl.DataFrame":
-        """Sample this kind's training data from ground truth with a ``split``
-        column, as prepare does (used for CV folds, whose splits differ).
-
-        ``sampling`` is :func:`bird_cv.pipelines.prepare.sampling_config`.
-        """
         ...
 
     def dataset_export(self, media: DatasetMedia) -> Path:
@@ -238,18 +221,6 @@ class YoloTrainer:
     def checkpoint_path(self, run_dir: Path) -> Path:
         return run_dir / "best.pt"
 
-    def dataset_cameras(self, dataset: Path) -> set[str]:
-        """Cameras under ``images/{train,val}/``: camera folders, and the
-        ``{camera_id}_...`` prefix of flat image files (camera ids have no
-        ``_``)."""
-        return {
-            p.name if p.is_dir() else p.name.split("_", 1)[0]
-            for split in ("train", "val")
-            if (dataset / "images" / split).is_dir()
-            for p in (dataset / "images" / split).iterdir()
-            if p.is_dir() or p.suffix == ".jpg"
-        }
-
     def _fit(
         self,
         spec: "ModelSpec",
@@ -316,13 +287,6 @@ class YoloTrainer:
 
     def prepared_selection(self, layout, prepared) -> Path:
         return layout.yolo_frames(prepared)
-
-    def select(self, frames, sampling):
-        from bird_cv.data.sampling import select_yolo_frames
-
-        return select_yolo_frames(
-            frames, stride=sampling["yolo_uniform_stride"], seed=sampling["seed"]
-        )
 
     def dataset_export(self, media):
         return media.detect_export
@@ -394,10 +358,6 @@ class VideoMAETrainer:
 
     def checkpoint_path(self, run_dir: Path) -> Path:
         return run_dir / "model" / "best"
-
-    def dataset_cameras(self, dataset: Path) -> set[str]:
-        """Clip paths don't carry the camera; rely on ``split.parquet``."""
-        return set()
 
     def _train_kwargs(
         self, spec: "ModelSpec", context: TrainContext, overrides: dict[str, Any]
@@ -483,16 +443,6 @@ class VideoMAETrainer:
 
     def prepared_selection(self, layout, prepared) -> Path:
         return layout.videomae_clips(prepared)
-
-    def select(self, frames, sampling):
-        from bird_cv.data.sampling import select_videomae_clips
-
-        return select_videomae_clips(
-            frames,
-            num_frames=sampling["num_frames"],
-            stride=sampling["videomae_clip_stride"],
-            seed=sampling["seed"],
-        )
 
     def dataset_export(self, media):
         return media.classify_export

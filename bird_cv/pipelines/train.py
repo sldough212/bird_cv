@@ -4,9 +4,8 @@ Roles are the :class:`~bird_cv.pipelines.config.ModelSpec` tables of
 ``[models]`` (``detector``, ``classifier``); each names a ``kind`` that
 :func:`bird_cv.training.registry.get_trainer` turns into a trainer. On the
 frozen split a role is tuned (if ``tune``) and selected on its validation
-objective (ADR 0005). With ``--fold k`` it is retrained on CV fold ``k``'s
-dataset with fixed hyperparameters from a frozen-split run (ADR 0001), no
-tuning. ``--smoke`` shrinks tuning and epochs to 2 for a first cluster run
+objective (ADR 0005); ``--hyperparameters`` trains with fixed
+hyperparameters instead, no tuning. ``--smoke`` shrinks tuning and epochs to 2 for a first cluster run
 (a smoke test; never report its scores). The ``paths`` mode prints each
 role's resolved run directory and checkpoint for a run id as shell
 assignments, without creating anything.
@@ -14,7 +13,7 @@ assignments, without creating anything.
 Usage::
 
     python bird_cv/pipelines/train.py CONFIG ROLE --prepared ID [--run-id ID] [--smoke]
-    python bird_cv/pipelines/train.py CONFIG ROLE --prepared ID --fold K \\
+    python bird_cv/pipelines/train.py CONFIG ROLE --prepared ID \\
         --hyperparameters RUN_DIR/best_hyperparameters.json [--run-id ID]
     python bird_cv/pipelines/train.py CONFIG paths --run-id ID
 
@@ -28,14 +27,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-import polars as pl
 
 from bird_cv.core.layout import Layout, TrainRun
 from bird_cv.core.manifest import new_manifest, write_manifest
-from bird_cv.evaluation.cv import check_fold_cameras
 from bird_cv.evaluation.e2e import sweep_settings
 from bird_cv.pipelines.config import BirdCVConfig, default_run_id, load_config
-from bird_cv.training.registry import TrainContext, Trainer, get_trainer
+from bird_cv.training.registry import TrainContext, get_trainer
 
 
 def smoke_config(cfg: BirdCVConfig) -> BirdCVConfig:
@@ -51,51 +48,10 @@ def smoke_config(cfg: BirdCVConfig) -> BirdCVConfig:
     return dataclasses.replace(cfg, models=dataclasses.replace(cfg.models, **smoke))
 
 
-def check_fold(
-    fold: int | None,
-    hyperparameters: dict | None,
-    dataset: Path,
-    trainer: Trainer,
-    *,
-    split_path: Path,
-    cv_folds_path: Path,
-) -> None:
-    """Folds reuse frozen-split hyperparameters and never train on test cameras.
-
-    A fold dataset's train/val cameras are the union of those listed in
-    ``split_path`` (the :func:`bird_cv.evaluation.cv.fold_split` output it
-    was built from) and those its layout shows
-    (:meth:`Trainer.dataset_cameras`).
-
-    Raises:
-        ValueError: If a fold has no hyperparameters, no cameras can be
-            found, or any found camera is one of the fold's test cameras.
-    """
-    if fold is None:
-        return
-    if hyperparameters is None:
-        raise ValueError(
-            "CV folds reuse the frozen-split hyperparameters; pass --hyperparameters"
-        )
-    cameras = trainer.dataset_cameras(dataset)
-    if split_path.exists():
-        split = pl.read_parquet(split_path)
-        cameras |= set(
-            split.filter(pl.col("split").is_in(["train", "val"]))["camera_id"]
-        )
-    if not cameras:
-        raise ValueError(
-            f"Can't tell which cameras {dataset} trains on: write its "
-            f"fold_split output to {split_path}"
-        )
-    check_fold_cameras(pl.read_parquet(cv_folds_path), fold, cameras)
-
-
 def run_train(
     cfg: BirdCVConfig,
     role: str,
     run_id: str | None = None,
-    fold: int | None = None,
     hyperparameters: dict[str, Any] | None = None,
     prepared_id: str | None = None,
 ) -> Path:
@@ -111,7 +67,6 @@ def run_train(
             ``evaluate.iou_threshold`` (detector selection).
         role: A role from ``ModelsConfig.roles()``.
         run_id: Fixed run directory name; timestamped if ``None``.
-        fold: CV fold to train on; ``None`` for the frozen split.
         hyperparameters: Fixed hyperparameters (a frozen-split run's
             ``best_hyperparameters.json``). Disables tuning.
         prepared_id: :attr:`Prepared.id` of the data to train on; the last
@@ -124,16 +79,8 @@ def run_train(
     trainer = get_trainer(spec.kind)
     layout = Layout(cfg.path_to_base_output)
     prepared = layout.resolve_prepared(prepared_id, run_id)
-    dataset = layout.dataset(prepared, role, spec.kind, fold)
-    check_fold(
-        fold,
-        hyperparameters,
-        dataset,
-        trainer,
-        split_path=layout.dataset_split(prepared, role, spec.kind, fold),
-        cv_folds_path=layout.cv_folds(prepared.split_version),
-    )
-    run_dir = layout.train_run(role, default_run_id(run_id), fold)
+    dataset = layout.dataset(prepared, role, spec.kind)
+    run_dir = layout.train_run(role, default_run_id(run_id))
     run_dir.mkdir(parents=True, exist_ok=True)
     print(f"Run directory: {run_dir}")
     context = TrainContext(
@@ -166,7 +113,6 @@ def run_train(
             config={
                 "role": role,
                 "spec": dataclasses.asdict(spec),
-                "fold": fold,
                 "prepared": dataclasses.asdict(prepared),
             },
             inputs={
@@ -212,7 +158,6 @@ def main() -> None:
     parser.add_argument(
         "--prepared", default=None, help="Prepared-data id printed by prepare"
     )
-    parser.add_argument("--fold", type=int, default=None, help="CV fold to train on")
     parser.add_argument(
         "--hyperparameters",
         type=Path,
@@ -238,9 +183,7 @@ def main() -> None:
     hyperparameters = (
         json.loads(args.hyperparameters.read_text()) if args.hyperparameters else None
     )
-    run_dir = run_train(
-        cfg, args.role, args.run_id, args.fold, hyperparameters, args.prepared
-    )
+    run_dir = run_train(cfg, args.role, args.run_id, hyperparameters, args.prepared)
     print(f"Done: {run_dir}")
 
 

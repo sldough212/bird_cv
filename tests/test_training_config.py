@@ -3,7 +3,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-import polars as pl
 import pytest
 
 from bird_cv.core.layout import Layout, Prepared
@@ -11,7 +10,6 @@ from bird_cv.core.manifest import new_manifest, write_manifest
 from bird_cv.pipelines.evaluate import check_prepared
 from bird_cv.inference.registry import inference_models
 from bird_cv.pipelines.config import ModelsConfig, load_config
-from bird_cv.pipelines.train import check_fold
 from bird_cv.training.registry import (
     VideoMAETrainer,
     YoloTrainer,
@@ -83,26 +81,6 @@ def test_registry_and_search_space() -> None:
     assert space["freeze"].sample() in {True, False}
     with pytest.raises(ValueError, match="normal"):
         build_search_space({"lr": {"type": "normal", "lower": 0, "upper": 1}})
-
-
-def test_fold_check_sees_test_camera_in_yolo_layout(tmp_path: Path) -> None:
-    folds_path = tmp_path / "cv_folds.parquet"
-    pl.DataFrame({"camera_id": ["A", "C"], "fold": [0, 1]}).write_parquet(folds_path)
-
-    dataset = tmp_path / "fold1"
-    (dataset / "images" / "train" / "C").mkdir(parents=True)  # fold 1's test camera
-    split_path = dataset / "split.parquet"
-    pl.DataFrame({"camera_id": ["A"], "split": ["train"]}).write_parquet(split_path)
-
-    with pytest.raises(ValueError, match="C"):
-        check_fold(
-            1,
-            {},
-            dataset,
-            YoloTrainer(),
-            split_path=split_path,
-            cv_folds_path=folds_path,
-        )
 
 
 def test_inference_models_come_from_config(tmp_path: Path) -> None:

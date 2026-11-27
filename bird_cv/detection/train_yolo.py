@@ -170,7 +170,7 @@ def train_select_yolo(
     val split, and the highest presence F1 wins. The winner is copied to
     ``run_dir/best.pt`` and its hyperparameters (the tuned values sampled
     for that trial, or the fixed ``hyperparameters`` given) go to
-    ``run_dir/best_hyperparameters.json`` so cross-validation folds can
+    ``run_dir/best_hyperparameters.json`` so later runs can
     retrain with the same hyperparameters. Every run's scores go to
     ``run_dir/selection.parquet``, with ``within_run_selection`` and
     ``between_run_selection`` columns that record both criteria.

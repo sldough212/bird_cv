@@ -1,15 +1,11 @@
-"""Build each role's training data from prepared data: frozen split and CV folds.
+"""Build each role's training data from prepared data on the frozen split.
 
-The frozen split uses prepare's sampled list; each CV fold reruns the
-sampling on its :func:`~bird_cv.evaluation.cv.fold_split`. A dataset whose
-manifest matches is not rebuilt.
+Uses prepare's sampled list. A dataset whose manifest matches is not rebuilt.
 
 Usage::
 
     python bird_cv/pipelines/build_datasets.py CONFIG --prepared ID \\
-        [--role ROLE ...] [--fold K ...] [--processes N]
-
-Without ``--fold``, builds the frozen split and every fold.
+        [--role ROLE ...] [--processes N]
 """
 
 import argparse
@@ -27,8 +23,6 @@ from bird_cv.client.utils import get_local_path
 from bird_cv.core.ids import parse_media_path
 from bird_cv.core.layout import Layout, Prepared, snapshot_files
 from bird_cv.core.manifest import new_manifest, read_manifest, write_manifest
-from bird_cv.data.summary import with_split
-from bird_cv.evaluation.cv import fold_split
 from bird_cv.pipelines.config import BirdCVConfig, ModelSpec, load_config
 from bird_cv.pipelines.prepare import config_hash, sampling_config
 from bird_cv.training.registry import DatasetMedia, get_trainer
@@ -55,7 +49,6 @@ def export_media(export: Path) -> dict[tuple[str, str, str], Path]:
 def dataset_config(
     role: str,
     spec: ModelSpec,
-    fold: int | None,
     prepared: Prepared,
     split: pl.DataFrame,
     selection: pl.DataFrame,
@@ -74,7 +67,6 @@ def dataset_config(
         "role": role,
         "kind": spec.kind,
         "num_frames": spec.options.get("num_frames"),
-        "fold": fold,
         "prepared": asdict(prepared),
         "split": [list(r) for r in split.sort("camera_id").iter_rows()],
         "selection_sha256": hashlib.sha256(selection.write_csv().encode()).hexdigest(),
@@ -91,11 +83,10 @@ def build_datasets(
     cfg: BirdCVConfig,
     prepared_id: str | None = None,
     roles: list[str] | None = None,
-    folds: list[int] | None = None,
     processes: int = 1,
     run_id: str | None = None,
 ) -> list[Path]:
-    """Build (or reuse) the datasets of ``roles`` on the frozen split and ``folds``.
+    """Build (or reuse) the datasets of ``roles`` on the frozen split.
 
     Args:
         cfg: Pipeline config; its sampling values must be the ones the
@@ -103,8 +94,6 @@ def build_datasets(
         prepared_id: :attr:`Prepared.id`; the last prepare output (logged)
             if None.
         roles: ``[models]`` roles; all if None.
-        folds: CV folds to build, without the frozen split; if None, the
-            frozen split and every fold.
         processes: Worker processes for the converters.
         run_id: Pipeline run whose prepared id to use if ``prepared_id`` is None.
 
@@ -134,7 +123,6 @@ def build_datasets(
     ground_truth = pl.read_parquet(
         layout.ground_truth(prepared.snapshot_hash, prepared.gt_version)
     )
-    cv_folds = pl.read_parquet(layout.cv_folds(prepared.split_version))
     frozen = pl.read_parquet(layout.split(prepared.split_version))
     detect_export, classify_export = snapshot_files(
         layout.snapshot(prepared.snapshot_hash)
@@ -144,11 +132,6 @@ def build_datasets(
         classify_export=classify_export,
         processes=processes,
     )
-    targets: list[int | None] = (
-        [None, *sorted(cv_folds["fold"].unique().to_list())]
-        if folds is None
-        else list(folds)
-    )
 
     plans = []
     missing: set[str] = set()
@@ -156,31 +139,19 @@ def build_datasets(
         spec = cfg.models.roles()[role]
         trainer = get_trainer(spec.kind)
         paths = export_media(trainer.dataset_export(media))
-        for fold in targets:
-            if fold is None:
-                split = frozen.select("camera_id", "split")
-                selection = pl.read_parquet(
-                    trainer.prepared_selection(layout, prepared)
-                )
-            else:
-                split = fold_split(
-                    cv_folds,
-                    fold,
-                    n_val_cameras=cfg.evaluate.cv_val_cameras,
-                    seed=cfg.prepare.split_seed,
-                )
-                selection = trainer.select(with_split(ground_truth, split), sampling)
-            cages = selection.select("camera_id", "video_id", "cage_id").unique()
-            media_paths = []
-            for key in cages.iter_rows():
-                path = paths.get(key)
-                media_paths.append(str(path))
-                if path is None or not path.exists():
-                    missing.add(str(path or key))
-            config = dataset_config(
-                role, spec, fold, prepared, split, selection, media, sorted(media_paths)
-            )
-            plans.append((role, spec, trainer, fold, split, selection, config))
+        split = frozen.select("camera_id", "split")
+        selection = pl.read_parquet(trainer.prepared_selection(layout, prepared))
+        cages = selection.select("camera_id", "video_id", "cage_id").unique()
+        media_paths = []
+        for key in cages.iter_rows():
+            path = paths.get(key)
+            media_paths.append(str(path))
+            if path is None or not path.exists():
+                missing.add(str(path or key))
+        config = dataset_config(
+            role, spec, prepared, split, selection, media, sorted(media_paths)
+        )
+        plans.append((role, spec, trainer, split, selection, config))
     if missing:
         raise FileNotFoundError(
             f"{len(missing)} selected media files are missing, e.g. "
@@ -188,9 +159,9 @@ def build_datasets(
         )
 
     built = []
-    for role, spec, trainer, fold, split, selection, config in plans:
-        out_dir = layout.dataset(prepared, role, spec.kind, fold)
-        name = f"{role}/{spec.kind} " + ("frozen" if fold is None else f"fold{fold}")
+    for role, spec, trainer, split, selection, config in plans:
+        out_dir = layout.dataset(prepared, role, spec.kind)
+        name = f"{role}/{spec.kind}"
         if (out_dir / "manifest.json").exists() and read_manifest(
             out_dir
         ).config == config:
@@ -201,10 +172,8 @@ def build_datasets(
             logger.info("Rebuilding stale dataset %s", out_dir)
             shutil.rmtree(out_dir)
         out_dir.mkdir(parents=True)
-        split.write_parquet(layout.dataset_split(prepared, role, spec.kind, fold))
-        selection.write_parquet(
-            layout.dataset_selection(prepared, role, spec.kind, fold)
-        )
+        split.write_parquet(layout.dataset_split(prepared, role, spec.kind))
+        selection.write_parquet(layout.dataset_selection(prepared, role, spec.kind))
         logger.info("Building dataset %s: %d rows", name, selection.height)
         trainer.build_dataset(
             selection,
@@ -212,7 +181,7 @@ def build_datasets(
             spec,
             media,
             out_dir,
-            layout.dataset_guidance(prepared, role, spec.kind, fold),
+            layout.dataset_guidance(prepared, role, spec.kind),
         )
         # Written last, so an interrupted build is rebuilt next time
         write_manifest(
@@ -242,9 +211,6 @@ def main() -> None:
         "--prepared", default=None, help="Prepared-data id printed by prepare"
     )
     parser.add_argument("--role", action="append", dest="roles", help="Repeatable")
-    parser.add_argument(
-        "--fold", action="append", dest="folds", type=int, help="Repeatable"
-    )
     parser.add_argument("--processes", type=int, default=1)
     parser.add_argument("--run-id", default=None, help="Pipeline run id")
     args = parser.parse_args()
@@ -254,7 +220,6 @@ def main() -> None:
         load_config(args.config_path, require_api_key=False),
         args.prepared,
         args.roles,
-        args.folds,
         args.processes,
         args.run_id,
     ):

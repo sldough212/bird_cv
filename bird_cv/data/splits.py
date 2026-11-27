@@ -1,9 +1,9 @@
-"""Frozen, append-only camera split and camera cross-validation folds.
+"""Frozen, append-only camera split.
 
 See ``docs/adr/0001-split-by-camera.md``. The first version is chosen once
 by a deterministic rule (:data:`SPLIT_RULE`) so that every behavior is in
 train and test (val best effort). Later versions only append newly labeled
-cameras; a camera's split and fold never change once assigned. Each version
+cameras; a camera's split never changes once assigned. Each version
 writes ``split_v{n}/manifest.json`` with its rule and per-camera behavior
 frame counts.
 """
@@ -18,13 +18,12 @@ import polars as pl
 
 from bird_cv.core.labels import BEHAVIORS
 from bird_cv.core.layout import (
-    cv_folds_file,
     split_file,
     split_manifest_dir,
     split_version_of,
 )
 from bird_cv.core.manifest import new_manifest, write_manifest
-from bird_cv.core.schemas import CV_FOLD_SCHEMA, SPLIT_SCHEMA, SPLITS
+from bird_cv.core.schemas import SPLIT_SCHEMA, SPLITS
 
 logger = logging.getLogger(__name__)
 
@@ -280,63 +279,24 @@ def split_behavior_frames(
     return totals
 
 
-def assign_folds(
-    behaviors: Mapping[str, set[str]],
-    n_folds: int,
-    seed: int,
-    max_attempts: int = 1000,
-) -> dict[str, int]:
-    """Assign cameras to camera-CV folds (each camera is tested in one fold).
-
-    Cameras are dealt round-robin after a seeded shuffle; of
-    ``max_attempts`` shuffles, the one whose test folds together cover
-    the most (fold, behavior) pairs wins.
-
-    Args:
-        behaviors: Behaviors present on each camera.
-        n_folds: Number of folds.
-        seed: Base random seed.
-        max_attempts: Seeded shuffles to try.
-
-    Returns:
-        Fold of each camera.
-    """
-    cameras = sorted(behaviors)
-    best: tuple[int, dict[str, int]] | None = None
-    for attempt in range(max_attempts):
-        indices = np.random.RandomState(seed + attempt).permutation(len(cameras))
-        folds = {cameras[i]: pos % n_folds for pos, i in enumerate(indices)}
-        score = sum(
-            len(_covered([c for c, f in folds.items() if f == k], behaviors))
-            for k in range(n_folds)
-        )
-        if best is None or score > best[0]:
-            best = (score, folds)
-    assert best is not None
-    return best[1]
-
-
 def update_split(
     ground_truth: pl.DataFrame,
     splits_dir: Path,
     split_ratio: dict[str, float],
     seed: int,
-    n_folds: int,
 ) -> int:
     """Return the split version covering every camera, writing a new one if needed.
 
     With no split yet, chooses version 1 with :func:`choose_initial_split`. If the ground truth has cameras the
     latest version lacks, writes version ``n + 1``: the old rows unchanged
-    plus the new cameras (split and CV fold). Otherwise writes nothing.
+    plus the new cameras. Otherwise writes nothing.
 
     Args:
         ground_truth: Table with ``camera_id`` and ``label`` columns.
-        splits_dir: Directory holding ``split_v{n}.parquet`` and
-            ``cv_folds_v{n}.parquet``.
+        splits_dir: Directory holding ``split_v{n}.parquet``.
         split_ratio: Target fraction of cameras per split, used only when
             appending cameras.
-        seed: Base random seed for appending cameras and CV folds.
-        n_folds: Number of camera-CV folds.
+        seed: Base random seed for appending cameras.
 
     Returns:
         The split version to use.
@@ -357,14 +317,8 @@ def update_split(
             ],
             schema=SPLIT_SCHEMA,
         )
-        folds = pl.DataFrame(
-            list(assign_folds(behaviors, n_folds, seed).items()),
-            schema=CV_FOLD_SCHEMA,
-            orient="row",
-        )
     else:
         old_split = pl.read_parquet(split_file(splits_dir, latest))
-        old_folds = pl.read_parquet(cv_folds_file(splits_dir, latest))
         known = set(old_split.get_column("camera_id"))
         new = {c: b for c, b in behaviors.items() if c not in known}
         if not new:
@@ -392,16 +346,6 @@ def update_split(
                 ),
             ]
         )
-        fold_sizes = {k: 0 for k in range(n_folds)}
-        fold_sizes.update(dict(old_folds.group_by("fold").len().iter_rows()))
-        new_folds = []
-        for camera in sorted(new):
-            fold = min(fold_sizes, key=lambda k: (fold_sizes[k], k))
-            fold_sizes[fold] += 1
-            new_folds.append((camera, fold))
-        folds = pl.concat(
-            [old_folds, pl.DataFrame(new_folds, schema=CV_FOLD_SCHEMA, orient="row")]
-        )
 
     for name, missing in coverage_gaps(split, behaviors).items():
         if missing:
@@ -409,7 +353,6 @@ def update_split(
 
     splits_dir.mkdir(parents=True, exist_ok=True)
     split.write_parquet(split_file(splits_dir, version))
-    folds.write_parquet(cv_folds_file(splits_dir, version))
     write_manifest(
         new_manifest(
             "split",
@@ -418,7 +361,6 @@ def update_split(
                 "rule": rule,
                 "split_ratio": split_ratio,
                 "seed": seed,
-                "n_folds": n_folds,
                 "behavior_frames": behavior_frames,
                 "split_behavior_frames": split_behavior_frames(split, behavior_frames),
             },

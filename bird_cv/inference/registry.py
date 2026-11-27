@@ -181,7 +181,6 @@ class InferenceModels:
         checkpoints: Weights per role (``detector``, ``classifier``).
         context: Settings the segmenter reads.
         train_run_id: The training run the checkpoints came from, if any.
-        fold: That run's CV fold, if any.
         prepared: The prepared data (``asdict(Prepared)``) that training run
             recorded, if any.
     """
@@ -192,7 +191,6 @@ class InferenceModels:
     checkpoints: Mapping[str, Path]
     context: SegmenterContext
     train_run_id: str | None = None
-    fold: int | None = None
     prepared: dict[str, Any] | None = None
 
     def kinds(self) -> dict[str, str]:
@@ -228,7 +226,7 @@ class InferenceModels:
 
 
 def inference_models(
-    cfg: "BirdCVConfig", train_run_id: str | None = None, fold: int | None = None
+    cfg: "BirdCVConfig", train_run_id: str | None = None
 ) -> InferenceModels:
     """The models ``cfg`` picks, with checkpoints from a training run or config.
 
@@ -238,7 +236,6 @@ def inference_models(
             (:meth:`Layout.train_run` plus the kind's
             :meth:`~bird_cv.training.registry.Trainer.checkpoint_path`).
             If None, each role's ``checkpoint`` from config.
-        fold: The CV fold of ``train_run_id``, if any.
 
     Returns:
         The resolved, unloaded models.
@@ -255,7 +252,7 @@ def inference_models(
     prepared: dict[str, dict[str, Any] | None] = {}
     for role, spec in specs.items():
         if train_run_id is not None:
-            run_dir = layout.train_run(role, train_run_id, fold)
+            run_dir = layout.train_run(role, train_run_id)
             checkpoints[role] = get_trainer(spec.kind).checkpoint_path(run_dir)
             if (run_dir / "manifest.json").exists():
                 prepared[role] = read_manifest(run_dir).config.get("prepared")
@@ -269,7 +266,6 @@ def inference_models(
         if not checkpoints[role].exists():
             source = (
                 f"training run {train_run_id!r}"
-                + (f" fold {fold}" if fold is not None else "")
                 if train_run_id is not None
                 else f"[models.{role}] checkpoint"
             )
@@ -291,6 +287,5 @@ def inference_models(
             sam_model_id=cfg.sam_model_id,
         ),
         train_run_id=train_run_id,
-        fold=fold,
         prepared=next(iter(prepared.values()), None),
     )

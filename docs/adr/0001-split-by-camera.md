@@ -9,4 +9,4 @@ The models will be deployed on cameras that have no labels, and camera orientati
 
 ## Consequences
 
-With 9 labeled cameras the test set is 1–2 cameras, so reported numbers come from 3-fold camera cross-validation (every camera tested once, same hyperparameters per fold). The frozen split is for day-to-day development and tuning only.
+With 9 labeled cameras the test set is 1–2 cameras, so test scores are noisy. Camera cross-validation (every camera tested once) was implemented and then removed to keep the pipeline lean (PR #64); reported numbers come from the frozen split's test cameras until it is added back.

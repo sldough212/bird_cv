@@ -101,12 +101,6 @@ SPLIT_SCHEMA = {
     "assigned_in_version": pl.Int64,
 }
 
-CV_FOLD_SCHEMA = {
-    "camera_id": pl.String,
-    # 0-indexed fold in which this camera is the test set.
-    "fold": pl.Int64,
-}
-
 SPLIT_SUMMARY_SCHEMA = {
     # "train", "val", "test", or e.g. "train_yolo_sampled".
     "split": pl.String,

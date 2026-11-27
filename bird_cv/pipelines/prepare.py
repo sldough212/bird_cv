@@ -153,7 +153,6 @@ def run_prepare(
         layout.splits,
         split_ratio=pcfg.split_ratio,
         seed=pcfg.split_seed,
-        n_folds=pcfg.cv_folds,
     )
     split = pl.read_parquet(layout.split(version))
     frames = with_split(ground_truth, split)
@@ -208,7 +207,6 @@ def run_prepare(
                 "snapshot": str(snapshot_dir),
                 "ground_truth": str(gt_path),
                 "split": str(layout.split(version)),
-                "cv_folds": str(layout.cv_folds(version)),
             },
         ),
         out_dir,

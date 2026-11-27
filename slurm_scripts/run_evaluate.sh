@@ -1,5 +1,5 @@
 #!/bin/bash
-# Evaluate: first argument is the mode (sweep, test, cv, model), the rest go
+# Evaluate: first argument is the mode (sweep, test, model), the rest go
 # to evaluate.py, e.g.
 #   sbatch slurm_scripts/run_evaluate.sh test --run-id ID --prepared PREPARED_ID
 #   sbatch --gres=gpu:1 --partition=mb-l40s,mb-a30,mb-h100,mb-a6000 slurm_scripts/run_evaluate.sh model --role classifier --run-id TRAIN_RUN_ID --prepared PREPARED_ID

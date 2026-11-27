@@ -8,7 +8,7 @@ import polars as pl
 import pytest
 
 from bird_cv.core.labels import BEHAVIORS, NO_BIRD
-from bird_cv.core.layout import cv_folds_file, split_file
+from bird_cv.core.layout import split_file
 from bird_cv.core.schemas import GROUND_TRUTH_SCHEMA
 from bird_cv.data.ground_truth import build_ground_truth, parse_detect_task
 from bird_cv.data.sampling import select_videomae_clips, select_yolo_frames
@@ -155,7 +155,7 @@ def test_split_is_frozen_and_append_only(tmp_path: Path) -> None:
 
     def run() -> int:
         ratio = {"train": 0.7, "val": 0.15, "test": 0.15}
-        return update_split(_gt_for(cameras), tmp_path, ratio, seed=0, n_folds=3)
+        return update_split(_gt_for(cameras), tmp_path, ratio, seed=0)
 
     assert run() == 1
     v1 = pl.read_parquet(split_file(tmp_path, 1))
@@ -181,10 +181,6 @@ def test_split_is_frozen_and_append_only(tmp_path: Path) -> None:
     assert v2.filter(camera_id="new0")["split"].item() == "train"  # nobody had it
     gaps = coverage_gaps(v2, camera_behaviors(_gt_for(cameras)))
     assert gaps == {"train": set(), "test": {"flying"}}
-    folds1 = pl.read_parquet(cv_folds_file(tmp_path, 1))
-    assert (
-        pl.read_parquet(cv_folds_file(tmp_path, 2)).head(folds1.height).equals(folds1)
-    )
 
 
 def test_sampling_caps() -> None:

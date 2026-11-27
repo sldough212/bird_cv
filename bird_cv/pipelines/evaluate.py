@@ -1,6 +1,6 @@
 """Evaluate predictions against ground truth (ADR 0005).
 
-Ground truth, split and CV folds are the current prepared data
+Ground truth and split are the current prepared data
 (``prepared/current.json``); predictions are read from, and results written
 to, the run ``--run-id`` names in :class:`bird_cv.core.layout.Layout`.
 
@@ -10,8 +10,6 @@ Modes:
   det_conf)`` in ``[evaluate]``, from :meth:`Layout.sweep_infer_run`;
   writes ``sweep.parquet`` and ``best_setting.json``.
 - ``test``: frozen-split test cameras, from :meth:`Layout.test_infer_run`.
-- ``cv``: 3-fold camera CV, from :meth:`Layout.cv_infer_run`; pooled,
-  per-camera and per-fold results.
 - ``model``: one role's model-level metrics (e.g. window macro-F1 for a
   clip classifier, presence F1 for a detector) on the val and test splits
   of its frozen-split dataset, for ``--role`` and the checkpoint of training
@@ -23,7 +21,7 @@ scored training or inference runs recorded in their manifests.
 
 Usage::
 
-    python bird_cv/pipelines/evaluate.py CONFIG {sweep,test,cv,model} \\
+    python bird_cv/pipelines/evaluate.py CONFIG {sweep,test,model} \\
         --run-id ID --prepared ID [--role ROLE]
 """
 
@@ -38,7 +36,6 @@ import polars as pl
 
 from bird_cv.core.layout import EvalRun, Layout, Prepared
 from bird_cv.core.manifest import new_manifest, read_manifest_file, write_manifest
-from bird_cv.evaluation.cv import evaluate_cv
 from bird_cv.evaluation.e2e import (
     evaluate_e2e,
     load_ground_truth,
@@ -103,7 +100,7 @@ def run_evaluate(
     Args:
         cfg: Pipeline config; uses ``[evaluate]`` (and ``[models]`` for
             ``model``).
-        mode: ``"sweep"``, ``"test"``, ``"cv"`` or ``"model"``.
+        mode: ``"sweep"``, ``"test"`` or ``"model"``.
         run_id: The pipeline run to score: its inference runs, or for
             ``model`` its training run of ``role``. Also names the output.
         role: A ``[models]`` role, for ``model``.
@@ -115,7 +112,7 @@ def run_evaluate(
     """
     ev = cfg.evaluate
     layout = Layout(cfg.path_to_base_output)
-    if mode not in ("sweep", "test", "cv", "model"):
+    if mode not in ("sweep", "test", "model"):
         raise ValueError(f"Unknown mode {mode!r}")
     if not run_id:
         raise ValueError(f"{mode} mode needs the scored run's --run-id")
@@ -215,52 +212,6 @@ def run_evaluate(
             write_e2e_result(result, out)
             inputs["predictions"] = str(pred_dir)
 
-        elif mode == "cv":
-            folds_path = layout.cv_folds(split_version)
-            cv_folds = pl.read_parquet(folds_path)
-            fold_runs = {
-                fold: layout.cv_infer_run(run_id, fold)
-                for fold in sorted(cv_folds["fold"].unique().to_list())
-            }
-            for fold_run in fold_runs.values():
-                check_prepared(
-                    prepared, fold_run.task_manifests(), f"inference {fold_run.dir}"
-                )
-            fold_predictions = {
-                fold: load_predictions(fold_run.predictions_dir)
-                for fold, fold_run in fold_runs.items()
-            }
-            cv = evaluate_cv(truth, cv_folds, fold_predictions, ev.iou_threshold)
-            print(json.dumps(cv.pooled.summary(), indent=2, default=float))
-            print(cv.pooled.per_camera)
-            print(cv.per_fold)
-            write_e2e_result(cv.pooled, out)
-            cv.per_fold.write_parquet(results.per_fold)
-            # Hyperparameters and the gap-fill/det_conf setting were chosen on
-            # the frozen split's val cameras, which are also CV test cameras.
-            results.cv_summary.write_text(
-                json.dumps(
-                    {
-                        "pooled": cv.pooled.summary(),
-                        "tuning_and_sweep_val_cameras": sorted(
-                            _cameras(split, "val").to_list()
-                        ),
-                        "tuning_and_sweep_split_version": split_version,
-                        "note": (
-                            "Model hyperparameters and the gap-fill/det_conf "
-                            "sweep were selected on the frozen split's val "
-                            "cameras; every fold reuses them."
-                        ),
-                    },
-                    indent=2,
-                    default=float,
-                )
-            )
-            inputs |= {
-                "cv_folds": str(folds_path),
-                "predictions": str(layout.cv_root(run_id)),
-            }
-
     write_manifest(
         new_manifest(
             kind="evaluate",
@@ -281,7 +232,7 @@ def run_evaluate(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("config_path", type=Path, help="Path to the TOML config")
-    parser.add_argument("mode", choices=("sweep", "test", "cv", "model"))
+    parser.add_argument("mode", choices=("sweep", "test", "model"))
     parser.add_argument(
         "--run-id", default=None, help="Pipeline run to score (and output name)"
     )

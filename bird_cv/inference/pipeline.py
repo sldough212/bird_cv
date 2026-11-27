@@ -328,7 +328,6 @@ def run_infer(
         **asdict(cfg),
         "models": models.kinds(),
         "train_run_id": models.train_run_id,
-        "fold": models.fold,
         "prepared": models.prepared,
         "sam_model_id": models.context.sam_model_id,
         "task_index": task_index,

@@ -117,49 +117,44 @@ def test_prepare_build_evaluate_connect(
     moved = tmp_path / "legacy" / "cage_videos" / "a" / "v" / "0.mp4"
     moved.rename(moved.with_suffix(".bak"))
     with pytest.raises(FileNotFoundError, match="1 selected media"):
-        build_datasets(cfg, prepared.id, folds=None, processes=1)
+        build_datasets(cfg, prepared.id, processes=1)
     assert not list(base.rglob("datasets"))
     moved.with_suffix(".bak").rename(moved)
 
-    built = build_datasets(cfg, prepared.id, folds=None, processes=1)
-    assert build_datasets(cfg, prepared.id, folds=None, processes=1) == built
+    built = build_datasets(cfg, prepared.id, processes=1)
+    assert build_datasets(cfg, prepared.id, processes=1) == built
 
-    for fold in (None, 0):
-        for role, spec in cfg.models.roles().items():
-            out = layout.dataset(prepared, role, spec.kind, fold)
-            split = dict(
-                pl.read_parquet(
-                    layout.dataset_split(prepared, role, spec.kind, fold)
-                ).iter_rows()
-            )
-            # detector: images/{split}/{camera}_v_0_{frame}.jpg;
-            # classifier: {split}/{label}/{camera}_v_0_s{i}_clip000/
-            files = (
-                (out / "images").glob("*/*.jpg")
-                if role == "detector"
-                else out.glob("*/*/*_clip*")
-            )
-            seen: dict[str, set[str]] = {}
-            for f in files:
-                split_dir = f.parent.name if role == "detector" else f.parents[1].name
-                seen.setdefault(f.name.split("_")[0], set()).add(split_dir)
-            assert seen, (role, fold)
-            assert all(dirs == {split[c]} for c, dirs in seen.items()), (seen, split)
+    for role, spec in cfg.models.roles().items():
+        out = layout.dataset(prepared, role, spec.kind)
+        split = dict(
+            pl.read_parquet(layout.dataset_split(prepared, role, spec.kind)).iter_rows()
+        )
+        # detector: images/{split}/{camera}_v_0_{frame}.jpg;
+        # classifier: {split}/{label}/{camera}_v_0_s{i}_clip000/
+        files = (
+            (out / "images").glob("*/*.jpg")
+            if role == "detector"
+            else out.glob("*/*/*_clip*")
+        )
+        seen: dict[str, set[str]] = {}
+        for f in files:
+            split_dir = f.parent.name if role == "detector" else f.parents[1].name
+            seen.setdefault(f.name.split("_")[0], set()).add(split_dir)
+        assert seen, role
+        assert all(dirs == {split[c]} for c, dirs in seen.items()), (seen, split)
 
-            if role == "detector":
-                # Image stem frame F is canonical F - 1; labeled iff boxed
-                selected = set(
-                    pl.read_parquet(
-                        layout.dataset_selection(prepared, role, spec.kind, fold)
-                    )
-                    .select("camera_id", "frame")
-                    .iter_rows()
-                )
-                for image in (out / "images").glob("*/*.jpg"):
-                    camera, frame = image.stem.split("_")[0], int(image.stem[-5:]) - 1
-                    assert (camera, frame) in selected
-                    label = out / "labels" / image.parent.name / f"{image.stem}.txt"
-                    assert bool(label.read_text().strip()) == ((camera, frame) in boxed)
+        if role == "detector":
+            # Image stem frame F is canonical F - 1; labeled iff boxed
+            selected = set(
+                pl.read_parquet(layout.dataset_selection(prepared, role, spec.kind))
+                .select("camera_id", "frame")
+                .iter_rows()
+            )
+            for image in (out / "images").glob("*/*.jpg"):
+                camera, frame = image.stem.split("_")[0], int(image.stem[-5:]) - 1
+                assert (camera, frame) in selected
+                label = out / "labels" / image.parent.name / f"{image.stem}.txt"
+                assert bool(label.read_text().strip()) == ((camera, frame) in boxed)
 
     # Evaluate through the layout: setting 1 perfect, the rest empty
     run_id = "r1"
