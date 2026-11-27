@@ -17,7 +17,6 @@ from typing import Any
 
 import polars as pl
 
-from bird_cv.client.evaluate_label_studio_tracking import _select_annotation
 from bird_cv.core.frames import is_aligned_with_standard, ls_to_canonical
 from bird_cv.core.ids import parse_media_path
 from bird_cv.core.labels import Behaviors
@@ -86,13 +85,37 @@ class DetectTask:
     duration: float | None
 
 
+def select_annotation(
+    annotations: list[dict], annotation_id: int | None = None
+) -> dict | None:
+    """Pick which submitted annotation on a task to use as ground truth.
+
+    Cancelled (skipped/rejected) annotations are never eligible.
+
+    Args:
+        annotations: A task's ``annotations`` list.
+        annotation_id: If given, return that specific annotation (or None
+            if it isn't on the task, or was cancelled). Otherwise the most
+            recently created annotation is used.
+
+    Returns:
+        The selected annotation dict, or None if none is eligible.
+    """
+    candidates = [a for a in annotations if not a.get("was_cancelled")]
+    if annotation_id is not None:
+        return next((a for a in candidates if a["id"] == annotation_id), None)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda a: a["created_at"])
+
+
 def annotation_results(task: dict[str, Any]) -> list[dict[str, Any]]:
     """Results of the task's most recent non-cancelled annotation (empty if none).
 
     Uses the same rule as the tracking evaluation
-    (:func:`bird_cv.client.evaluate_label_studio_tracking._select_annotation`).
+    (:func:`select_annotation`).
     """
-    annotation = _select_annotation(task.get("annotations", []))
+    annotation = select_annotation(task.get("annotations", []))
     return annotation.get("result", []) if annotation else []
 
 

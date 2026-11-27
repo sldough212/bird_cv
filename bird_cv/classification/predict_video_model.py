@@ -3,12 +3,10 @@
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
 from typing import ClassVar, Literal
 
 import numpy as np
 import torch
-import cv2
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoImageProcessor, VideoMAEForVideoClassification
 
@@ -16,19 +14,17 @@ from bird_cv.classification.types import FramePrediction
 
 
 class VideoWindowDataset(Dataset):
-    """Sliding window dataset over a single video for inference.
+    """Sliding windows over in-memory frames, for inference.
 
-    Reads all frames into memory on construction, then yields ``num_frames``-frame
-    windows with the given stride. Each item includes the processed pixel values
-    and the window's start frame index for mapping predictions back to timestamps.
+    Yields ``num_frames``-frame windows with the given stride. Each item
+    includes the processed pixel values and the window's start frame index
+    for mapping predictions back to frames.
 
     Args:
-        video_path: Path to the video file. Ignored when ``frames`` is given.
+        frames: RGB frames, in order.
         processor: HuggingFace image processor for the VideoMAE model.
         num_frames: Number of frames per window. Must match the model's input size.
         stride: Step size between consecutive windows in frames.
-        frames: Optional in-memory RGB frames to use instead of reading
-            ``video_path``.
         cover_tail: If True, add one final window ending on the last frame
             when the stride leaves trailing frames uncovered, so every frame
             of a video at least ``num_frames`` long gets a vote.
@@ -36,25 +32,14 @@ class VideoWindowDataset(Dataset):
 
     def __init__(
         self,
-        video_path: Path | None,
+        frames: Sequence[np.ndarray],
         processor: AutoImageProcessor,
         num_frames: int = 16,
         stride: int = 8,
         *,
-        frames: Sequence[np.ndarray] | None = None,
         cover_tail: bool = False,
     ) -> None:
-        if frames is not None:
-            self.frames = list(frames)
-        else:
-            cap = cv2.VideoCapture(str(video_path))
-            self.frames = []
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                self.frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            cap.release()
+        self.frames = list(frames)
 
         self.processor = processor
         self.num_frames = num_frames
@@ -99,7 +84,7 @@ def load_videomae_model(
 
 
 def _predict_frame_votes(
-    video_path: Path | None,
+    frames: Sequence[np.ndarray],
     model: VideoMAEForVideoClassification,
     processor: AutoImageProcessor,
     dev: torch.device,
@@ -107,18 +92,15 @@ def _predict_frame_votes(
     stride: int = 8,
     batch_size: int = 4,
     *,
-    frames: Sequence[np.ndarray] | None = None,
     cover_tail: bool = True,
 ) -> list[list[int]]:
     """Run windowed VideoMAE inference and collect per-frame class-id votes.
 
-    Slides a ``num_frames``-frame window across the video and classifies
-    each window. Shared by :func:`predict_video_segments` (which collapses
-    the result to majority-voted segments) and :func:`predict_frame_list`
-    (which keeps one row per frame).
+    Slides a ``num_frames``-frame window across the frames and classifies
+    each window.
 
     Args:
-        video_path: Path to the video file.
+        frames: RGB frames, in order.
         model: Loaded VideoMAE classification model, already on ``dev``.
         processor: HuggingFace image processor for the VideoMAE model.
         dev: Device the model is loaded on.
@@ -126,7 +108,6 @@ def _predict_frame_votes(
             Defaults to 16.
         stride: Step size between consecutive windows in frames. Defaults to 8.
         batch_size: Dataloader batch size for windowed inference. Defaults to 4.
-        frames: Optional in-memory RGB frames used instead of ``video_path``.
         cover_tail: See :class:`VideoWindowDataset`.
 
     Returns:
@@ -135,12 +116,7 @@ def _predict_frame_votes(
         window covers that frame).
     """
     ds = VideoWindowDataset(
-        video_path,
-        processor,
-        num_frames,
-        stride,
-        frames=frames,
-        cover_tail=cover_tail,
+        frames, processor, num_frames, stride, cover_tail=cover_tail
     )
     loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0)
 
@@ -162,62 +138,6 @@ def _predict_frame_votes(
             frame_votes[f].append(pred_id)
 
     return frame_votes
-
-
-def predict_video_segments(
-    video_path: Path,
-    model: VideoMAEForVideoClassification,
-    processor: AutoImageProcessor,
-    dev: torch.device,
-    id_to_label: dict,
-    num_frames: int = 16,
-    stride: int = 8,
-    batch_size: int = 4,
-) -> list[tuple[str, int, int]]:
-    """Run windowed VideoMAE inference over a video and encode it into behavior segments.
-
-    Slides a ``num_frames``-frame window across the video, classifies each
-    window, takes a majority vote across windows covering each frame, then
-    run-length encodes the per-frame labels into contiguous segments.
-
-    Args:
-        video_path: Path to the video file.
-        model: Loaded VideoMAE classification model, already on ``dev``.
-        processor: HuggingFace image processor for the VideoMAE model.
-        dev: Device the model is loaded on.
-        id_to_label: Mapping from predicted class id to label name.
-        num_frames: Frames per window. Must match the model's input size.
-            Defaults to 16.
-        stride: Step size between consecutive windows in frames. Defaults to 8.
-        batch_size: Dataloader batch size for windowed inference. Defaults to 4.
-
-    Returns:
-        List of ``(label, start_frame, end_frame)`` tuples, one per
-        contiguous run of frames sharing the majority-voted label, in frame
-        order.
-    """
-    frame_votes = _predict_frame_votes(
-        video_path, model, processor, dev, num_frames, stride, batch_size
-    )
-    frame_labels = [
-        Counter(votes).most_common(1)[0][0] if votes else None for votes in frame_votes
-    ]
-
-    # Run-length encode into contiguous segments
-    segments = []
-    if frame_labels:
-        seg_start = 0
-        current = frame_labels[0]
-        for i, label in enumerate(frame_labels[1:], 1):
-            if label != current:
-                if current is not None:
-                    segments.append((id_to_label[current], seg_start, i - 1))
-                current = label
-                seg_start = i
-        if current is not None:
-            segments.append((id_to_label[current], seg_start, len(frame_labels) - 1))
-
-    return segments
 
 
 def predict_frame_list(
@@ -252,14 +172,13 @@ def predict_frame_list(
         0-indexed position in ``frames``.
     """
     frame_votes = _predict_frame_votes(
-        None,
+        frames,
         model,
         processor,
         dev,
         num_frames,
         stride,
         batch_size,
-        frames=frames,
         cover_tail=cover_tail,
     )
     return _votes_to_predictions(frame_votes, id_to_label)
