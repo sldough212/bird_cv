@@ -14,6 +14,7 @@ a path changes here or nowhere. One pipeline run uses one id (``RUN_ID`` in
         ground_truth.parquet, ground_truth_stats.json
         split.parquet                         the split version it used
         split_summary.parquet, yolo_frames.parquet, videomae_clips.parquet
+        cage_frames.parquet                   if [models.cage_detector] is set
         {role}/{kind}/                        training data, with selection,
                                               split, split_guidance (.parquet)
                                               and manifest.json
@@ -141,6 +142,11 @@ class EvalRun:
         return self.dir / "mot.parquet"
 
     @property
+    def segments(self) -> Path:
+        """Cage mask IoU per (video, legacy segment)."""
+        return self.dir / "segments.parquet"
+
+    @property
     def sweep(self) -> Path:
         """One row per val-sweep setting, best first."""
         return self.dir / "sweep.parquet"
@@ -173,6 +179,10 @@ class InferRun:
     def standardized(self, camera_id: str, video_id: str) -> Path:
         """The standardized (15 fps) copy of a raw video."""
         return self.dir / "standardized" / camera_id / f"{video_id}.mp4"
+
+    def segments(self, camera_id: str, video_id: str) -> Path:
+        """A video's cage keyframe masks, ``{start}_{cage_id}`` arrays (``.npz``)."""
+        return self.dir / "segments" / camera_id / f"{video_id}.npz"
 
     def detections(self, camera_id: str, video_id: str) -> Path:
         """Raw tracker output for a video (``DETECTION_SCHEMA``)."""
@@ -259,6 +269,10 @@ class Layout:
     def yolo_frames(self, dataset_id: str) -> Path:
         """Sampled detector training frames (``YOLO_FRAMES_SCHEMA``)."""
         return self.dataset_dir(dataset_id) / "yolo_frames.parquet"
+
+    def cage_frames(self, dataset_id: str) -> Path:
+        """Sampled cage-detector training frames (``CAGE_FRAMES_SCHEMA``)."""
+        return self.dataset_dir(dataset_id) / "cage_frames.parquet"
 
     def videomae_clips(self, dataset_id: str) -> Path:
         """Sampled classifier training clips (``VIDEOMAE_CLIPS_SCHEMA``)."""

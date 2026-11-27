@@ -77,6 +77,11 @@ class PrepareConfig:
     # (standardize_video's max_frames); None if uncapped. Expected standardized
     # frame counts are computed from raw headers with it.
     standardized_max_frames: int | None = 900
+    # Cage-detector frames per raw video (only with [models.cage_detector]).
+    cage_frames_per_video: int = 3
+    # Legacy one-shot SAM2 masks, {camera}/{video}/; None means
+    # path_to_segmentation_output.
+    path_to_cage_masks: Path | None = None
 
 
 @dataclass
@@ -86,7 +91,9 @@ class SegmenterSpec:
     Attributes:
         kind: Registry key in :mod:`bird_cv.inference.registry`, e.g.
             ``"sam2"`` (prompted from ``path_to_segmentation_configs``, model
-            ``sam_model_id``) or ``"whole_frame"`` (one cage per frame).
+            ``sam_model_id``), ``"yolo_cages"`` (the ``[models.cage_detector]``
+            model, no prompts; ADR 0007) or ``"whole_frame"`` (one cage per
+            frame).
         options: Constructor arguments of that segmenter.
     """
 
@@ -189,7 +196,9 @@ class ModelsConfig:
 
     Holds one :class:`ModelSpec` per role, as the optional tables
     ``[models.detector]`` and ``[models.classifier]``; training and
-    inference both use them.
+    inference both use them. ``[models.cage_detector]`` is opt-in: the role
+    exists only if the table does, starting from
+    :func:`optional_role_defaults`.
     """
 
     detector: ModelSpec = field(
@@ -222,6 +231,7 @@ class ModelsConfig:
             tune_options={"cpus_per_trial": 8, "grace_period": 2},
         )
     )
+    cage_detector: ModelSpec | None = None
 
     def roles(self) -> dict[str, ModelSpec]:
         """Every role (a :class:`ModelSpec` field), by name."""
@@ -230,6 +240,15 @@ class ModelsConfig:
             for f in fields(self)
             if isinstance(getattr(self, f.name), ModelSpec)
         }
+
+
+def optional_role_defaults() -> dict[str, ModelSpec]:
+    """Defaults of the roles that exist only when their table is set."""
+    return {
+        "cage_detector": ModelSpec(
+            kind="yolo_seg", pretrained="yolo11s-seg.pt", epochs=60, tune=False
+        )
+    }
 
 
 def _convert_models_config(table: dict, dec_hook) -> ModelsConfig:
@@ -246,7 +265,8 @@ def _convert_models_config(table: dict, dec_hook) -> ModelsConfig:
             ``infer_options``, a relative ``checkpoint``, or a malformed
             ``search_space`` entry.
     """
-    defaults = ModelsConfig().roles()
+    optional = optional_role_defaults()
+    defaults = ModelsConfig().roles() | {r: optional[r] for r in table if r in optional}
     unknown = set(table) - set(defaults)
     if unknown:
         raise ValueError(f"Unknown keys in [models]: {sorted(unknown)}")
@@ -397,6 +417,8 @@ class BirdCVConfig:
         self.path_to_segmentation_output = (
             self.path_to_base_output / "segmentations" / "segmentations.json"
         )
+        if self.prepare.path_to_cage_masks is None:
+            self.prepare.path_to_cage_masks = self.path_to_segmentation_output
         # Resolve sub-config paths
         self.detect.path_to_training_data = (
             self.path_to_base_output / "detect" / "training_data"

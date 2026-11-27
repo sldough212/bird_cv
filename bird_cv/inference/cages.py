@@ -1,5 +1,8 @@
 """Cage segmentation for inference: SAM2 prompt configs, keyframe masks, cage frames.
 
+The ``yolo_cages`` segmenter (:class:`YoloCageSegmenter`) needs no prompt
+config: a trained model finds the cages (ADR 0007).
+
 A camera's SAM2 prompt config lives at
 ``{segmentation_configs}/configs/{camera_id}.json`` with its reference frame
 under ``{segmentation_configs}/frames/{camera_id}/<video>/00001.jpg`` (the
@@ -18,10 +21,14 @@ from pathlib import Path
 import cv2
 import numpy as np
 from sam2.sam2_video_predictor import SAM2VideoPredictor
+from ultralytics import YOLO
 
 from bird_cv.core.ids import cage_id_from_index
+from bird_cv.inference.chunks import iter_chunks
 from bird_cv.preprocessing.crop import crop_cage_frame
 from bird_cv.preprocessing.image_utils import crop_and_mask_image
+from bird_cv.preprocessing.standardize import iter_canonical_frames, video_header
+from bird_cv.segmentation.cage_masks import static_cage_masks
 from bird_cv.segmentation.segment import (
     keyframe_segments,
     sam2_config_path,
@@ -205,6 +212,14 @@ class Sam2CageSegmenter:
         self.device = device
         self.iou_threshold = iou_threshold
 
+    def segment_video(self, video_path: Path, chunk_frames: int) -> list[Keyframe]:
+        """Every chunk's keyframes, in frame order."""
+        return [
+            keyframe
+            for start, frames in iter_chunks(video_path, chunk_frames)
+            for keyframe in self.segment_chunk(frames, start)
+        ]
+
     def segment_chunk(self, frames: Sequence[np.ndarray], start: int) -> list[Keyframe]:
         """Return the keyframes of ``frames`` (BGR), the chunk starting at ``start``."""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -241,15 +256,60 @@ class WholeFrameSegmenter:
     For videos that already show a single cage, e.g. the smoke test.
     """
 
-    def segment_chunk(self, frames: Sequence[np.ndarray], start: int) -> list[Keyframe]:
-        """One keyframe at ``start`` whose single mask covers the whole frame.
+    def segment_video(self, video_path: Path, chunk_frames: int) -> list[Keyframe]:
+        """``[(0, {"0": all-True mask})]`` sized to the first frame; [] if none."""
+        for _, frame in iter_canonical_frames(video_path, [0]):
+            h, w = frame.shape[:2]
+            return [(0, {cage_id_from_index(0): np.ones((h, w), dtype=bool)})]
+        return []
 
-        Args:
-            frames: BGR frames of the chunk; only the first's size is used.
-            start: Canonical frame of ``frames[0]``.
 
-        Returns:
-            ``[(start, {"0": all-True mask})]``.
+class YoloCageSegmenter:
+    """Static cage masks from a trained YOLO segmentation model (ADR 0007).
+
+    Cages never move within a video, so the model runs on ``sample_frames``
+    evenly spaced frames only, and each cage gets one majority-vote mask
+    (:func:`~bird_cv.segmentation.cage_masks.static_cage_masks`) for the
+    whole video, numbered row-major.
+
+    Args:
+        model: The ``[models.cage_detector]`` model.
+        conf: Detection confidence threshold.
+        sample_frames: Frames to detect cages on.
+        expected_cages: Cages to keep (the most confident); None keeps all.
+    """
+
+    def __init__(
+        self,
+        model: YOLO,
+        conf: float = 0.5,
+        sample_frames: int = 5,
+        expected_cages: int | None = None,
+    ) -> None:
+        self.model = model
+        self.conf = conf
+        self.sample_frames = sample_frames
+        self.expected_cages = expected_cages
+
+    def segment_video(self, video_path: Path, chunk_frames: int) -> list[Keyframe]:
+        """One keyframe at frame 0 holding every cage's static mask.
+
+        Raises:
+            ValueError: If no cage, or fewer than ``expected_cages``, is found.
         """
-        h, w = frames[0].shape[:2]
-        return [(start, {cage_id_from_index(0): np.ones((h, w), dtype=bool)})]
+        n = video_header(video_path)[1]
+        wanted = {round(f) for f in np.linspace(0, max(n - 1, 0), self.sample_frames)}
+        frames = [frame for _, frame in iter_canonical_frames(video_path, wanted)]
+        if not frames:
+            return []
+        results = self.model.predict(
+            frames, conf=self.conf, retina_masks=True, verbose=False
+        )
+        detections = [
+            []
+            if r.masks is None
+            else list(zip(r.masks.data.cpu().numpy() > 0.5, r.boxes.conf.tolist()))
+            for r in results
+        ]
+        masks = static_cage_masks(detections, self.expected_cages)
+        return [(0, {cage_id_from_index(i): m for i, m in enumerate(masks)})]

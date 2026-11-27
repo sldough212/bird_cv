@@ -115,3 +115,41 @@ def yolo_presence_metrics(
     return detection_presence_metrics(
         truth, pred, iou_threshold=iou_threshold, on=("image",)
     )
+
+
+def yolo_seg_metrics(
+    data_yaml: Path,
+    model_path: str | Path,
+    split: str = "val",
+    device: int | str | None = None,
+    output_dir: Path | None = None,
+) -> dict[str, float]:
+    """Ultralytics box and mask mAP of a segmentation model on a split.
+
+    Args:
+        data_yaml: Ultralytics dataset YAML listing ``split``.
+        model_path: YOLO segmentation weights.
+        split: ``"val"`` or ``"test"``.
+        device: Device passed to ``model.val``.
+        output_dir: Where Ultralytics writes its val outputs.
+
+    Returns:
+        ``box_map50``, ``box_map``, ``mask_map50`` and ``mask_map``
+        (mAP50-95).
+    """
+    m = YOLO(model_path).val(
+        data=str(data_yaml),
+        split=split,
+        device=device,
+        plots=False,
+        verbose=False,
+        project=str(output_dir) if output_dir else None,
+        name=split,
+        exist_ok=True,
+    )
+    return {
+        "box_map50": float(m.box.map50),
+        "box_map": float(m.box.map),
+        "mask_map50": float(m.seg.map50),
+        "mask_map": float(m.seg.map),
+    }

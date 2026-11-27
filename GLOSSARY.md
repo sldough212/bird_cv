@@ -15,8 +15,14 @@ A video file as recorded, before standardization, identified by its name without
 A raw video re-encoded to 15 fps H.264. Its frames define the canonical frame index.
 
 **Cage**:
-One SAM2-segmented region of a camera's view holding at most one bird, identified by `cage_id`: its position in the camera's SAM2 prompt config, as a decimal string (`"0"`).
+One segmented region of a camera's view holding at most one bird, identified by `cage_id` as a decimal string (`"0"`): its position in the camera's SAM2 prompt config (`sam2` segmenter), or its row-major position in the frame (`yolo_cages`, ADR 0007).
 _Avoid_: bird id (as an identifier), enclosure
+
+**Static cage mask**:
+One mask per cage for a whole video, from a pixel-wise majority vote over the trained cage detector's masks on a few sampled frames; cages never move within a video (ADR 0007).
+
+**Expected cages**:
+The number of cages a camera's videos must have (`[infer.segmenter] options.expected_cages`); unset means every cage the detector finds is kept.
 
 **Cage video**:
 A standardized video cropped and masked to one cage. The media labeled in the Detect project.

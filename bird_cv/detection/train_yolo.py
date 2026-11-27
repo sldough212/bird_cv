@@ -1,5 +1,6 @@
 import json
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -74,13 +75,16 @@ def train_yolo(
     return model.train(**shared_kwargs)
 
 
-def write_dataset_yaml(dataset_root: Path, path: Path) -> Path:
+def write_dataset_yaml(
+    dataset_root: Path, path: Path, names: dict[int, str] | None = None
+) -> Path:
     """Write an Ultralytics dataset YAML for a ``train``/``val`` dataset root.
 
     Args:
         dataset_root: Root holding ``images/{train,val}`` and
-            ``labels/{train,val}``.
+            ``labels/{train,val}`` (and ``test``, listed if present).
         path: Where to write the YAML.
+        names: Class names; ``{0: "bird"}`` if None.
 
     Returns:
         ``path``.
@@ -90,8 +94,10 @@ def write_dataset_yaml(dataset_root: Path, path: Path) -> Path:
         "path": str(dataset_root),
         "train": "images/train",
         "val": "images/val",
-        "names": {0: "bird"},
+        "names": names or {0: "bird"},
     }
+    if (dataset_root / "images" / "test").is_dir():
+        content["test"] = "images/test"
     with path.open("w") as f:
         yaml.dump(content, f, default_flow_style=False)
     return path
@@ -131,6 +137,9 @@ def train_select_yolo(
     search_space: dict[str, Any] | None = None,
     train_options: dict[str, Any] | None = None,
     tune_options: dict[str, Any] | None = None,
+    names: dict[int, str] | None = None,
+    score: Callable[[Path, Path], dict[str, Any]] | None = None,
+    score_key: str = "f1",
 ) -> dict[str, Any]:
     """Train (or Ray-tune) YOLO from generic weights and select on val presence F1.
 
@@ -170,6 +179,10 @@ def train_select_yolo(
             them.
         tune_options: Extra Ultralytics ``run_ray_tune`` arguments, used
             only when tuning (e.g. ``grace_period``).
+        names: Class names for the dataset YAML; ``{0: "bird"}`` if None.
+        score: ``score(checkpoint, dataset_yaml)`` val metrics to select on,
+            instead of presence metrics; higher ``score_key`` wins.
+        score_key: The metric runs are selected on.
 
     Returns:
         ``best_checkpoint``, ``candidate`` (run directory name),
@@ -188,7 +201,9 @@ def train_select_yolo(
             f"{run_dir} already holds YOLO runs {existing}; use a fresh run dir"
         )
 
-    model_config = write_dataset_yaml(dataset_root, run_dir / "model_config.yaml")
+    model_config = write_dataset_yaml(
+        dataset_root, run_dir / "model_config.yaml", names
+    )
     outcome = train_yolo(
         output_root=run_dir,
         output_name=run_name,
@@ -206,16 +221,19 @@ def train_select_yolo(
 
     rows = []
     for checkpoint in sorted(run_dir.glob(f"{run_name}*/weights/best.pt")):
-        metrics = yolo_presence_metrics(
-            dataset_root,
-            checkpoint,
-            split="val",
-            conf=select_conf,
-            iou_threshold=iou_threshold,
-            device=device,
-        )
+        if score is not None:
+            metrics = score(checkpoint, model_config)
+        else:
+            metrics = yolo_presence_metrics(
+                dataset_root,
+                checkpoint,
+                split="val",
+                conf=select_conf,
+                iou_threshold=iou_threshold,
+                device=device,
+            )
         candidate = checkpoint.parents[1].name
-        print(f"{candidate}: val presence F1={metrics['f1']:.4f}")
+        print(f"{candidate}: val {score_key}={metrics[score_key]:.4f}")
         rows.append({"candidate": candidate, "checkpoint": str(checkpoint)} | metrics)
     if not rows:
         raise RuntimeError(f"No YOLO checkpoints found under {run_dir}")
@@ -224,9 +242,11 @@ def train_select_yolo(
         pl.DataFrame(rows)
         .with_columns(
             within_run_selection=pl.lit("ultralytics_fitness"),
-            between_run_selection=pl.lit("val_presence_f1"),
+            between_run_selection=pl.lit(
+                f"val_{score_key}" if score else "val_presence_f1"
+            ),
         )
-        .sort("f1", descending=True, nulls_last=True)
+        .sort(score_key, descending=True, nulls_last=True)
     )
     selection.write_parquet(TrainRun(run_dir).selection)
     best = selection.row(0, named=True)
@@ -242,7 +262,7 @@ def train_select_yolo(
     TrainRun(run_dir).best_hyperparameters.write_text(
         json.dumps(best_hyperparameters, indent=2, default=float)
     )
-    print(f"Selected {best['candidate']} (val presence F1={best['f1']:.4f})")
+    print(f"Selected {best['candidate']} (val {score_key}={best[score_key]:.4f})")
     return best | {
         "best_checkpoint": str(run_dir / "best.pt"),
         "hyperparameters": best_hyperparameters,

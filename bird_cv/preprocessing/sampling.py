@@ -8,13 +8,19 @@ Test keeps everything. Also the per-split class counts
 (``split_summary.parquet``) of the sampled data.
 """
 
+import json
 import logging
+from collections import Counter
+from pathlib import Path
 
+import numpy as np
 import polars as pl
 
+from bird_cv.core.ids import parse_raw_video_path
 from bird_cv.core.labels import Behaviors
 from bird_cv.core.schemas import (
     CAGE_COLUMNS,
+    CAGE_FRAMES_SCHEMA,
     SPLIT_SUMMARY_SCHEMA,
     SPLITS,
     VIDEOMAE_CLIPS_SCHEMA,
@@ -78,6 +84,64 @@ def select_yolo_frames(
         .sort([*CAGE_COLUMNS, "frame"])
         .cast(YOLO_FRAMES_SCHEMA)
     )
+
+
+def select_cage_frames(
+    videos: list[Path], split: pl.DataFrame, masks_root: Path, per_video: int
+) -> pl.DataFrame:
+    """Select cage-detector frames: ``per_video`` per raw video of a split camera.
+
+    Frames spread over the video's legacy one-shot segments: one per
+    segment (evenly spaced segments if there are more), cycling through
+    them if there are fewer, spaced evenly within each segment.
+
+    Args:
+        videos: Raw videos, ``{camera}/{video}.{ext}``.
+        split: ``camera_id``, ``split``; videos of other cameras are skipped.
+        masks_root: ``{camera}/{video}/`` legacy masks root.
+        per_video: Frames per video.
+
+    Returns:
+        :data:`CAGE_FRAMES_SCHEMA` rows.
+
+    Raises:
+        FileNotFoundError: Listing every split video with no legacy masks.
+    """
+    split_of = dict(split.select("camera_id", "split").iter_rows())
+    rows, missing = [], []
+    for video in videos:
+        camera_id, video_id = parse_raw_video_path(video)
+        if camera_id not in split_of:
+            continue
+        video_dir = masks_root / camera_id / video_id
+        if not (video_dir / "segment_index.json").is_file():
+            missing.append(f"{camera_id}/{video_id}")
+            continue
+        index = json.loads((video_dir / "segment_index.json").read_text())
+        segs = sorted(index, key=int)
+        if len(segs) > per_video:
+            segs = [segs[round(i)] for i in np.linspace(0, len(segs) - 1, per_video)]
+        uses = Counter(segs[k % len(segs)] for k in range(per_video))
+        for seg, n in uses.items():
+            start, end = index[seg]["start"], index[seg]["end"]
+            for r in range(n):
+                rows.append(
+                    {
+                        "camera_id": camera_id,
+                        "video_id": video_id,
+                        "split": split_of[camera_id],
+                        "video_path": str(video),
+                        # Legacy segment frame i is raw frame i + 1
+                        "raw_frame": start + (end - start) * (r + 1) // (n + 1) + 1,
+                        "mask_path": str(video_dir / f"{seg}_segmentation.json"),
+                    }
+                )
+    if missing:
+        raise FileNotFoundError(
+            f"{len(missing)} videos have no legacy cage masks under {masks_root}, "
+            f"e.g. {missing[:10]}"
+        )
+    return pl.DataFrame(rows, schema=CAGE_FRAMES_SCHEMA).unique(maintain_order=True)
 
 
 def labeled_stretches(frames: pl.DataFrame, vocab: Behaviors) -> pl.DataFrame:

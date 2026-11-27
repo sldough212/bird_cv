@@ -136,16 +136,21 @@ def build_datasets(
     for role in roles:
         spec = cfg.models.roles()[role]
         trainer = get_trainer(spec.kind)
-        paths = export_media(trainer.dataset_export(media))
+        export = trainer.dataset_export(media)
         split = frozen.select("camera_id", "split")
         selection = pl.read_parquet(trainer.prepared_selection(layout, dataset_id))
-        cages = selection.select("camera_id", "video_id", "cage_id").unique()
+        if export is None:
+            # The selection names its media (raw videos)
+            selected = [Path(p) for p in selection["video_path"].unique()]
+        else:
+            paths = export_media(export)
+            cages = selection.select("camera_id", "video_id", "cage_id").unique()
+            selected = [paths.get(key) or key for key in cages.iter_rows()]
         media_paths = []
-        for key in cages.iter_rows():
-            path = paths.get(key)
+        for path in selected:
             media_paths.append(str(path))
-            if path is None or not path.exists():
-                missing.add(str(path or key))
+            if not isinstance(path, Path) or not path.exists():
+                missing.add(str(path))
         config = dataset_config(
             role, spec, data_key, split, selection, media, sorted(media_paths)
         )

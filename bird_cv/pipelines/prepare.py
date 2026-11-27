@@ -30,8 +30,10 @@ from bird_cv.preprocessing.sampling import (
     log_summary,
     select_videomae_clips,
     select_yolo_frames,
+    select_cage_frames,
     summarize,
 )
+from bird_cv.preprocessing.standardize import find_raw_videos
 from bird_cv.preprocessing.snapshot import export_annotations, snapshot_exports
 from bird_cv.preprocessing.splits import update_split, with_split
 from bird_cv.pipelines.config import BirdCVConfig, load_config
@@ -46,15 +48,22 @@ def sampling_config(cfg: BirdCVConfig) -> dict[str, Any]:
         cfg: Loaded pipeline config.
 
     Returns:
-        The values, keyed by name.
+        The values, keyed by name; the cage-detector ones only if
+        ``[models.cage_detector]`` is set, so other datasets keep their key.
     """
-    return {
+    values = {
         "yolo_uniform_stride": cfg.prepare.yolo_uniform_stride,
         "videomae_clip_stride": cfg.prepare.videomae_clip_stride,
         "num_frames": clip_length(cfg),
         "seed": cfg.prepare.split_seed,
         "behaviors": asdict(cfg.behaviors),
     }
+    if cfg.models.cage_detector is not None:
+        values |= {
+            "cage_frames_per_video": cfg.prepare.cage_frames_per_video,
+            "path_to_cage_masks": str(cfg.prepare.path_to_cage_masks),
+        }
+    return values
 
 
 def clip_length(cfg: BirdCVConfig) -> int:
@@ -223,6 +232,14 @@ def run_prepare(
         for kind, table in (("yolo", yolo), ("videomae", clip_frames(clips)))
     ]
     yolo.write_parquet(layout.yolo_frames(dataset_id))
+    if cfg.models.cage_detector is not None:
+        assert pcfg.path_to_cage_masks is not None  # set by BirdCVConfig
+        select_cage_frames(
+            find_raw_videos(cfg.path_to_raw_videos),
+            split,
+            pcfg.path_to_cage_masks,
+            pcfg.cage_frames_per_video,
+        ).write_parquet(layout.cage_frames(dataset_id))
     clips.write_parquet(layout.videomae_clips(dataset_id))
     summary = pl.concat([summarize(frames, cfg.behaviors), *sampled])
     summary.write_parquet(layout.split_summary(dataset_id))

@@ -6,6 +6,7 @@ take in-memory frames.
 """
 
 from collections.abc import Iterable, Sequence
+from pathlib import Path
 from typing import ClassVar, Literal, Protocol
 
 import numpy as np
@@ -46,8 +47,11 @@ class FrameClassifier(Protocol):
 
 
 class CageSegmenter(Protocol):
-    """Splits chunks of a standardized video into cages."""
+    """Splits a standardized video into cages."""
 
-    def segment_chunk(self, frames: Sequence[np.ndarray], start: int) -> list[Keyframe]:
-        """Keyframe masks for BGR ``frames``, the chunk starting at canonical ``start``."""
+    def segment_video(self, video_path: Path, chunk_frames: int) -> list[Keyframe]:
+        """Keyframe masks of a standardized video, read ``chunk_frames`` at a time.
+
+        Empty if the video has no frames.
+        """
         ...

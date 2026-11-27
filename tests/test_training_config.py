@@ -123,3 +123,32 @@ def test_evaluate_rejects_runs_on_other_datasets(tmp_path: Path) -> None:
     check_dataset({"id": "d2", "key": {"split_version": 3}}, [path], "run")
     with pytest.raises(ValueError, match="dataset d1"):
         check_dataset({"id": "d3", "key": {"split_version": 2}}, [path], "run")
+
+
+def test_cage_detector_role_is_opt_in_and_feeds_yolo_cages(tmp_path: Path) -> None:
+    cfg = load_config(_config(tmp_path), require_api_key=False)
+    assert "cage_detector" not in cfg.models.roles()
+    path = _config(tmp_path)
+    swap = '[infer.segmenter]\nkind = "yolo_cages"\noptions = { expected_cages = 4 }\n'
+    path.write_text(path.read_text().replace("[infer.segmenter]\n", swap, 1))
+    with pytest.raises(ValueError, match=r"needs \[models.cage_detector\]"):
+        inference_models(load_config(path, require_api_key=False), train_run_id="r1")
+
+    path.write_text(path.read_text() + "\n[models.cage_detector]\nepochs = 5\n")
+    cfg = load_config(path, require_api_key=False)
+    spec = cfg.models.roles()["cage_detector"]
+    assert (spec.kind, spec.pretrained, spec.epochs) == (
+        "yolo_seg",
+        "yolo11s-seg.pt",
+        5,
+    )
+    assert cfg.prepare.path_to_cage_masks == cfg.path_to_segmentation_output
+    layout = Layout(tmp_path)
+    for role in ("detector", "classifier", "cage_detector"):
+        kind = cfg.models.roles()[role].kind
+        checkpoint = get_trainer(kind).checkpoint_path(layout.train_run(role, "r1"))
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint.touch()
+    models = inference_models(cfg, train_run_id="r1")
+    assert models.context.checkpoint == tmp_path / "models/cage_detector/r1/best.pt"
+    models.segmenters().check_cameras(["new_camera"])  # no prompt config needed
