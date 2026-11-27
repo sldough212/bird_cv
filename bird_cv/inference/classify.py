@@ -3,7 +3,7 @@
 Mirrors how Classify training clips are built from bird-crop videos (which
 hold only boxed frames): the classifier only ever sees boxed frames, windows
 never span a gap, and a run shorter than one window is centered and padded
-with neighboring boxed frames via ``annotations_to_mae._center_window``.
+with neighboring boxed frames via :func:`~bird_cv.preprocessing.crop.center_window`.
 """
 
 from collections.abc import Sequence
@@ -14,8 +14,7 @@ import numpy as np
 from bird_cv.classification.types import FramePrediction
 from bird_cv.detection.types import Detection
 from bird_cv.inference.protocols import FrameClassifier
-from bird_cv.preprocessing.annotations_to_mae import _center_window
-from bird_cv.preprocessing.annotations_to_yolo import crop_bird, smooth_centers
+from bird_cv.preprocessing.crop import center_window, crop_bird, smooth_centers
 
 
 def smoothed_box_centers(
@@ -79,7 +78,7 @@ def classify_runs(
             offset = 0
             win_start = start
         else:
-            win_start, win_end = _center_window(start, end, num, len(crops))
+            win_start, win_end = center_window(start, end, num, len(crops))
             window = list(crops[win_start:win_end])
             # Fewer boxed frames than one window: repeat the edge frames, as
             # annotations_to_mae does for short videos

@@ -1,4 +1,4 @@
-"""Re-encode one raw video to the standardized 15 fps H.264 video.
+"""Re-encode raw videos to the standardized H.264 video, and read its frames.
 
 The standardized video's frames define the canonical frame index (see
 ``docs/adr/0002-canonical-frame-index.md``).
@@ -6,11 +6,12 @@ The standardized video's frames define the canonical frame index (see
 
 import math
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Collection, Iterator, Sequence
 from pathlib import Path
 
 import cv2
 import imageio_ffmpeg
+import numpy as np
 
 from bird_cv.core.ids import parse_raw_video_path
 
@@ -123,3 +124,40 @@ def find_raw_videos(
     if cameras is not None:
         videos = [v for v in videos if parse_raw_video_path(v)[0] in cameras]
     return videos
+
+
+def iter_canonical_frames(
+    video_path: Path, frames: Collection[int] | None = None
+) -> Iterator[tuple[int, np.ndarray]]:
+    """Read a video's frames in memory, numbered as canonical frames.
+
+    Unlike :func:`bird_cv.segmentation.frames.extract_all_frames` (whose
+    1-indexed file names follow Label Studio), frames are numbered from 0, as in
+    ``docs/adr/0002-canonical-frame-index.md``.
+
+    Args:
+        video_path: Path to the (standardized) video.
+        frames: Canonical frames to yield; all frames if None.
+
+    Yields:
+        ``(canonical_frame, frame)`` pairs in order, ``frame`` in BGR.
+
+    Raises:
+        OSError: If the video can't be opened.
+    """
+    wanted = None if frames is None else set(frames)
+    last = None if wanted is None else max(wanted, default=-1)
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        if not cap.isOpened():
+            raise OSError(f"Could not open video {video_path}")
+        frame_idx = 0
+        while last is None or frame_idx <= last:
+            success, frame = cap.read()
+            if not success:
+                break
+            if wanted is None or frame_idx in wanted:
+                yield frame_idx, frame
+            frame_idx += 1
+    finally:
+        cap.release()

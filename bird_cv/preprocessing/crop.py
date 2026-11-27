@@ -1,9 +1,10 @@
-"""Per-cage image and YOLO label cropping utilities."""
+"""Cage and bird crops: per-cage frames, bird-centered crops and clip windows."""
 
 import json
 import tempfile
 from pathlib import Path
 
+import cv2
 import numpy as np
 import polars as pl
 from PIL import Image
@@ -128,3 +129,117 @@ def crop_cages(
                     crop_output.mkdir(exist_ok=True, parents=True)
 
                     Image.fromarray(cropped).save(crop_output / f"{frame:05d}.jpg")
+
+
+def crop_bird(
+    frame: np.ndarray, cx_norm: float, cy_norm: float, crop_size: int = 224
+) -> np.ndarray:
+    """Crop a fixed square centered on a bird, padding with black past the edges.
+
+    Args:
+        frame: Frame as an ``(H, W[, C])`` array (e.g. BGR from cv2).
+        cx_norm: Crop center x, normalized 0-1 to the frame width.
+        cy_norm: Crop center y, normalized 0-1 to the frame height.
+        crop_size: Side length in pixels of the square crop.
+
+    Returns:
+        The ``crop_size`` x ``crop_size`` crop (for even ``crop_size``).
+    """
+    frame_h, frame_w = frame.shape[:2]
+    half = crop_size // 2
+
+    cx = int(cx_norm * frame_w)
+    cy = int(cy_norm * frame_h)
+
+    x1, y1 = cx - half, cy - half
+    x2, y2 = cx + half, cy + half
+
+    pad_left = max(0, -x1)
+    pad_top = max(0, -y1)
+    pad_right = max(0, x2 - frame_w)
+    pad_bottom = max(0, y2 - frame_h)
+
+    crop = frame[max(0, y1) : min(frame_h, y2), max(0, x1) : min(frame_w, x2)]
+
+    if pad_left or pad_top or pad_right or pad_bottom:
+        crop = cv2.copyMakeBorder(
+            crop,
+            pad_top,
+            pad_bottom,
+            pad_left,
+            pad_right,
+            cv2.BORDER_CONSTANT,
+            value=0,
+        )
+    return crop
+
+
+def smooth_centers(
+    cx: np.ndarray, cy: np.ndarray, window: int = 5
+) -> tuple[np.ndarray, np.ndarray]:
+    """Smooth box-center sequences with an edge-padded moving average.
+
+    The window shrinks to ``min(window, len(cx))`` for short sequences.
+
+    Args:
+        cx: Box x-centers, one per frame, in frame order.
+        cy: Box y-centers, one per frame, the same length as ``cx``.
+        window: Moving-average window length in frames; at least 1.
+
+    Returns:
+        Smoothed ``(cx, cy)``, each the same length as the input (empty
+        arrays for empty input).
+
+    Raises:
+        ValueError: If ``window`` is less than 1.
+    """
+    if window < 1:
+        raise ValueError(f"window must be at least 1, got {window}")
+    n = len(cx)
+    if n == 0:
+        return np.empty(0), np.empty(0)
+    k = min(window, n)
+    kernel = np.ones(k) / k
+    pad = k // 2
+    cx_smooth = np.convolve(np.pad(cx, pad, mode="edge"), kernel, mode="valid")
+    cy_smooth = np.convolve(np.pad(cy, pad, mode="edge"), kernel, mode="valid")
+    # An even window yields one extra trailing value; drop it
+    return cx_smooth[:n], cy_smooth[:n]
+
+
+def center_window(
+    start: int, end: int, num_frames: int, total_frames: int
+) -> tuple[int, int]:
+    """Symmetrically expand a ``[start, end)`` range to length ``num_frames``.
+
+    Extends into real neighboring frames from the source video on both
+    sides so the labeled segment ends up centered in the window, rather
+    than pinned to one edge. If one side runs out of room against a video
+    boundary, the remaining deficit is shifted to the other side. If the
+    video itself has fewer than ``num_frames`` frames, the returned range
+    simply covers the whole video (the caller pads the rest).
+
+    Args:
+        start: Inclusive start index (0-based) of the labeled segment.
+        end: Exclusive end index (0-based) of the labeled segment.
+        num_frames: Desired window length.
+        total_frames: Number of frames available in the source video.
+
+    Returns:
+        ``(new_start, new_end)``, clamped to ``[0, total_frames)``.
+    """
+    deficit = num_frames - (end - start)
+    left_pad = deficit // 2
+    right_pad = deficit - left_pad
+
+    new_start = start - left_pad
+    new_end = end + right_pad
+
+    if new_start < 0:
+        new_end += -new_start
+        new_start = 0
+    if new_end > total_frames:
+        new_start -= new_end - total_frames
+        new_end = total_frames
+
+    return max(new_start, 0), new_end

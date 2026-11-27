@@ -5,8 +5,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from bird_cv.preprocessing.annotations_to_yolo import crop_bird
-from bird_cv.segmentation.frames import iter_canonical_frames
+from bird_cv.preprocessing.crop import crop_bird
+from bird_cv.preprocessing.standardize import iter_canonical_frames
 
 
 def _write_video(path: Path, values: list[int], size: int = 32) -> None:

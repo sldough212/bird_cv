@@ -10,6 +10,7 @@ import numpy as np
 import polars as pl
 from tqdm import tqdm
 
+from bird_cv.preprocessing.crop import center_window
 from bird_cv.core.ids import get_local_path, parse_media_path, with_raw_video_ids
 
 
@@ -31,44 +32,6 @@ def _extract_video_frames(video_path: Path) -> List[np.ndarray]:
         frames.append(frame)
     cap.release()
     return frames
-
-
-def _center_window(
-    start: int, end: int, num_frames: int, total_frames: int
-) -> Tuple[int, int]:
-    """Symmetrically expand a ``[start, end)`` range to length ``num_frames``.
-
-    Extends into real neighboring frames from the source video on both
-    sides so the labeled segment ends up centered in the window, rather
-    than pinned to one edge. If one side runs out of room against a video
-    boundary, the remaining deficit is shifted to the other side. If the
-    video itself has fewer than ``num_frames`` frames, the returned range
-    simply covers the whole video (the caller pads the rest).
-
-    Args:
-        start: Inclusive start index (0-based) of the labeled segment.
-        end: Exclusive end index (0-based) of the labeled segment.
-        num_frames: Desired window length.
-        total_frames: Number of frames available in the source video.
-
-    Returns:
-        ``(new_start, new_end)``, clamped to ``[0, total_frames)``.
-    """
-    deficit = num_frames - (end - start)
-    left_pad = deficit // 2
-    right_pad = deficit - left_pad
-
-    new_start = start - left_pad
-    new_end = end + right_pad
-
-    if new_start < 0:
-        new_end += -new_start
-        new_start = 0
-    if new_end > total_frames:
-        new_start -= new_end - total_frames
-        new_end = total_frames
-
-    return max(new_start, 0), new_end
 
 
 def load_split_guidance(path_to_guidance: Path) -> Dict[Tuple[str, str], str]:
@@ -124,7 +87,7 @@ def _write_range_clips(
         # Prefer expanding into real neighboring frames from the
         # source video on both sides, so the labeled behavior
         # ends up centered in the clip.
-        start, end = _center_window(start, end, num_frames, len(frames))
+        start, end = center_window(start, end, num_frames, len(frames))
 
     candidates = frames[start:end]
 

@@ -7,10 +7,10 @@ import time
 from pathlib import Path
 
 
-import cv2
-
 from label_studio_sdk import LabelStudio
 
+
+from bird_cv.preprocessing.standardize import video_header
 
 logger = logging.getLogger(__name__)
 
@@ -197,10 +197,7 @@ def get_video_info(path: Path | str) -> tuple[int, float]:
     Returns:
         tuple[int, float]: The total frame count and duration in seconds.
     """
-    cap = cv2.VideoCapture(str(path))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    frames_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap.release()
+    fps, frames_count = video_header(Path(path))
     return frames_count, frames_count / fps
 
 

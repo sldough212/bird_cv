@@ -13,7 +13,7 @@ from typing import TypeVar
 
 import numpy as np
 
-from bird_cv.segmentation.frames import iter_canonical_frames
+from bird_cv.preprocessing.standardize import iter_canonical_frames
 
 T = TypeVar("T")
 

@@ -21,7 +21,6 @@ from dataclasses import asdict, fields
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 import polars as pl
 
@@ -118,9 +117,7 @@ def infer_video(
             f"ffmpeg failed on {raw_video_path}: "
             f"{result.stderr.decode(errors='replace')}"
         )
-    cap = cv2.VideoCapture(str(std_path))
-    approx_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap.release()
+    approx_frames = video_header(std_path)[1]
 
     # Pass 1: cage masks
     masks = CageMasks()

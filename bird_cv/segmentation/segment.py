@@ -22,8 +22,21 @@ from bird_cv.segmentation.visualize import (
 from bird_cv.segmentation.smooth import smooth_masks
 from bird_cv.segmentation.utils import calculate_iou
 from bird_cv.core.ids import parse_raw_video_path
-from bird_cv.utils import NumpyEncoder
 from bird_cv.segmentation.frames import extract_all_frames
+
+
+class NumpyEncoder(json.JSONEncoder):
+    """Custom JSON encoder for serializing NumPy arrays."""
+
+    def default(self, obj):
+        """Converts unsupported objects into JSON-serializable formats.
+
+        Args:
+            obj (Any): The object to serialize.
+        """
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
 
 
 def get_camera_sam_config(

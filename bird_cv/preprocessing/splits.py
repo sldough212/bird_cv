@@ -15,10 +15,10 @@ from collections.abc import Iterable, Mapping
 from itertools import combinations
 from pathlib import Path
 
-import cv2
 import numpy as np
 import polars as pl
 
+from bird_cv.preprocessing.standardize import video_header
 from bird_cv.core.ids import with_raw_video_ids
 from bird_cv.core.labels import Behaviors
 from bird_cv.core.layout import (
@@ -421,13 +421,7 @@ def simulate_split_guidance(videos_path: Path, output_path: Path) -> None:
     for p in videos_path.rglob("*"):
         if p.is_file() and p.suffix.lower() in video_extensions:
             # Determine fps of the video
-            cap = cv2.VideoCapture(str(p))
-            fps = cap.get(cv2.CAP_PROP_FPS)
-
-            # Find frame count
-            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-            cap.release()
+            fps, frame_count = video_header(p)
 
             video_path_store.append(str(p))
             fps_store.append(fps)

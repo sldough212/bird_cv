@@ -7,9 +7,10 @@ from datetime import datetime
 
 from label_studio_ml.response import ModelResponse
 from label_studio_sdk.label_interface.objects import PredictionValue
-from ultralytics import YOLO
 
+from bird_cv.core.frames import canonical_to_ls
 from bird_cv.core.ids import get_local_path
+from bird_cv.detection.track import track_video
 from bird_cv.client.utils import (
     close_server,
     find_open_port,
@@ -29,8 +30,9 @@ def get_yolo_predictions(
 ) -> ModelResponse:
     """Run YOLO tracking over a set of Label Studio tasks and build predictions.
 
-    Loads a YOLO model, tracks objects across each task's video, and converts
-    the resulting per-frame tracks into Label Studio `videorectangle` regions
+    Tracks objects across each task's video with
+    :func:`~bird_cv.detection.track.track_video` and converts the per-frame
+    tracks into Label Studio `videorectangle` regions
     suitable for submission as predictions.
 
     Args:
@@ -47,48 +49,29 @@ def get_yolo_predictions(
             `tasks_to_label`.
     """
 
-    # Set the yolo model
-    model_path = str(model_path)
-    model = YOLO(model_path)
-    model_names = model.names
-
     predictions = []
     for t in tasks_to_label:
         local_path = get_local_path(t["data"]["video"])
 
         frames_count, duration = get_video_info(local_path)
-        results = model.track(
-            local_path,
-            stream=True,
-            conf=0.05,
-            iou=0.70,
-            max_det=1,
-            tracker=tracker_path,
-        )
-
         tracks = defaultdict(list)
         track_labels = {}
-        for frame_idx, result in enumerate(results):
-            data = result.boxes
-            if not data.is_track:
-                continue
-            for i, track_id in enumerate(data.id.tolist()):
-                score = float(data.conf[i])
-                x, y, w, h = data.xywhn[i].tolist()
-                track_labels[track_id] = model_names[int(data.cls[i])]
-                tracks[track_id].append(
-                    {
-                        "frame": frame_idx + 1,
-                        "enabled": True,
-                        "rotation": 0,
-                        "x": (x - w / 2) * 100,
-                        "y": (y - h / 2) * 100,
-                        "width": w * 100,
-                        "height": h * 100,
-                        "time": (frame_idx + 1) * (duration / frames_count),
-                        "score": score,
-                    }
-                )
+        for det in track_video(local_path, model_path, tracker_path):
+            ls_frame = canonical_to_ls(det.frame)
+            track_labels[det.track_id] = det.label
+            tracks[det.track_id].append(
+                {
+                    "frame": ls_frame,
+                    "enabled": True,
+                    "rotation": 0,
+                    "x": det.left * 100,
+                    "y": det.top * 100,
+                    "width": det.width * 100,
+                    "height": det.height * 100,
+                    "time": ls_frame * (duration / frames_count),
+                    "score": det.conf,
+                }
+            )
 
         regions = []
         for track_id, sequence in tracks.items():
@@ -111,7 +94,7 @@ def get_yolo_predictions(
 
         predictions.append(PredictionValue(result=regions))
 
-    response = ModelResponse(predictions=predictions, model_version=model_path)
+    response = ModelResponse(predictions=predictions, model_version=str(model_path))
 
     return response
 
