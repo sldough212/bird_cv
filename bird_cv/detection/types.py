@@ -1,18 +1,16 @@
 """Model-agnostic data model for the detection stage.
 
 Every detector -- whatever YOLO checkpoint, or a different architecture
-entirely -- takes a video and returns ``list[Detection]``. The single-video
-pipeline and the detection evaluation harness only ever talk to that type,
-never to a specific model's native output format, so a new detector can be
-swapped in by writing a class that implements :class:`Detector` and nothing
-downstream has to change. The same type is also the target for parsing
+entirely -- returns ``list[Detection]`` (see
+:class:`bird_cv.inference.protocols.StreamingDetector`). Inference and
+evaluation only ever talk to that type, never to a specific model's native
+output format, so a new detector can be swapped in without changing
+anything downstream. The same type is also the target for parsing
 ground-truth boxes (e.g. from exported Label Studio annotations), so a
 prediction and its ground truth are always directly comparable.
 """
 
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Protocol
 
 
 @dataclass(frozen=True)
@@ -48,20 +46,3 @@ class Detection:
     height: float
     conf: float
     label: str
-
-
-class Detector(Protocol):
-    """Anything that can turn a cage video into per-frame detections."""
-
-    def predict(self, video_path: Path) -> list[Detection]:
-        """Run detection/tracking over a video.
-
-        Args:
-            video_path: Path to the video to run on (e.g. a cropped
-                per-cage video).
-
-        Returns:
-            One :class:`Detection` per tracked box per frame it appears
-            in. Frames with no detection contribute no entries.
-        """
-        ...

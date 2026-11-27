@@ -195,11 +195,8 @@ class YoloFrameTracker:
 
 @dataclass
 class YoloDetector:
-    """:class:`bird_cv.detection.types.Detector` backed by a YOLO checkpoint.
-
-    Wraps :func:`track_video` so detectors are swappable: anything that
-    implements ``predict(video_path) -> list[Detection]`` can stand in for
-    this in the single-video pipeline and its evaluation harness.
+    """:class:`~bird_cv.inference.protocols.StreamingDetector` backed by a YOLO
+    checkpoint.
 
     Attributes:
         model_path: Path to the YOLO model weights (e.g. a ``.pt`` file).
@@ -215,16 +212,6 @@ class YoloDetector:
     iou: float = 0.70
     max_det: int = 1
     _model: YOLO | None = field(default=None, init=False, repr=False)
-
-    def predict(self, video_path: Path | str) -> list[Detection]:
-        return track_video(
-            video_path=video_path,
-            model_path=self.model_path,
-            tracker_path=self.tracker_path,
-            conf=self.conf,
-            iou=self.iou,
-            max_det=self.max_det,
-        )
 
     def frame_tracker(self) -> YoloFrameTracker:
         """Return a fresh tracker for one stream of in-memory frame chunks.

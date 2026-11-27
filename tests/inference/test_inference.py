@@ -25,9 +25,6 @@ class EchoClassifier:
     input_type: ClassVar[Literal["bbox_crop", "cage"]] = "bbox_crop"
     num_frames = 16
 
-    def predict(self, video_path: Path) -> list[FramePrediction]:
-        raise NotImplementedError
-
     def predict_frames(self, frames: Sequence[np.ndarray]) -> list[FramePrediction]:
         assert len(frames) >= self.num_frames
         return [

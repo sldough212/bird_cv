@@ -114,7 +114,7 @@ def _predict_frame_votes(
 
     Slides a ``num_frames``-frame window across the video and classifies
     each window. Shared by :func:`predict_video_segments` (which collapses
-    the result to majority-voted segments) and :func:`predict_video_frames`
+    the result to majority-voted segments) and :func:`predict_frame_list`
     (which keeps one row per frame).
 
     Args:
@@ -220,47 +220,6 @@ def predict_video_segments(
     return segments
 
 
-def predict_video_frames(
-    video_path: Path,
-    model: VideoMAEForVideoClassification,
-    processor: AutoImageProcessor,
-    dev: torch.device,
-    id_to_label: dict,
-    num_frames: int = 16,
-    stride: int = 8,
-    batch_size: int = 4,
-) -> list[FramePrediction]:
-    """Run windowed VideoMAE inference and return one prediction per frame.
-
-    Unlike :func:`predict_video_segments`, which collapses the majority
-    vote into contiguous runs, this keeps one row per video frame -- the
-    shape needed for frame-aligned output (e.g. merging with frames that
-    have no detection at all) and for frame-level evaluation against
-    ground truth.
-
-    Args:
-        video_path: Path to the video file.
-        model: Loaded VideoMAE classification model, already on ``dev``.
-        processor: HuggingFace image processor for the VideoMAE model.
-        dev: Device the model is loaded on.
-        id_to_label: Mapping from predicted class id to label name.
-        num_frames: Frames per window. Must match the model's input size.
-            Defaults to 16.
-        stride: Step size between consecutive windows in frames. Defaults to 8.
-        batch_size: Dataloader batch size for windowed inference. Defaults to 4.
-
-    Returns:
-        One :class:`FramePrediction` per video frame, in frame order.
-        ``label`` is ``None`` only when the video is shorter than one
-        window; ``confidence`` is the majority label's vote share among
-        windows covering that frame (0.0 when ``label`` is ``None``).
-    """
-    frame_votes = _predict_frame_votes(
-        video_path, model, processor, dev, num_frames, stride, batch_size
-    )
-    return _votes_to_predictions(frame_votes, id_to_label)
-
-
 def predict_frame_list(
     frames: Sequence[np.ndarray],
     model: VideoMAEForVideoClassification,
@@ -273,7 +232,7 @@ def predict_frame_list(
     *,
     cover_tail: bool = True,
 ) -> list[FramePrediction]:
-    """Like :func:`predict_video_frames`, but over in-memory RGB frames.
+    """Windowed VideoMAE inference over in-memory RGB frames, one row per frame.
 
     Args:
         frames: RGB frames, in order.
@@ -329,12 +288,7 @@ def _votes_to_predictions(
 
 @dataclass
 class VideoMAEClassifier:
-    """:class:`bird_cv.classification.types.BehaviorClassifier` backed by VideoMAE.
-
-    Wraps model loading plus :func:`predict_video_frames` so classifiers
-    are swappable: anything that implements
-    ``predict(video_path) -> list[FramePrediction]`` can stand in for this
-    in the single-video pipeline and its evaluation harness.
+    """:class:`~bird_cv.inference.protocols.FrameClassifier` backed by VideoMAE.
 
     Attributes:
         model_path: Path to the VideoMAE model weights.
@@ -354,18 +308,6 @@ class VideoMAEClassifier:
     def __post_init__(self) -> None:
         self.model, self.processor, self.device, self.id_to_label = load_videomae_model(
             self.model_path, num_frames=self.num_frames
-        )
-
-    def predict(self, video_path: Path) -> list[FramePrediction]:
-        return predict_video_frames(
-            video_path=video_path,
-            model=self.model,
-            processor=self.processor,
-            dev=self.device,
-            id_to_label=self.id_to_label,
-            num_frames=self.num_frames,
-            stride=self.stride,
-            batch_size=self.batch_size,
         )
 
     def predict_frames(self, frames: Sequence[np.ndarray]) -> list[FramePrediction]:

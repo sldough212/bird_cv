@@ -1,9 +1,8 @@
-"""Chunk-friendly extensions of the Detector / BehaviorClassifier protocols.
+"""The detector and classifier interfaces inference uses.
 
 Inference keeps frames in memory and processes long videos in chunks, so it
 needs detectors that carry tracker state across chunks and classifiers that
-take in-memory frames. Both still satisfy the base protocols in
-:mod:`bird_cv.detection.types` and :mod:`bird_cv.classification.types`.
+take in-memory frames.
 """
 
 from collections.abc import Iterable, Sequence
@@ -11,8 +10,8 @@ from typing import ClassVar, Literal, Protocol
 
 import numpy as np
 
-from bird_cv.classification.types import BehaviorClassifier, FramePrediction
-from bird_cv.detection.types import Detection, Detector
+from bird_cv.classification.types import FramePrediction
+from bird_cv.detection.types import Detection
 from bird_cv.inference.cages import Keyframe
 
 ClassifierInput = Literal["bbox_crop", "cage"]
@@ -27,16 +26,16 @@ class FrameTracker(Protocol):
         ...
 
 
-class StreamingDetector(Detector, Protocol):
-    """A :class:`Detector` that can also track in-memory frame chunks."""
+class StreamingDetector(Protocol):
+    """A detector that tracks in-memory frame chunks."""
 
     def frame_tracker(self) -> FrameTracker:
         """A fresh tracker for one stream."""
         ...
 
 
-class FrameClassifier(BehaviorClassifier, Protocol):
-    """A :class:`BehaviorClassifier` that also classifies in-memory frames."""
+class FrameClassifier(Protocol):
+    """A behavior classifier of in-memory frames."""
 
     input_type: ClassVar[ClassifierInput]
     num_frames: int
