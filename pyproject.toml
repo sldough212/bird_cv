@@ -23,7 +23,6 @@ dependencies = [
     "ray[tune]>=2.1,<3.0",
     "wandb>=0.22,<1.0",
     "motmetrics",
-    "scikit-learn>=1.8.0,<2.0",
     "tqdm>=4.67.3,<5.0",
     "msgspec>=0.21.1",
     "imageio_ffmpeg>=0.6",

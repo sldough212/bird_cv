@@ -408,18 +408,13 @@ class VideoMAETrainer:
     def evaluate(
         self, checkpoint, spec, dataset, split, output_dir, context
     ) -> dict[str, Any]:
-        result = evaluate_video_model(
+        return evaluate_video_model(
             clips_root=dataset,
             model_path=checkpoint,
             output_path=output_dir,
             num_frames=spec.options.get("num_frames", 16),
             split=split,
-            window_macro_f1=True,
         )
-        return {
-            "macro_f1": result["macro_f1"],
-            "n_skipped_out_of_vocabulary": result["n_skipped_out_of_vocabulary"],
-        }
 
     def infer_option_keys(self) -> set[str]:
         """:class:`VideoMAEClassifier` fields other than the checkpoint."""
