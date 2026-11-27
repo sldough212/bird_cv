@@ -27,7 +27,7 @@ GROUND_TRUTH_SCHEMA = {
     "video_id": pl.String,
     "cage_id": pl.String,
     "frame": pl.Int64,
-    # A class from Behaviors.classes ([behaviors] config), or null for a
+    # A class from BirdCVConfig.behaviors.classes, or null for a
     # labeling hole.
     "label": pl.String,
     # Annotated box normalized 0-1 to the cage video, top-left + size; null

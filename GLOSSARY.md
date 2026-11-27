@@ -41,7 +41,7 @@ One of the labels ground truth is built with: a Classify project label (e.g. `he
 A function prepare runs on the Classify export before ground truth, mapping its labels onto a label scheme (`[prepare] relabel`; `identity` keeps them). The snapshot stays as exported.
 
 **Label scheme**:
-A relabeler plus the behavior names it outputs (`[behaviors] names`). Each one has its own split lineage.
+A relabeler plus the behavior names it outputs (its `behaviors`). Each one has its own split lineage.
 
 **Class**:
 A behavior or `no_bird`; the values ground truth and predictions take.

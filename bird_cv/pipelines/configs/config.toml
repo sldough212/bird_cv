@@ -68,8 +68,9 @@ freeze_encoder = true
 [prepare]
 # Relabeler applied to the Classify export before ground truth
 # (bird_cv/preprocessing/relabel.py): "identity" keeps the Classify labels,
-# "activity_groups" groups them into awake / restful / restless. [behaviors]
-# names must be what it outputs. A new scheme gets its own split (ADR 0008).
+# "activity_groups" groups them into awake / restful / restless. Its classes
+# are the class vocabulary; a new scheme gets its own split (ADR 0008).
+# relabel_options are the relabeler's fields.
 relabel = "activity_groups"
 relabel_options = { head_move_restful_max_frames = 15 }
 # Fraction of cameras per split; sizes a new scheme's first split.
@@ -78,16 +79,6 @@ split_ratio = { train = 0.6, val = 0.2, test = 0.2 }
 # yolo_uniform_stride = 5
 # videomae_clip_stride = 8
 # standardized_max_frames = 900
-
-# ---- Class vocabulary ----
-# Sorted names the relabeler outputs; resting is the class sampling caps.
-# Defaults (relabel = "identity") are the Classify project's timelinelabels:
-# names = ["flapping_wings", "fluffing", "flying", "head_move", "preening",
-#          "resting", "tail_wag", "walking___hopping"], resting = "resting".
-[behaviors]
-names = ["awake", "restful", "restless"]
-resting = "restful"
-# no_bird = "no_bird"
 
 # ---- Training runs (optional; defaults shown) ----
 [train]

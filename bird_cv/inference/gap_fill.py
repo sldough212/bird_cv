@@ -81,7 +81,7 @@ def cage_predictions(
         labels: Classifier prediction per boxed canonical frame. A boxed
             frame missing here or labeled None (no window covered it) is
             ``no_bird``.
-        vocab: The class vocabulary (``[behaviors]`` in config).
+        vocab: The class vocabulary (``BirdCVConfig.behaviors``).
 
     Returns:
         One row per canonical frame, in frame order.

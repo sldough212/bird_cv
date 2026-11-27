@@ -46,9 +46,9 @@ Useful options:
 
 Models are picked in config: `[models.detector]` and `[models.classifier]`
 `kind`, and `[infer.segmenter]`. Ray Tune is off unless a model sets
-`tune = true`. `standard_fps` and the `[behaviors]` table set the frame rate
-and class vocabulary; `[prepare] relabel` maps the Classify labels onto that
-vocabulary (`config.toml` groups them into awake / restful / restless). To
+`tune = true`. `standard_fps` sets the frame rate. `[prepare] relabel` maps
+the Classify labels onto a label scheme whose classes are the class vocabulary
+(`config.toml` groups them into awake / restful / restless). To
 relabel or resplit already downloaded data, rerun prepare with
 `--detect-export` / `--classify-export` pointing at a dataset's
 `annotations/` files.

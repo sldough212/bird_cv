@@ -173,7 +173,7 @@ def behavior_by_crop_frame(
 
     Args:
         task: One task of a Classify export.
-        vocab: The class vocabulary (``[behaviors]`` in config).
+        vocab: The class vocabulary (``BirdCVConfig.behaviors``).
 
     Returns:
         For each 1-indexed crop frame inside any ``timelinelabels`` range
@@ -224,7 +224,7 @@ def build_ground_truth(
         detect_tasks: Parsed interpolated Detect export.
         classify_tasks: Parsed Classify export.
         standard_fps: Frame rate of the standardized videos.
-        vocab: The class vocabulary (``[behaviors]`` in config).
+        vocab: The class vocabulary (``BirdCVConfig.behaviors``).
         standard_counts: ``{(camera_id, video_id): frame_count}`` of the
             standardized videos, to catch cage videos with dropped frames.
             Tasks whose video is missing (or all tasks, if None) are only

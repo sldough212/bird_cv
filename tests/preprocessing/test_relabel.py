@@ -1,6 +1,6 @@
 from typing import Any
 
-from bird_cv.preprocessing.relabel import activity_groups
+from bird_cv.preprocessing.relabel import ActivityGroups
 
 
 def test_activity_groups_splits_head_move_by_span_length() -> None:
@@ -24,7 +24,7 @@ def test_activity_groups_splits_head_move_by_span_length() -> None:
     }
     tasks: list[dict[str, Any]] = [{"annotations": [{"result": [head_move, preening]}]}]
 
-    result = activity_groups(tasks)[0]["annotations"][0]["result"]
+    result = ActivityGroups()(tasks)[0]["annotations"][0]["result"]
 
     assert [(r["value"]["timelinelabels"], r["value"]["ranges"]) for r in result] == [
         (["restful"], [{"start": 1, "end": 15}, {"start": 40, "end": 40}]),

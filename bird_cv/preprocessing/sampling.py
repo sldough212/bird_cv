@@ -49,7 +49,7 @@ def select_yolo_frames(
         frames: Ground truth rows with a ``split`` column.
         stride: Frame stride for cage videos with no active behavior.
         seed: Random seed for the capped samples.
-        vocab: The class vocabulary (``[behaviors]`` in config).
+        vocab: The class vocabulary (``BirdCVConfig.behaviors``).
 
     Returns:
         Selected frames in :data:`YOLO_FRAMES_SCHEMA`.
@@ -85,7 +85,7 @@ def labeled_stretches(frames: pl.DataFrame, vocab: Behaviors) -> pl.DataFrame:
 
     Args:
         frames: Ground truth rows with a ``split`` column.
-        vocab: The class vocabulary (``[behaviors]`` in config).
+        vocab: The class vocabulary (``BirdCVConfig.behaviors``).
 
     Returns:
         One row per stretch of a behavior (``no_bird`` and holes excluded),
@@ -131,7 +131,7 @@ def select_videomae_clips(
         num_frames: Frames per clip.
         stride: Frames between consecutive clip starts.
         seed: Random seed for the resting cap.
-        vocab: The class vocabulary (``[behaviors]`` in config).
+        vocab: The class vocabulary (``BirdCVConfig.behaviors``).
 
     Returns:
         Selected clips in :data:`VIDEOMAE_CLIPS_SCHEMA`.
@@ -218,7 +218,7 @@ def summarize(frames: pl.DataFrame, vocab: Behaviors) -> pl.DataFrame:
     Args:
         frames: Table with ``camera_id``, ``video_id``, ``cage_id``, ``frame``,
             ``label`` and ``split`` columns.
-        vocab: The class vocabulary (``[behaviors]`` in config).
+        vocab: The class vocabulary (``BirdCVConfig.behaviors``).
 
     Returns:
         One row per (split, class) present plus a ``"total"`` row per split,

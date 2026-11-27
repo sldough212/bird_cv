@@ -73,7 +73,7 @@ def camera_behaviors(
 
     Args:
         ground_truth: Table with ``camera_id`` and ``label`` columns.
-        vocab: The class vocabulary (``[behaviors]`` in config).
+        vocab: The class vocabulary (``BirdCVConfig.behaviors``).
 
     Returns:
         The set of behaviors (not ``no_bird``) on each camera; every camera
@@ -103,7 +103,7 @@ def camera_behavior_frames(
 
     Args:
         ground_truth: Table with ``camera_id`` and ``label`` columns.
-        vocab: The class vocabulary (``[behaviors]`` in config).
+        vocab: The class vocabulary (``BirdCVConfig.behaviors``).
 
     Returns:
         ``{camera_id: {behavior: frames}}``; every camera in the table is a
@@ -307,7 +307,7 @@ def split_behavior_frames(
     Args:
         split: Split assignment in :data:`~bird_cv.core.schemas.SPLIT_SCHEMA`.
         frames: Frames of each behavior on each camera.
-        vocab: The class vocabulary (``[behaviors]`` in config).
+        vocab: The class vocabulary (``BirdCVConfig.behaviors``).
 
     Returns:
         ``{split: {behavior: frames}}`` for every split and every behavior.
@@ -340,7 +340,7 @@ def update_split(
         splits_dir: Directory holding ``split_v{n}.parquet``.
         split_ratio: Target fraction of cameras per split.
         seed: Base random seed for appending cameras.
-        vocab: The class vocabulary (``[behaviors]`` in config).
+        vocab: The class vocabulary (``BirdCVConfig.behaviors``).
         relabel: The relabeler ground truth was built with.
 
     Returns:

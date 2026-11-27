@@ -32,7 +32,6 @@ from bird_cv.preprocessing.sampling import (
     select_yolo_frames,
     summarize,
 )
-from bird_cv.preprocessing.relabel import RELABELERS
 from bird_cv.preprocessing.snapshot import export_annotations, snapshot_exports
 from bird_cv.preprocessing.splits import update_split, with_split
 from bird_cv.pipelines.config import BirdCVConfig, load_config
@@ -149,11 +148,6 @@ def run_prepare(
         "relabel": pcfg.relabel,
         "relabel_options": pcfg.relabel_options,
     }
-    if pcfg.relabel not in RELABELERS:
-        raise ValueError(
-            f"Unknown [prepare] relabel {pcfg.relabel!r}; expected one of "
-            f"{sorted(RELABELERS)}"
-        )
     detect_path, classify_path = snapshot_files(annotations)
     detect_tasks = json.loads(detect_path.read_text())
     rates = frame_rate_table(
@@ -164,9 +158,7 @@ def run_prepare(
     )
     result = build_ground_truth(
         detect_tasks,
-        RELABELERS[pcfg.relabel](
-            json.loads(classify_path.read_text()), **pcfg.relabel_options
-        ),
+        pcfg.relabeler()(json.loads(classify_path.read_text())),
         cfg.standard_fps,
         cfg.behaviors,
         standard_counts=standard_counts(rates),

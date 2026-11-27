@@ -10,6 +10,7 @@ import tomllib
 
 from bird_cv.core.labels import Behaviors
 from bird_cv.inference.registry import segmenter_kinds, segmenter_option_keys
+from bird_cv.preprocessing.relabel import RELABELERS, Relabeler, RelabelName
 from bird_cv.training.registry import check_search_space, get_trainer, trainer_kinds
 
 time = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -73,8 +74,8 @@ class PrepareConfig:
     )
     split_seed: int = 42
     # Relabeler run on the Classify export before ground truth
-    # (bird_cv/preprocessing/relabel.py), and its keyword arguments.
-    relabel: str = "identity"
+    # (bird_cv/preprocessing/relabel.py), and its fields.
+    relabel: RelabelName = "identity"
     relabel_options: dict[str, Any] = field(default_factory=dict)
     # Every k-th frame for Detect videos that have no Classify labels yet.
     yolo_uniform_stride: int = 5
@@ -84,6 +85,10 @@ class PrepareConfig:
     # (standardize_video's max_frames); None if uncapped. Expected standardized
     # frame counts are computed from raw headers with it.
     standardized_max_frames: int | None = 900
+
+    def relabeler(self) -> Relabeler:
+        """The ``relabel`` relabeler, built with ``relabel_options``."""
+        return RELABELERS[self.relabel](**self.relabel_options)
 
 
 @dataclass
@@ -358,8 +363,8 @@ class BirdCVConfig:
     models: ModelsConfig = field(default_factory=ModelsConfig)
     # Frame rate every raw video is standardized to; canonical frames index it
     standard_fps: int = 15
-    # Class vocabulary of ground truth and predictions; [behaviors] table
-    behaviors: Behaviors = field(default_factory=Behaviors)
+    # Class vocabulary of ground truth and predictions: the relabeler's classes
+    behaviors: Behaviors = field(init=False)
     # Derived paths
     path_to_cage_videos: Path = field(init=False)
     path_to_bbox_videos: Path = field(init=False)
@@ -372,6 +377,8 @@ class BirdCVConfig:
     path_to_segmentation_output: Path = field(init=False)
 
     def __post_init__(self):
+        # Builds the relabeler, so bad relabel_options fail at load
+        self.behaviors = self.prepare.relabeler().behaviors
         # Videos
         self.path_to_cage_videos = self.path_to_base_output / "cage_videos"
         self.path_to_bbox_videos = self.path_to_base_output / "cropped_bbox_videos"
@@ -461,7 +468,6 @@ def load_config(
         ("prepare", PrepareConfig),
         ("evaluate", EvaluateConfig),
         ("train", TrainConfig),
-        ("behaviors", Behaviors),
     ):
         table = raw.pop(name, {})
         unknown = set(table) - {f.name for f in fields(typ)}
