@@ -22,7 +22,6 @@ source .venv/bin/activate
 export PYTHONUNBUFFERED=1
 
 CONFIG=${CONFIG:-bird_cv/pipelines/configs/config.toml}
-python3 bird_cv/pipelines/build_datasets.py $CONFIG \
-    --processes "${SLURM_CPUS_PER_TASK:-4}" "$@"
+python3 bird_cv/pipelines/build_datasets.py $CONFIG "$@"
 end=$(date +'%D %T')
 echo "End:" $end
