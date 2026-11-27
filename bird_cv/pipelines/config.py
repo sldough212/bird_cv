@@ -344,6 +344,8 @@ class BirdCVConfig:
     evaluate: EvaluateConfig = field(default_factory=EvaluateConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
     models: ModelsConfig = field(default_factory=ModelsConfig)
+    # Frame rate every raw video is standardized to; canonical frames index it
+    standard_fps: int = 15
     # Derived paths
     path_to_cage_videos: Path = field(init=False)
     path_to_bbox_videos: Path = field(init=False)

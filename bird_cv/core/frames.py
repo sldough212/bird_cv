@@ -1,13 +1,11 @@
 """Canonical frame conventions.
 
 See ``docs/adr/0002-canonical-frame-index.md``. A canonical frame is the
-0-indexed frame of the standardized (15 fps) video. Label Studio numbers
+0-indexed frame of the standardized video (``standard_fps`` in config,
+15). Label Studio numbers
 frames from 1; convert only at the Label Studio boundary, with
 :func:`ls_to_canonical` and :func:`canonical_to_ls`.
 """
-
-STANDARD_FPS = 15
-"""Frame rate every video is standardized to before processing."""
 
 
 def ls_to_canonical(ls_frame: int) -> int:
@@ -25,6 +23,7 @@ def ls_to_canonical(ls_frame: int) -> int:
 def is_aligned_with_standard(
     frames_count: int,
     duration: float,
+    standard_fps: float,
     standard_frame_count: int | None = None,
     tolerance: float = 0.01,
 ) -> bool:
@@ -33,16 +32,18 @@ def is_aligned_with_standard(
     Args:
         frames_count: Label Studio ``framesCount`` for the media.
         duration: Label Studio ``duration`` in seconds.
+        standard_fps: Frame rate of the standardized videos
+            (``standard_fps`` in config).
         standard_frame_count: Frame count of the standardized source video,
             if known. When given, it must equal ``frames_count``.
-        tolerance: Allowed relative fps deviation from :data:`STANDARD_FPS`.
+        tolerance: Allowed relative fps deviation from ``standard_fps``.
 
     Returns:
         True if the fps matches and (when checkable) no frames were dropped.
     """
     if duration <= 0:
         return False
-    fps_ok = abs(frames_count / duration - STANDARD_FPS) <= tolerance * STANDARD_FPS
+    fps_ok = abs(frames_count / duration - standard_fps) <= tolerance * standard_fps
     count_ok = standard_frame_count is None or standard_frame_count == frames_count
     return fps_ok and count_ok
 

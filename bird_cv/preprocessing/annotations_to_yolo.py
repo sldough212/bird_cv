@@ -9,7 +9,6 @@ from collections import defaultdict
 from typing import Any, Dict, Optional
 import polars as pl
 
-from bird_cv.core.frames import STANDARD_FPS
 from bird_cv.client.utils import get_local_path
 from bird_cv.core.ids import parse_media_path
 
@@ -290,10 +289,11 @@ def process_item(
             raise ValueError(
                 f"{video_path}: frames {multi[:10]} have more than one box"
             )
-        if abs(fps - STANDARD_FPS) > 0.01 * STANDARD_FPS:
+        if abs(fps - ls_fps) > 0.01 * ls_fps:
             cap.release()
             raise ValueError(
-                f"{full_video_path}: {fps} fps; by_cage needs {STANDARD_FPS} fps media"
+                f"{full_video_path}: {fps} fps; by_cage needs the guidance's "
+                f"{ls_fps} fps"
             )
 
     # Smooth bbox centers across target frames to reduce YOLO jitter

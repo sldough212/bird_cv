@@ -27,7 +27,6 @@ import polars as pl
 
 from bird_cv.classification.types import FramePrediction
 
-from bird_cv.core.frames import STANDARD_FPS
 from bird_cv.core.ids import parse_raw_video_path
 from bird_cv.core.layout import InferRun
 from bird_cv.core.manifest import new_manifest, write_manifest_file
@@ -70,6 +69,7 @@ def infer_video(
     cfg: InferConfig,
     timer: StageTimer,
     *,
+    standard_fps: float,
     max_frames: int | None = None,
 ) -> pl.DataFrame:
     """Run the full pipeline on one raw video and write its outputs.
@@ -85,6 +85,7 @@ def infer_video(
         classifier: Behavior classifier; only ``bbox_crop`` input is supported.
         cfg: Inference settings.
         timer: Collects one row per stage.
+        standard_fps: Frame rate to standardize the video to.
         max_frames: Optionally truncate the standardized video.
 
     Returns:
@@ -104,10 +105,10 @@ def infer_video(
     std_path = out.standardized(camera_id, video_id)
     out_path = out.predictions(camera_id, video_id)
 
-    expected = _expected_frames(raw_video_path, max_frames)
+    expected = _expected_frames(raw_video_path, standard_fps, max_frames)
     with timer.stage(camera_id, video_id, "standardize", frames=expected):
         result = standardize_video(
-            raw_video_path, std_path, fps=STANDARD_FPS, max_frames=max_frames
+            raw_video_path, std_path, fps=standard_fps, max_frames=max_frames
         )
     if result.returncode != 0:
         raise RuntimeError(
@@ -208,10 +209,14 @@ def infer_video(
     return predictions
 
 
-def _expected_frames(video_path: Path, max_frames: int | None) -> int:
+def _expected_frames(
+    video_path: Path, standard_fps: float, max_frames: int | None
+) -> int:
     """Standardized frame count of a raw video from its header, for timing rows."""
     fps, count = video_header(video_path)
-    return expected_standard_frames(count, fps, max_frames=max_frames) if fps else 0
+    if not fps:
+        return 0
+    return expected_standard_frames(count, fps, standard_fps, max_frames=max_frames)
 
 
 def _write_parquet(df: pl.DataFrame, path: Path) -> None:
@@ -280,6 +285,7 @@ def run_infer(
     models: InferenceModels,
     cfg: InferConfig,
     *,
+    standard_fps: float,
     task_index: int = 0,
     num_tasks: int = 1,
     limit: int | None = None,
@@ -301,6 +307,7 @@ def run_infer(
             (:func:`bird_cv.inference.registry.inference_models`); loaded
             only if this task has videos.
         cfg: Inference settings.
+        standard_fps: Frame rate to standardize videos to.
         task_index: This task's index (e.g. ``SLURM_ARRAY_TASK_ID``).
         num_tasks: Number of tasks sharing ``videos``.
         limit: The ``--limit`` that selected ``videos``, recorded in the
@@ -326,6 +333,7 @@ def run_infer(
     my_videos = list(videos)[task_index::num_tasks]
     config: dict[str, Any] = {
         **asdict(cfg),
+        "standard_fps": standard_fps,
         "models": models.kinds(),
         "train_run_id": models.train_run_id,
         "prepared": models.prepared,
@@ -359,6 +367,7 @@ def run_infer(
                 classifier,
                 cfg,
                 timer,
+                standard_fps=standard_fps,
             )
         except Exception as e:
             print(f"FAILED {camera_id}/{video_id}:\n{traceback.format_exc()}")

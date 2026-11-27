@@ -142,6 +142,7 @@ def main() -> None:
         run_dir=run_dir,
         models=models,
         cfg=infer_cfg,
+        standard_fps=cfg.standard_fps,
         task_index=args.task_index,
         num_tasks=args.num_tasks,
         limit=args.limit,

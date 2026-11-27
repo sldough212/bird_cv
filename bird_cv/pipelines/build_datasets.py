@@ -130,6 +130,7 @@ def build_datasets(
     media = DatasetMedia(
         detect_export=detect_export,
         classify_export=classify_export,
+        standard_fps=cfg.standard_fps,
         processes=processes,
     )
 

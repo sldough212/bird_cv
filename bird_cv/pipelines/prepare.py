@@ -120,6 +120,7 @@ def run_prepare(
     gt_key = {
         "path_to_raw_videos": str(cfg.path_to_raw_videos),
         "standardized_max_frames": pcfg.standardized_max_frames,
+        "standard_fps": cfg.standard_fps,
     }
     gt_dir = gt_path.parent
     gt_current = (
@@ -136,11 +137,13 @@ def run_prepare(
         rates = frame_rate_table(
             cfg.path_to_raw_videos,
             detect_tasks,
+            cfg.standard_fps,
             max_frames=pcfg.standardized_max_frames,
         )
         result = build_ground_truth(
             detect_tasks,
             json.loads(classify_path.read_text()),
+            cfg.standard_fps,
             standard_counts=standard_counts(rates),
         )
         ground_truth = result.table

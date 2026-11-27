@@ -183,6 +183,7 @@ def _by_key(tasks: list[dict[str, Any]], project: str) -> dict[CageKey, dict]:
 def build_ground_truth(
     detect_tasks: list[dict[str, Any]],
     classify_tasks: list[dict[str, Any]],
+    standard_fps: float,
     standard_counts: dict[tuple[str, str], int] | None = None,
     overshoot_tolerance: int = 8,
 ) -> GroundTruthResult:
@@ -195,6 +196,7 @@ def build_ground_truth(
     Args:
         detect_tasks: Parsed interpolated Detect export.
         classify_tasks: Parsed Classify export.
+        standard_fps: Frame rate of the standardized videos.
         standard_counts: ``{(camera_id, video_id): frame_count}`` of the
             standardized videos, to catch cage videos with dropped frames.
             Tasks whose video is missing (or all tasks, if None) are only
@@ -231,7 +233,9 @@ def build_ground_truth(
         standard = (standard_counts or {}).get(key[:2])
         if standard is None:
             result.unchecked_detect_tasks += 1
-        if is_aligned_with_standard(task.frames_count, task.duration, standard):
+        if is_aligned_with_standard(
+            task.frames_count, task.duration, standard_fps, standard
+        ):
             aligned[key] = task.frames_count
         else:
             logger.warning(

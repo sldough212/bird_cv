@@ -21,6 +21,7 @@ from bird_cv.preprocessing.standardize import (
 def frame_rate_table(
     raw_videos_dir: Path,
     detect_tasks: list[dict[str, Any]],
+    standard_fps: float,
     max_frames: int | None = None,
 ) -> pl.DataFrame:
     """One row per Detect task: raw header, expected standardized and Label Studio frames.
@@ -28,6 +29,7 @@ def frame_rate_table(
     Args:
         raw_videos_dir: Raw videos as ``{camera_id}/{video_id}.{ext}``.
         detect_tasks: A Detect export.
+        standard_fps: Frame rate of the standardized videos.
         max_frames: Frame cap of the standardized videos.
 
     Returns:
@@ -50,7 +52,7 @@ def frame_rate_table(
             headers[key] = video_header(paths[key])
         fps, frames = headers.get(key, (0.0, 0))
         expected = (
-            expected_standard_frames(frames, fps, max_frames=max_frames)
+            expected_standard_frames(frames, fps, standard_fps, max_frames=max_frames)
             if fps > 0
             else None
         )
@@ -73,7 +75,9 @@ def frame_rate_table(
                 "expected_frames": expected,
                 "ls_fps": ls_frames / duration if ls_frames and duration else None,
                 "ls_frames": ls_frames,
-                "aligned": is_aligned_with_standard(ls_frames, duration, expected)
+                "aligned": is_aligned_with_standard(
+                    ls_frames, duration, standard_fps, expected
+                )
                 if ls_frames and duration
                 else None,
             }

@@ -127,7 +127,7 @@ def test_ground_truth_chain_with_mid_video_gap() -> None:
             ],
         )
     ]
-    result = build_ground_truth(detect + [misaligned], classify)
+    result = build_ground_truth(detect + [misaligned], classify, 15)
     gt = result.table.filter(pl.col("cage_id") == "0")
     label = dict(gt.select("frame", "label").iter_rows())
 

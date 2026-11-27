@@ -32,6 +32,7 @@ def main() -> None:
     table = frame_rate_table(
         cfg.path_to_raw_videos,
         json.loads(export.read_text()),
+        cfg.standard_fps,
         max_frames=cfg.prepare.standardized_max_frames,
     )
     misaligned = table.filter(pl.col("aligned").not_())

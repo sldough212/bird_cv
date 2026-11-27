@@ -55,6 +55,7 @@ def test_e2e_smoke_on_single_cage_clip(tmp_path: Path) -> None:
         # Small chunks so chunking, tracker carry-over and stitching all run
         InferConfig(chunk_frames=12, chunk_overlap=4),
         timer,
+        standard_fps=15,
         max_frames=N_FRAMES,
     )
 

@@ -12,14 +12,13 @@ from pathlib import Path
 import cv2
 import imageio_ffmpeg
 
-from bird_cv.core.frames import STANDARD_FPS
 from bird_cv.core.ids import parse_raw_video_path
 
 
 def standardize_video(
     video_path: Path,
     output_path: Path,
-    fps: float = STANDARD_FPS,
+    fps: float,
     max_frames: int | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     """Re-encode a video to H.264/mp4 at ``fps``, optionally truncated.
@@ -32,7 +31,7 @@ def standardize_video(
     Args:
         video_path: Raw video to read.
         output_path: Destination ``.mp4``; parent directories are created.
-        fps: Output frame rate. Defaults to :data:`STANDARD_FPS`.
+        fps: Output frame rate (``standard_fps`` in config).
         max_frames: If set, keep at most this many output frames.
 
     Returns:
@@ -64,7 +63,7 @@ def standardize_video(
 def expected_standard_frames(
     header_frames: int,
     header_fps: float,
-    fps: float = STANDARD_FPS,
+    fps: float,
     max_frames: int | None = None,
 ) -> int:
     """Frames :func:`standardize_video` writes for a video, from its header.

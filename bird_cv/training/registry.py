@@ -19,7 +19,7 @@ from bird_cv.detection.train_yolo import train_select_yolo
 from bird_cv.detection.evaluate_yolo import yolo_presence_metrics
 from bird_cv.detection.track import YoloDetector
 import polars as pl
-from bird_cv.core.frames import STANDARD_FPS, canonical_to_ls
+from bird_cv.core.frames import canonical_to_ls
 from bird_cv.preprocessing.annotations_to_yolo import stream_annotations_to_yolo
 from bird_cv.classification.train_video_model import train_video_model
 from bird_cv.classification.tune_video_model import tune_video_model
@@ -76,11 +76,13 @@ class DatasetMedia:
     Attributes:
         detect_export: The snapshot's interpolated Detect export (cage videos).
         classify_export: The snapshot's Classify export (bird-crop videos).
+        standard_fps: Frame rate of the standardized videos.
         processes: Worker processes for the converters.
     """
 
     detect_export: Path
     classify_export: Path
+    standard_fps: float
     processes: int = 1
 
 
@@ -310,8 +312,9 @@ class YoloTrainer:
             .agg(target_frames=(pl.col("frame") + canonical_to_ls(0)).sort())
             .with_columns(
                 video_path=pl.col("camera_id") + "/" + pl.col("video_id") + ".mp4",
-                # Ground truth keeps only 15 fps cages: LS frame = canonical + 1
-                fps=pl.lit(float(STANDARD_FPS)),
+                # Ground truth keeps only standardized-fps cages:
+                # LS frame = canonical + 1
+                fps=pl.lit(float(media.standard_fps)),
             )
         )
         guidance.write_parquet(guidance_path)

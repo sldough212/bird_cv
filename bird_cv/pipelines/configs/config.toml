@@ -20,6 +20,8 @@ path_to_base_output = "/gscratch/pdoughe1/full_pipeline/20260817"
 path_to_raw_videos = "/gscratch/pdoughe1/videos/2021_bunting_clips"
 path_to_segmentation_configs = "/gscratch/pdoughe1/segmentation_configs/configs"
 sam_model_id = "facebook/sam2.1-hiera-large"
+# Frame rate every raw video is standardized to; canonical frames index it.
+# standard_fps = 15
 
 # ---- Label Studio (required) ----
 # api_key is read from the LABEL_STUDIO_API_KEY environment variable.

@@ -38,13 +38,13 @@ def test_expected_standard_frames_matches_ffmpeg() -> None:
         (50, 24, 31),
         (40, 15, 40),
     ]:
-        assert expected_standard_frames(frames, fps) == written
-    assert expected_standard_frames(1502, 25, max_frames=900) == 900
+        assert expected_standard_frames(frames, fps, 15) == written
+    assert expected_standard_frames(1502, 25, 15, max_frames=900) == 900
 
     # Label Studio at 25 fps: reported misaligned (and excluded from ground truth)
     task = detect_task("a", "v", "0", [(1, 2)], n=1502)
     task["annotations"][0]["result"][0]["value"]["duration"] = 60.07
-    assert frame_rate_table(Path("/nonexistent"), [task])["aligned"].to_list() == [
+    assert frame_rate_table(Path("/nonexistent"), [task], 15)["aligned"].to_list() == [
         False
     ]
 
