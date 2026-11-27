@@ -324,10 +324,11 @@ def process_item(
     # Smooth bbox centers across target frames to reduce YOLO jitter
     smoothed_centers: dict[int, tuple[float, float]] = {}
     if crop_size:
+        # Same video-to-annotation frame mapping as the extraction loop below
         annotated = [
-            (f, int(f * ls_fps / fps))
+            (f, af)
             for f in sorted(target_frames)
-            if frame_annotations[int(f * ls_fps / fps)]
+            if frame_annotations[af := f if by_cage else int(f * ls_fps / fps)]
         ]
         if len(annotated) >= 2:
             cx_seq = np.array(

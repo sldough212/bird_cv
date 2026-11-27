@@ -31,10 +31,10 @@ from bird_cv.data.summary import with_split
 from bird_cv.evaluation.cv import fold_split
 from bird_cv.pipelines.config import BirdCVConfig, load_config
 from bird_cv.pipelines.prepare import config_hash, sampling_config
+from bird_cv.training.registry import DatasetMedia, get_trainer
 
 if TYPE_CHECKING:
     from bird_cv.pipelines.config import ModelSpec
-    from bird_cv.training.registry import DatasetMedia
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +120,6 @@ def build_datasets(
         FileNotFoundError: If a selected cage's media (from the export) is
             missing; raised before any dataset is built.
     """
-    from bird_cv.training.registry import DatasetMedia, get_trainer
-
     layout = Layout(cfg.path_to_base_output)
     prepared = layout.resolve_prepared(prepared_id, run_id)
     sampling = sampling_config(cfg)

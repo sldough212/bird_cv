@@ -48,6 +48,7 @@ from bird_cv.evaluation.e2e import (
     write_e2e_result,
 )
 from bird_cv.pipelines.config import BirdCVConfig, load_config
+from bird_cv.training.registry import TrainContext, get_trainer
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +131,6 @@ def run_evaluate(
     split = pl.read_parquet(layout.split(split_version))
 
     if mode == "model":
-        from bird_cv.training.registry import TrainContext, get_trainer
-
         assert role is not None  # checked above
         spec = cfg.models.roles()[role]
         train_dir = layout.train_run(role, run_id)
