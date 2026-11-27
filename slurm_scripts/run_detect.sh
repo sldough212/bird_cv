@@ -21,7 +21,7 @@ export PYTHONUNBUFFERED=1
 
 NODE_IP=$(hostname -I | awk '{print $1}')
 
-python3 bird_cv/pipelines/detect.py bird_cv/pipelines/configs/config.toml $NODE_IP
+python3 bird_cv/pipelines/detect.py ${CONFIG:-bird_cv/pipelines/configs/config.toml} $NODE_IP
 sleep 1m
 end=$(date +'%D %T')
 echo "End:" $end

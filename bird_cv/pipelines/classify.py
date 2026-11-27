@@ -14,7 +14,7 @@ def run_classify(cfg: BirdCVConfig, hostname: str) -> None:
         api_key=cfg.api_key,
         project_name=cfg.classify_project_name,
         model_path=cfg.classify.path_to_mae,
-        predict_labeled=True,
+        predict_labeled=False,
     )
 
 

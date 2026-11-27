@@ -11,7 +11,8 @@
 # ==========================================================================
 
 # ---- Core paths (required) ----
-path_to_base_output = "/gscratch/pdoughe1/full_pipeline/20261019"
+path_to_base_output = "/gscratch/pdoughe1/full_pipeline/20260817" 
+# 20261019"
 # Raw videos, {camera}/{video}.{ext}: inference standardizes them and prepare
 # computes expected standardized frame counts from their headers. Check with
 # `python -m bird_cv.data.check_fps CONFIG` (the value below is the 900-frame
@@ -39,7 +40,7 @@ path_to_tracker_config = "/home/pdoughe1/bird_cv/bird_cv/detection/tracker.yaml"
 epochs = 60
 device = 0
 tune = false
-tune_iterations = 30
+tune_iterations = 50
 run_name = "bird_yolo"
 
 
@@ -51,7 +52,7 @@ path_to_mae = "/gscratch/pdoughe1/20260415_163412/training/videomae_behavior/bes
 # ---- Optional (defaults shown) ----
 # Legacy pipelines only; new ones use [models.classifier] options.num_frames.
 num_frames = 16
-epochs = 10
+epochs = 50
 batch_size = 8
 lr = 1e-4
 device = "cuda"
