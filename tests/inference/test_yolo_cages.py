@@ -11,8 +11,8 @@ import pytest
 import torch
 
 from bird_cv.evaluation.segments import compare_masks, evaluate_segments
-from bird_cv.inference.cages import YoloCageSegmenter
 from bird_cv.preprocessing.sampling import select_cage_frames
+from bird_cv.segmentation.yolo_cages import YoloCageSegmenter
 from bird_cv.segmentation.cage_masks import (
     row_major_order,
     static_cage_masks,

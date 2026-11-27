@@ -23,9 +23,9 @@ from bird_cv.core.manifest import read_manifest
 from bird_cv.inference.cages import (
     Sam2CageSegmenter,
     WholeFrameSegmenter,
-    YoloCageSegmenter,
     check_sam2_configs,
 )
+from bird_cv.segmentation.yolo_cages import YoloCageSegmenter
 from bird_cv.segmentation.segment import sam2_config_path, sam2_reference_frame
 from bird_cv.inference.protocols import (
     CageSegmenter,
@@ -144,7 +144,7 @@ class WholeFrameSegmenters:
 class YoloCageSegmenters:
     """The trained ``[models.cage_detector]`` model, no prompt configs (ADR 0007).
 
-    ``options`` are :class:`~bird_cv.inference.cages.YoloCageSegmenter`
+    ``options`` are :class:`~bird_cv.segmentation.yolo_cages.YoloCageSegmenter`
     arguments; ``expected_cages`` is an int for every camera or a
     ``{camera_id: int}`` table (cameras not in it: automatic).
     """
