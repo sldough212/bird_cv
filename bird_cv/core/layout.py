@@ -33,9 +33,34 @@ import json
 import logging
 import re
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_run_dir(base_path: Path, run_id: str | None) -> Path:
+    """Resolve the output directory for a pipeline run.
+
+    If ``run_id`` is None or empty, generates a timestamped ID of the form
+    ``YYYYMMDD_HHMMSS``. Otherwise uses the provided value.
+
+    Args:
+        base_path: Root directory under which the run directory is created.
+        run_id: Optional fixed run identifier.
+
+    Returns:
+        Path to the run directory (not yet created).
+    """
+    run_dir = base_path / default_run_id(run_id)
+    print(f"Run directory: {run_dir}")
+    run_dir.mkdir(exist_ok=True, parents=True)
+    return run_dir
+
+
+def default_run_id(run_id: str | None) -> str:
+    """``run_id``, or a ``YYYYMMDD_HHMMSS`` timestamp if it is None or empty."""
+    return run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
 def split_file(splits_dir: Path, version: int) -> Path:

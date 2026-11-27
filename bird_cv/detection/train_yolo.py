@@ -1,23 +1,19 @@
 import json
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import polars as pl
-from ultralytics import YOLO
-
-if TYPE_CHECKING:
-    from ray.tune import ResultGrid
-    from ultralytics.utils.metrics import DetMetrics
-
-import yaml
-import tomli_w
 import msgspec
+import tomli_w
+import yaml
+from ray.tune import ResultGrid
+from ultralytics import YOLO
+from ultralytics.utils.metrics import DetMetrics
 
-from bird_cv.core.layout import TrainRun
-from bird_cv.training.ray_job import init_job_ray
+from bird_cv.core.layout import TrainRun, resolve_run_dir
 from bird_cv.detection.evaluate_yolo import yolo_presence_metrics
-from bird_cv.pipelines.config import resolve_run_dir
+from bird_cv.training.ray_job import init_job_ray
 
 
 class Paths(msgspec.Struct):

@@ -18,7 +18,7 @@ from transformers import (
 )
 
 from bird_cv.evaluation.metrics import window_macro_f1
-from bird_cv.pipelines.config import resolve_run_dir
+from bird_cv.core.layout import resolve_run_dir
 
 
 class Paths(msgspec.Struct):

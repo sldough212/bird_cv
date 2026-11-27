@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from bird_cv.core.frames import canonical_to_ls, ls_to_canonical
+from bird_cv.core.ids import parse_media_path, parse_raw_video_path
 from bird_cv.core.manifest import new_manifest, read_manifest, write_manifest
 from bird_cv.pipelines.config import API_KEY_ENV_VAR, load_config
 
@@ -34,8 +35,6 @@ def test_config_without_api_key_fails_clearly(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_ids_match_between_label_studio_and_raw_paths() -> None:
-    from bird_cv.core.ids import parse_media_path, parse_raw_video_path
-
     url = "/data/local-files/?d=gscratch/x/cage_videos/I35%2CL15/IMG_0016/0.mp4"
     assert parse_media_path(url) == ("I35,L15", "IMG_0016", "0")
     assert parse_raw_video_path("videos/I35,L15/IMG_0016.MOV") == (

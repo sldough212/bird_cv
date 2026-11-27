@@ -7,19 +7,15 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import polars as pl
+import torch
 
 from bird_cv.core.schemas import TIMINGS_SCHEMA
 
 
 def _gpu_name() -> str:
     """Best-effort GPU name: CUDA device name if torch sees one, else SLURM's GPU list."""
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            return torch.cuda.get_device_name(0)
-    except ImportError:
-        pass
+    if torch.cuda.is_available():
+        return torch.cuda.get_device_name(0)
     return os.environ.get("SLURM_JOB_GPUS", "cpu")
 
 

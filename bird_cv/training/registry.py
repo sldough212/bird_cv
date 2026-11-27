@@ -6,8 +6,7 @@ different detector or classifier means writing one class here and pointing
 and inference (:meth:`Trainer.load_for_inference`) then both use it.
 :func:`_trainers` is the one place detector and classifier names live (the
 segmenter, which is never trained, is in :mod:`bird_cv.inference.registry`).
-Importing this module doesn't import Ray or any model library; config
-loading uses it to validate kinds and search spaces.
+Config loading uses it to validate kinds and search spaces.
 """
 
 from dataclasses import dataclass, field
@@ -15,11 +14,25 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from bird_cv.core.layout import TrainRun
+from ray import tune
+from bird_cv.detection.train_yolo import train_select_yolo
+from bird_cv.detection.evaluate_yolo import yolo_presence_metrics
+from bird_cv.detection.track import YoloDetector
+import polars as pl
+from bird_cv.core.frames import STANDARD_FPS, canonical_to_ls
+from bird_cv.preprocessing.annotations_to_yolo import stream_annotations_to_yolo
+from bird_cv.classification.train_video_model import train_video_model
+from bird_cv.classification.tune_video_model import tune_video_model
+from bird_cv.classification.evaluate_video_model import evaluate_video_model
+from bird_cv.classification.predict_video_model import VideoMAEClassifier
+from bird_cv.preprocessing.annotations_to_mae import (
+    label_dir_name,
+    stream_annotations_to_mae,
+)
+
+from bird_cv.core.layout import Layout, Prepared
 
 if TYPE_CHECKING:
-    import polars as pl
-
-    from bird_cv.core.layout import Layout, Prepared
     from bird_cv.pipelines.config import ModelSpec
 
 
@@ -199,7 +212,6 @@ def build_search_space(spec: dict[str, dict]) -> dict[str, Any]:
         ValueError: As for :func:`check_search_space`.
     """
     check_search_space(spec)
-    from ray import tune
 
     builders = {
         "uniform": lambda d: tune.uniform(d["lower"], d["upper"]),
@@ -230,8 +242,6 @@ class YoloTrainer:
         tune: bool,
         hyperparameters: dict[str, Any] | None,
     ) -> TrainResult:
-        from bird_cv.detection.train_yolo import train_select_yolo
-
         best = train_select_yolo(
             dataset_root=dataset,
             run_dir=run_dir,
@@ -262,8 +272,6 @@ class YoloTrainer:
     def evaluate(
         self, checkpoint, spec, dataset, split, output_dir, context
     ) -> dict[str, Any]:
-        from bird_cv.detection.evaluate_yolo import yolo_presence_metrics
-
         return yolo_presence_metrics(
             dataset,
             checkpoint,
@@ -279,8 +287,6 @@ class YoloTrainer:
 
     def load_for_inference(self, checkpoint: Path, spec: "ModelSpec") -> Any:
         """A :class:`YoloDetector`; ``infer_options`` are its fields."""
-        from bird_cv.detection.track import YoloDetector
-
         if "tracker_path" not in spec.infer_options:
             raise ValueError("yolo needs infer_options.tracker_path")
         return YoloDetector(model_path=checkpoint, **spec.infer_options)
@@ -299,13 +305,6 @@ class YoloTrainer:
         One guidance row per cage video (``by_cage``), its ``target_frames``
         the selected canonical frames as 1-indexed video frames.
         """
-        import polars as pl
-
-        from bird_cv.core.frames import STANDARD_FPS, canonical_to_ls
-        from bird_cv.preprocessing.annotations_to_yolo import (
-            stream_annotations_to_yolo,
-        )
-
         guidance = (
             selection.group_by("camera_id", "video_id", "cage_id", "split")
             .agg(target_frames=(pl.col("frame") + canonical_to_ls(0)).sort())
@@ -373,8 +372,6 @@ class VideoMAETrainer:
         )
 
     def train(self, spec, dataset, run_dir, hyperparameters, context) -> TrainResult:
-        from bird_cv.classification.train_video_model import train_video_model
-
         result = train_video_model(
             clips_root=dataset,
             output_root=run_dir,
@@ -393,8 +390,6 @@ class VideoMAETrainer:
         )
 
     def tune(self, spec, dataset, run_dir, context) -> TrainResult:
-        from bird_cv.classification.tune_video_model import tune_video_model
-
         best = tune_video_model(
             clips_root=dataset,
             output_root=TrainRun(run_dir).tune_dir,
@@ -410,8 +405,6 @@ class VideoMAETrainer:
     def evaluate(
         self, checkpoint, spec, dataset, split, output_dir, context
     ) -> dict[str, Any]:
-        from bird_cv.classification.evaluate_video_model import evaluate_video_model
-
         result = evaluate_video_model(
             clips_root=dataset,
             model_path=checkpoint,
@@ -434,8 +427,6 @@ class VideoMAETrainer:
 
         ``num_frames`` follows training (``spec.options``) unless set there.
         """
-        from bird_cv.classification.predict_video_model import VideoMAEClassifier
-
         trained = {k: v for k, v in spec.options.items() if k == "num_frames"}
         return VideoMAEClassifier(
             model_path=str(checkpoint), **(trained | spec.infer_options)
@@ -461,13 +452,6 @@ class VideoMAETrainer:
                 that aren't contiguous in the crop.
             RuntimeError: If any selected clip was not written.
         """
-        import polars as pl
-
-        from bird_cv.preprocessing.annotations_to_mae import (
-            label_dir_name,
-            stream_annotations_to_mae,
-        )
-
         crop_index: dict[tuple[str, str, str], dict[int, int]] = {}
         boxed = (
             ground_truth.filter(pl.col("bbox_left").is_not_null())

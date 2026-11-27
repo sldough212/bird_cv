@@ -31,7 +31,8 @@ from typing import Any
 from bird_cv.core.layout import Layout, TrainRun
 from bird_cv.core.manifest import new_manifest, write_manifest
 from bird_cv.evaluation.e2e import sweep_settings
-from bird_cv.pipelines.config import BirdCVConfig, default_run_id, load_config
+from bird_cv.core.layout import default_run_id
+from bird_cv.pipelines.config import BirdCVConfig, load_config
 from bird_cv.training.registry import TrainContext, get_trainer
 
 

@@ -8,6 +8,10 @@ import pytest
 
 from bird_cv.core.labels import CLASSES, NO_BIRD
 from bird_cv.core.layout import InferRun
+from bird_cv.detection.track import track_video
+from bird_cv.inference.cages import WholeFrameSegmenter
+from bird_cv.inference.pipeline import infer_video
+from bird_cv.training.registry import get_trainer
 from bird_cv.core.schemas import DETECTION_SCHEMA, PREDICTION_SCHEMA
 from bird_cv.core.timing import StageTimer
 from bird_cv.pipelines.config import InferConfig, ModelsConfig
@@ -26,11 +30,6 @@ N_FRAMES = 30
     reason="local smoke-test clip or checkpoints not available",
 )
 def test_e2e_smoke_on_single_cage_clip(tmp_path: Path) -> None:
-    from bird_cv.detection.track import track_video
-    from bird_cv.inference.cages import WholeFrameSegmenter
-    from bird_cv.inference.pipeline import infer_video
-    from bird_cv.training.registry import get_trainer
-
     # The clip is already one cage; lay it out as {camera}/{video}.mp4
     raw = tmp_path / "raw" / "H7,I22" / "54.mp4"
     raw.parent.mkdir(parents=True)

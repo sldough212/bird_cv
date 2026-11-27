@@ -5,7 +5,7 @@ The detector and classifier come from the ``[models.detector]`` and
 through :func:`bird_cv.training.registry.get_trainer` (one ``kind`` mapping
 per role, shared by training and inference). The cage segmenter, which is
 never trained, has its own mapping here (:func:`_segmenters`), picked by
-``[infer.segmenter] kind``. Importing this module imports no model library.
+``[infer.segmenter] kind``.
 """
 
 import inspect
@@ -14,16 +14,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+import torch
+from sam2.build_sam import build_sam2_video_predictor_hf
+
 from bird_cv.core.layout import Layout
 from bird_cv.core.manifest import read_manifest
+from bird_cv.inference.cages import (
+    Sam2CageSegmenter,
+    WholeFrameSegmenter,
+    check_sam2_configs,
+    sam2_config_path,
+    sam2_reference_frame,
+)
+from bird_cv.inference.protocols import (
+    CageSegmenter,
+    FrameClassifier,
+    StreamingDetector,
+)
 from bird_cv.training.registry import get_trainer
 
 if TYPE_CHECKING:
-    from bird_cv.inference.protocols import (
-        CageSegmenter,
-        FrameClassifier,
-        StreamingDetector,
-    )
     from bird_cv.pipelines.config import BirdCVConfig, ModelSpec, SegmenterSpec
 
 
@@ -70,8 +80,6 @@ class Sam2Segmenters:
     """
 
     def __init__(self, context: SegmenterContext, **options: Any) -> None:
-        from bird_cv.inference.cages import Sam2CageSegmenter
-
         unknown = set(options) - self.option_keys()
         if unknown:
             raise ValueError(f"Unknown sam2 segmenter options: {sorted(unknown)}")
@@ -86,26 +94,15 @@ class Sam2Segmenters:
         return {"iou_threshold"}
 
     def check_cameras(self, camera_ids: Iterable[str]) -> None:
-        from bird_cv.inference.cages import check_sam2_configs
-
         check_sam2_configs(self.context.segmentation_configs, camera_ids)
 
     def load(self) -> None:
-        import torch
-        from sam2.build_sam import build_sam2_video_predictor_hf
-
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
         self._predictor = build_sam2_video_predictor_hf(
             self.context.sam_model_id, device=self._device
         )
 
     def for_camera(self, camera_id: str) -> "CageSegmenter":
-        from bird_cv.inference.cages import (
-            Sam2CageSegmenter,
-            sam2_config_path,
-            sam2_reference_frame,
-        )
-
         if self._predictor is None:
             raise RuntimeError("Call Sam2Segmenters.load() before for_camera()")
         configs = self.context.segmentation_configs
@@ -136,8 +133,6 @@ class WholeFrameSegmenters:
         return None
 
     def for_camera(self, camera_id: str) -> "CageSegmenter":
-        from bird_cv.inference.cages import WholeFrameSegmenter
-
         return WholeFrameSegmenter()
 
 

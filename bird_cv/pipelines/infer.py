@@ -29,12 +29,8 @@ from bird_cv.evaluation.e2e import sweep_settings
 from bird_cv.inference.pipeline import run_infer
 from bird_cv.inference.registry import inference_models
 from bird_cv.preprocessing.standardize import find_raw_videos
-from bird_cv.pipelines.config import (
-    BirdCVConfig,
-    InferConfig,
-    default_run_id,
-    load_config,
-)
+from bird_cv.core.layout import default_run_id
+from bird_cv.pipelines.config import BirdCVConfig, InferConfig, load_config
 
 
 def split_run(
