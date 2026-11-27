@@ -33,7 +33,7 @@ def extract_behavior_clips(
 
     Args:
         behavior_index_path: Path to the behavior index parquet produced by
-            :func:`run_crop_yolo`.
+            the bird-crop frame extraction.
         cropped_frames_path: Root of the per-cage cropped YOLO image output
             (``yolo_crop/images/``).
         output_path: Directory where clip frames will be written.
@@ -82,7 +82,7 @@ def extract_behavior_clips(
             raise ValueError(
                 f"Track {track_id} cage {cage_id} ({camera_id}/{video_id}) has only "
                 f"{len(candidates)} candidate frames, expected at least {num_frames}. "
-                "Check that behavior buffering in get_label_tables is configured correctly."
+                "Check that behavior buffering upstream is configured correctly."
             )
 
         # Sanitize label for use as a directory name

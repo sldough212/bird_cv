@@ -9,12 +9,7 @@ from collections import defaultdict
 from typing import Any, Dict, Optional
 import polars as pl
 
-from bird_cv.core.frames import (
-    STANDARD_FPS,
-    FrameMap,
-    frame_map_path,
-    is_aligned_with_standard,
-)
+from bird_cv.core.frames import STANDARD_FPS
 from bird_cv.client.utils import get_local_path
 from bird_cv.core.ids import parse_media_path
 
@@ -135,9 +130,8 @@ def process_item(
     path_to_guidance: Path,
     crop_size: int | None = None,
     *,
-    frame_map_root: Path | None = None,
     by_cage: bool = False,
-) -> bool:
+) -> None:
     """Process a single annotation item and write YOLO-format labels per frame.
 
     This function converts frame-level bounding box annotations from a nested
@@ -163,18 +157,6 @@ def process_item(
             pixels) centered on each bird bbox instead of the full frame and
             YOLO label. Bbox centers are smoothed across frames to reduce
             YOLO jitter before cropping.
-        frame_map_root: Crop mode only. If provided, also write a
-            :class:`~bird_cv.core.frames.FrameMap` giving the canonical frame
-            of each saved crop frame, at
-            ``frame_map_path(frame_map_root / camera_id / video_id / f"{cage}.mp4")``:
-            next to the bird-crop video when ``frame_map_root`` is the
-            ``video_output_path`` later given to ``run_images_to_video``.
-            Assumes the cage video keeps every canonical frame
-            (``crop_cages(keep_empty_frames=True)``). Not written if a frame
-            has more than one box, since the crops then don't form one
-            frame per canonical frame, nor if no frame has a box. Also
-            skipped if the cage video or the guidance fps isn't aligned with
-            the standardized video (``is_aligned_with_standard``).
         by_cage: Match guidance rows on a ``cage_id`` column too, so each
             cage video gets its own ``target_frames`` (default: one row per
             camera video, shared by its cages). Also the canonical mode for
@@ -185,15 +167,8 @@ def process_item(
             fps, the task has more than one non-cancelled annotation, or a
             frame has more than one box.
 
-    Returns:
-        True if a frame map was skipped because the video isn't aligned,
-        else False. Files are written to disk as a side effect.
-
-    Raises:
-        ValueError: If ``frame_map_root`` is given without ``crop_size``.
+    Files are written to disk as a side effect.
     """
-    if frame_map_root is not None and not crop_size:
-        raise ValueError("frame_map_root requires crop_size")
     if by_cage:
         # Same ids as ground truth; media from the export's local-files URL
         camera_id, video_id, cage = parse_media_path(item["data"]["video"])
@@ -243,7 +218,7 @@ def process_item(
     print(f"Working on {video_path}")
     if video_guidance.is_empty():
         print(f"Video {video_path} not in target")
-        return False
+        return
 
     # Determine the split of the video based on guidance and redefine output paths
     if crop_size:
@@ -342,10 +317,6 @@ def process_item(
                 vf: (cx_smooth[i], cy_smooth[i]) for i, (vf, _) in enumerate(annotated)
             }
 
-    # Canonical frame of each saved crop frame, in order (for the frame map)
-    crop_canonical: list[int] = []
-    multi_box = False
-
     # Extract that image frame and save
     frame_num = 1
     while True:
@@ -375,10 +346,6 @@ def process_item(
                 cx_norm=center[0] if center else None,
                 cy_norm=center[1] if center else None,
             )
-            if lines:
-                # frame_num counts video frames from 1
-                crop_canonical.append(frame_num - 1)
-                multi_box = multi_box or len(lines) > 1
         else:
             stem = f"{camera_id}_{video_id}_{cage}_{frame_num:05d}"
             frame_file = path_to_output_frames / f"{stem}.jpg"
@@ -391,26 +358,6 @@ def process_item(
 
     cap.release()
 
-    if crop_size and frame_map_root is not None and crop_canonical:
-        # frame_num ends one past the number of frames read
-        n_read = frame_num - 1
-        aligned = (
-            fps > 0
-            and ls_fps > 0
-            and is_aligned_with_standard(n_read, n_read / fps)
-            and is_aligned_with_standard(n_read, n_read / ls_fps)
-        )
-        if not aligned:
-            print(f"Not writing frame map for {video_path}: not aligned")
-            return True
-        if multi_box:
-            print(f"Not writing frame map for {video_path}: frames with >1 box")
-        else:
-            FrameMap(tuple(crop_canonical)).write(
-                frame_map_path(frame_map_root / camera_id / video_id / f"{cage}.mp4")
-            )
-    return False
-
 
 def stream_annotations_to_yolo(
     path_to_videos: Path,
@@ -420,7 +367,6 @@ def stream_annotations_to_yolo(
     processes: int = 4,
     crop_size: int | None = None,
     *,
-    frame_map_root: Path | None = None,
     by_cage: bool = False,
 ) -> None:
     """Stream a large JSON annotation file and convert it to YOLO format.
@@ -439,19 +385,11 @@ def stream_annotations_to_yolo(
             than 1 enable multiprocessing.
         crop_size: If provided, save bird crops instead of YOLO frames and
             labels (see :func:`process_item`).
-        frame_map_root: Crop mode only: root under which to write a frame map
-            per bird-crop video (see :func:`process_item`).
         by_cage: Guidance has one row per cage video (see :func:`process_item`).
-
-    Raises:
-        ValueError: If ``frame_map_root`` is given without ``crop_size``.
 
     Returns:
         None. YOLO annotation files are written to disk as a side effect.
     """
-    if frame_map_root is not None and not crop_size:
-        raise ValueError("frame_map_root requires crop_size")
-
     # Create direcotries for training
     path_to_output.mkdir(exist_ok=True, parents=True)
     splits = ["train", "val", "test"]
@@ -459,20 +397,18 @@ def stream_annotations_to_yolo(
         (path_to_output / "images" / split).mkdir(exist_ok=True, parents=True)
         (path_to_output / "labels" / split).mkdir(exist_ok=True, parents=True)
 
-    n_unaligned = 0
     with open(path_to_annotations, "rb") as f:
         items = ijson.items(f, "item")  # generator over top-level items
 
         if processes == 1:
             # Serial execution (recommended for unit tests)
             for item in items:
-                n_unaligned += process_item(
+                process_item(
                     item=item,
                     path_to_videos=path_to_videos,
                     path_to_output=path_to_output,
                     path_to_guidance=path_to_guidance,
                     crop_size=crop_size,
-                    frame_map_root=frame_map_root,
                     by_cage=by_cage,
                 )
         else:
@@ -483,16 +419,12 @@ def stream_annotations_to_yolo(
                 path_to_output=path_to_output,
                 path_to_guidance=path_to_guidance,
                 crop_size=crop_size,
-                frame_map_root=frame_map_root,
                 by_cage=by_cage,
             )
 
             with Pool(processes=processes) as pool:
-                for skipped in tqdm(
+                for _ in tqdm(
                     pool.imap(worker_func, items, chunksize=1),
                     desc="Processing videos",
                 ):
-                    n_unaligned += skipped
-
-    if frame_map_root is not None:
-        print(f"Skipped frame maps for {n_unaligned} unaligned videos")
+                    pass

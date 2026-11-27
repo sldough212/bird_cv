@@ -16,7 +16,7 @@ def build_clip_index(
     Joins ``frame_data_full.ndjson`` (per-track behavior labels) with
     ``video_data_full.ndjson`` (video metadata) and ``split_guidance.parquet``
     (train/val/test split assignment). Frame numbers are already FPS-corrected
-    upstream in ``get_label_tables`` so no rescaling is performed here.
+    upstream so no rescaling is performed here.
 
     Args:
         frame_data_path: Path to ``frame_data_full.ndjson`` containing columns

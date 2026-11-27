@@ -111,8 +111,7 @@ def find_raw_videos(
     Args:
         raw_videos_path: Root with one folder per camera.
         cameras: Only these camera ids, if given.
-        extensions: Lower-case file suffixes counted as videos (the same set
-            ``check_video_specs`` scans).
+        extensions: Lower-case file suffixes counted as videos.
 
     Returns:
         Matching video paths, sorted.

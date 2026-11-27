@@ -1,6 +1,6 @@
 # One canonical frame index: 0-indexed frames of the standardized video
 
-Every intermediate (cage video, detections, bird-crop video, predictions, ground truth) refers to frames by the **canonical frame**: the 0-indexed frame of the video after standardization to 15 fps. Media built by new code keeps every frame, writing a placeholder where a cage mask is empty, and media that can't (bird-crop videos contain only boxed frames) carries an explicit frame map back to canonical frames. Label Studio's 1-indexed frames are converted only where we read from or write to Label Studio, via `bird_cv.core.frames`.
+Every intermediate (cage video, detections, bird-crop video, predictions, ground truth) refers to frames by the **canonical frame**: the 0-indexed frame of the video after standardization to 15 fps. Inference builds cage and bird crops in memory from the standardized video, so they carry canonical frames directly. (Placeholder frames in `crop_cages` and frame maps for bird-crop videos were built for this, but nothing used them, so PR #64 removed them.) Label Studio's 1-indexed frames are converted only where we read from or write to Label Studio, via `bird_cv.core.frames`.
 
 ## Consequences
 
