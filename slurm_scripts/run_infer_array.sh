@@ -4,7 +4,7 @@
 #SBATCH --account=passerinagenome
 #SBATCH --job-name=infer
 #SBATCH --time=12:00:00
-#SBATCH --partition=mb-l40s
+#SBATCH --partition=mb-l40s,mb-a30,mb-h100,mb-a6000
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 #SBATCH --array=0-3

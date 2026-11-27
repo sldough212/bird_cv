@@ -5,7 +5,7 @@
 #   sbatch --array=0-8 slurm_scripts/run_infer_sweep.sh --run-id RUN_ID --train-run-id RUN_ID
 #SBATCH --account=passerinagenome
 #SBATCH --time=24:00:00
-#SBATCH --partition=mb-l40s
+#SBATCH --partition=mb-l40s,mb-a30,mb-h100,mb-a6000
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 
