@@ -209,6 +209,8 @@ class ModelsConfig:
             kind="videomae",
             pretrained="MCG-NJU/videomae-base",
             epochs=10,
+            # One training run; set tune = true for a Ray Tune search
+            tune=False,
             tune_trials=20,
             search_space={
                 "lr": {"type": "loguniform", "lower": 1e-5, "upper": 1e-3},
