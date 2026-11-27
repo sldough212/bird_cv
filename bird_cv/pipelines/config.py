@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from datetime import datetime
+from typing import Any
 import os
 import msgspec
 import tomllib
@@ -65,10 +66,16 @@ class PrepareConfig:
     written before it existed still load.
     """
 
+    # Fraction of cameras per split: sizes a new label scheme's first split
+    # and guides appended cameras.
     split_ratio: dict[str, float] = field(
         default_factory=lambda: {"train": 0.70, "val": 0.15, "test": 0.15}
     )
     split_seed: int = 42
+    # Relabeler run on the Classify export before ground truth
+    # (bird_cv/preprocessing/relabel.py), and its keyword arguments.
+    relabel: str = "identity"
+    relabel_options: dict[str, Any] = field(default_factory=dict)
     # Every k-th frame for Detect videos that have no Classify labels yet.
     yolo_uniform_stride: int = 5
     # Frames between consecutive VideoMAE clip starts within a labeled stretch.

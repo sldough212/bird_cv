@@ -159,13 +159,17 @@ def test_split_is_frozen_and_append_only(tmp_path: Path) -> None:
     cameras = {f"c{i}": [b for b in VOCAB.names if b != "flying"] for i in range(4)}
     cameras |= {f"r{i}": ["resting"] for i in range(3)}
 
-    def run() -> int:
-        ratio = {"train": 0.7, "val": 0.15, "test": 0.15}
-        return update_split(_gt_for(cameras), tmp_path, ratio, seed=0, vocab=VOCAB)
+    ratio = {"train": 0.55, "val": 0.15, "test": 0.3}
+
+    def run(relabel: str = "identity") -> int:
+        return update_split(
+            _gt_for(cameras), tmp_path, ratio, seed=0, vocab=VOCAB, relabel=relabel
+        )
 
     assert run() == 1
     v1 = pl.read_parquet(split_file(tmp_path, 1))
-    # test: cheapest covering pair (c0, r0); val: one camera covering all
+    # 7 cameras: test round(2.1) = 2, the cheapest covering pair (c0, r0);
+    # val round(1.05) = 1, a camera covering all
     assert dict(v1.group_by("split").agg(pl.col("camera_id").sort()).iter_rows()) == {
         "test": ["c0", "r0"],
         "val": ["c1"],
@@ -173,19 +177,23 @@ def test_split_is_frozen_and_append_only(tmp_path: Path) -> None:
     }
     assert (tmp_path / "split_v1" / "manifest.json").exists()
     assert run() == 1
-    with pytest.raises(ValueError, match="pair"):  # flying only on one camera
-        choose_initial_split({"a": {"flying": 1}, "b": {}, "c": {}})
+    # A new label scheme gets a fresh split; the old one appends to its own
+    assert run("other") == 2
+    assert set(pl.read_parquet(split_file(tmp_path, 2))["assigned_in_version"]) == {2}
+    assert run("other") == 2
+    with pytest.raises(ValueError, match="test cameras"):  # flying on one camera
+        choose_initial_split({"a": {"flying": 1}, "b": {}, "c": {}}, ratio)
 
     cameras |= {"new0": ["flying"], "new1": ["resting"]}
-    assert run() == 2
-    v2 = pl.read_parquet(split_file(tmp_path, 2))
-    assert v2.head(v1.height).equals(v1)
-    assert set(v2.filter(pl.col("assigned_in_version") == 2)["camera_id"]) == {
+    assert run() == 3
+    v3 = pl.read_parquet(split_file(tmp_path, 3))
+    assert v3.head(v1.height).equals(v1)
+    assert set(v3.filter(pl.col("assigned_in_version") == 3)["camera_id"]) == {
         "new0",
         "new1",
     }
-    assert v2.filter(camera_id="new0")["split"].item() == "train"  # nobody had it
-    gaps = coverage_gaps(v2, camera_behaviors(_gt_for(cameras), VOCAB))
+    assert v3.filter(camera_id="new0")["split"].item() == "train"  # nobody had it
+    gaps = coverage_gaps(v3, camera_behaviors(_gt_for(cameras), VOCAB))
     assert gaps == {"train": set(), "test": {"flying"}}
 
 
@@ -267,7 +275,7 @@ def test_prepare_reuses_matching_dataset_and_resamples_on_change(
 ) -> None:
     monkeypatch.setenv(API_KEY_ENV_VAR, "test")
     detect, classify = tmp_path / "detect.json", tmp_path / "classify.json"
-    # four unlabeled cameras: test a+b, val c, train d
+    # four unlabeled cameras: test 1, val 1, train 2 (config.toml's split_ratio)
     tasks = [detect_task(c, "v", "0", [(1, 20)], n=30) for c in "abcd"]
     detect.write_text(json.dumps(tasks))
     classify.write_text("[]")
@@ -280,7 +288,7 @@ def test_prepare_reuses_matching_dataset_and_resamples_on_change(
             else line
             for line in CONFIG.read_text().splitlines()
         ]
-        config.write_text("\n".join(lines) + "\n" + extra)
+        config.write_text("\n".join(lines).replace("[prepare]", "[prepare]\n" + extra))
         return run_prepare(
             load_config(config),
             detect_export=detect,
@@ -295,12 +303,12 @@ def test_prepare_reuses_matching_dataset_and_resamples_on_change(
     assert (datasets / "d2").is_symlink()
     assert (datasets / "d2").resolve() == (datasets / "d1").resolve()
     # A sampling change makes a new dataset
-    prepare("d3", "[prepare]\nyolo_uniform_stride = 3\n")
+    prepare("d3", "yolo_uniform_stride = 3")
     assert not (datasets / "d3").is_symlink()
     yolo = pl.read_parquet(datasets / "d3" / "yolo_frames.parquet").filter(
         split="train"
     )
-    frames = yolo["frame"].to_list()
+    frames = yolo.filter(camera_id=yolo["camera_id"].min())["frame"].to_list()
     assert frames == list(range(0, 30, 3))
 
 

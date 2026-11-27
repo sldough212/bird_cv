@@ -35,10 +35,16 @@ _Avoid_: frame index (unqualified), Label Studio frame
 The list giving, for each frame of a derived video, its canonical frame.
 
 **Behavior**:
-One of the eight labels in the Classify project (e.g. `head_move`, `resting`).
+One of the labels ground truth is built with: a Classify project label (e.g. `head_move`, `resting`) after the relabeler has mapped it (e.g. `restful`).
+
+**Relabeler**:
+A function prepare runs on the Classify export before ground truth, mapping its labels onto a label scheme (`[prepare] relabel`; `identity` keeps them). The snapshot stays as exported.
+
+**Label scheme**:
+A relabeler plus the behavior names it outputs (`[behaviors] names`). Each one has its own split lineage.
 
 **Class**:
-A behavior or `no_bird`; the nine values ground truth and predictions take.
+A behavior or `no_bird`; the values ground truth and predictions take.
 
 **`no_bird`**:
 The class for a canonical frame with no bird to classify: no Detect box in ground truth, no usable detection in predictions.
@@ -57,7 +63,7 @@ _Avoid_: segment (ambiguous with SAM2 segments), behavior instance
 An immutable copy of the Detect and Classify exports, named by a hash of their annotation content.
 
 **Split version**:
-A numbered, append-only assignment of cameras to train, val and test.
+A numbered assignment of cameras to train, val and test for one label scheme; append-only within that scheme.
 
 **Smoke test**:
 A run that checks a pipeline executes and aligns frames correctly, using any model; its scores are never reported.

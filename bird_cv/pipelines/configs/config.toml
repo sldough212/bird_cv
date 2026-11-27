@@ -25,14 +25,6 @@ sam_model_id = "facebook/sam2.1-hiera-large"
 # Frame rate every raw video is standardized to; canonical frames index it.
 # standard_fps = 15
 
-# ---- Class vocabulary (optional; defaults shown) ----
-# Behavior names must match the Classify project's timelinelabels, sorted.
-# [behaviors]
-# names = ["flapping_wings", "fluffing", "flying", "head_move", "preening",
-#          "resting", "tail_wag", "walking___hopping"]
-# resting = "resting"
-# no_bird = "no_bird"
-
 # ---- Label Studio (required) ----
 # api_key is read from the LABEL_STUDIO_API_KEY environment variable.
 # A value here still works as a fallback, but never commit one.
@@ -71,6 +63,31 @@ device = "cuda"
 freeze_encoder = true
 
 
+
+# ---- Dataset preparation (optional; defaults in comments) ----
+[prepare]
+# Relabeler applied to the Classify export before ground truth
+# (bird_cv/preprocessing/relabel.py): "identity" keeps the Classify labels,
+# "activity_groups" groups them into awake / restful / restless. [behaviors]
+# names must be what it outputs. A new scheme gets its own split (ADR 0008).
+relabel = "activity_groups"
+relabel_options = { head_move_restful_max_frames = 15 }
+# Fraction of cameras per split; sizes a new scheme's first split.
+split_ratio = { train = 0.6, val = 0.2, test = 0.2 }
+# split_seed = 42
+# yolo_uniform_stride = 5
+# videomae_clip_stride = 8
+# standardized_max_frames = 900
+
+# ---- Class vocabulary ----
+# Sorted names the relabeler outputs; resting is the class sampling caps.
+# Defaults (relabel = "identity") are the Classify project's timelinelabels:
+# names = ["flapping_wings", "fluffing", "flying", "head_move", "preening",
+#          "resting", "tail_wag", "walking___hopping"], resting = "resting".
+[behaviors]
+names = ["awake", "restful", "restless"]
+resting = "restful"
+# no_bird = "no_bird"
 
 # ---- Training runs (optional; defaults shown) ----
 [train]
