@@ -14,7 +14,7 @@ from bird_cv.preprocessing.crop import center_window, crop_bird, square_frame
 from bird_cv.core.ids import get_local_path, parse_media_path, with_raw_video_ids
 
 
-def extract_video_frames(video_path: Path) -> List[np.ndarray]:
+def _extract_video_frames(video_path: Path) -> List[np.ndarray]:
     """Read every frame of a video into memory, in order.
 
     Args:
@@ -215,7 +215,7 @@ def process_item(
         print(f"Video file not found: {full_video_path}, skipping.")
         return
 
-    frames = extract_video_frames(full_video_path)
+    frames = _extract_video_frames(full_video_path)
     if not frames:
         print(f"No frames read from {full_video_path}, skipping.")
         return
