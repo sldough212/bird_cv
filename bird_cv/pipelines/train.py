@@ -30,7 +30,6 @@ from typing import Any
 
 from bird_cv.core.layout import Layout, TrainRun, default_run_id
 from bird_cv.core.manifest import new_manifest, write_manifest
-from bird_cv.evaluation.e2e import sweep_settings
 from bird_cv.pipelines.config import BirdCVConfig, load_config
 from bird_cv.pipelines.prepare import dataset_key
 from bird_cv.training.registry import TrainContext, get_trainer
@@ -80,7 +79,7 @@ def run_train(
     layout = Layout(cfg.path_to_base_output)
     dataset_id = layout.resolve_dataset(dataset_id, run_id)
     key = dataset_key(layout, dataset_id)
-    dataset = layout.dataset(dataset_id, role, spec.kind)
+    dataset = layout.dataset(dataset_id, role, spec.dataset_name)
     run_dir = layout.train_run(role, default_run_id(run_id))
     run_dir.mkdir(parents=True, exist_ok=True)
     print(f"Run directory: {run_dir}")
@@ -136,11 +135,10 @@ def print_paths(cfg: BirdCVConfig, run_id: str) -> None:
     ``{ROLE}_RUN_DIR`` and ``{ROLE}_BEST``.
     """
     layout = Layout(cfg.path_to_base_output)
-    ev = cfg.evaluate
     print(f"ROLES='{' '.join(cfg.models.roles())}'")
     print(f"BASE='{cfg.path_to_base_output}'")
     print(f"LOGS='{layout.slurm_logs(run_id)}'")
-    print(f"N_SWEEP={len(sweep_settings(ev.sweep_gap_fill_frames, ev.sweep_det_conf))}")
+    print(f"N_SWEEP={len(cfg.sweep_settings())}")
     print(f"INFER_DIR='{layout.infer_run(run_id).dir}'")
     print(f"SWEEP_DIR='{layout.evaluation_run('sweep', run_id)}'")
     print(f"TEST_DIR='{layout.evaluation_run('test', run_id)}'")

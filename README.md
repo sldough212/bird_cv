@@ -53,6 +53,11 @@ relabel or resplit already downloaded data, rerun prepare with
 `--detect-export` / `--classify-export` pointing at a dataset's
 `annotations/` files.
 
+`[models.classifier] options.input = "cage"` classifies whole cage frames
+instead of bird crops and drops the detector from every stage (ADR 0009);
+remove it to go back. It trains on the same dataset id, so the two runs
+compare directly.
+
 ### Label Studio pipelines
 
 `upload_for_detect`, `upload_for_classify`, `upload_for_retrain_detect`,

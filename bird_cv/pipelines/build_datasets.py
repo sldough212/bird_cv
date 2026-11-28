@@ -1,7 +1,8 @@
 """Build each role's training data inside a prepared dataset.
 
-Uses prepare's sampled list on its frozen split, and writes
-``datasets/{dataset_id}/{role}/{kind}/``. Training data whose manifest
+Uses prepare's sampled list on its frozen split (plus ``no_bird`` clips for
+a cage-input classifier), and writes
+``datasets/{dataset_id}/{role}/{ModelSpec.dataset_name}/``. Training data whose manifest
 matches is not rebuilt.
 
 Usage::
@@ -26,6 +27,7 @@ from bird_cv.core.layout import Layout, snapshot_files
 from bird_cv.core.manifest import new_manifest, read_manifest, write_manifest
 from bird_cv.pipelines.config import BirdCVConfig, ModelSpec, load_config
 from bird_cv.pipelines.prepare import config_hash, dataset_key, sampling_config
+from bird_cv.preprocessing.sampling import select_no_bird_clips
 from bird_cv.training.registry import DatasetMedia, get_trainer
 
 logger = logging.getLogger(__name__)
@@ -136,9 +138,20 @@ def build_datasets(
     for role in roles:
         spec = cfg.models.roles()[role]
         trainer = get_trainer(spec.kind)
-        paths = export_media(trainer.dataset_export(media))
+        paths = export_media(trainer.dataset_export(media, spec))
         split = frozen.select("camera_id", "split")
         selection = pl.read_parquet(trainer.prepared_selection(layout, dataset_id))
+        if spec.input == "cage":
+            no_bird = select_no_bird_clips(
+                ground_truth.join(split, on="camera_id"),
+                selection,
+                num_frames=spec.options["num_frames"],
+                seed=cfg.prepare.split_seed,
+                vocab=cfg.behaviors,
+            )
+            selection = pl.concat([selection, no_bird]).sort(
+                "camera_id", "video_id", "cage_id", "frame_begin"
+            )
         cages = selection.select("camera_id", "video_id", "cage_id").unique()
         media_paths = []
         for key in cages.iter_rows():
@@ -158,8 +171,8 @@ def build_datasets(
 
     built = []
     for role, spec, trainer, split, selection, config in plans:
-        out_dir = layout.dataset(dataset_id, role, spec.kind)
-        name = f"{role}/{spec.kind}"
+        out_dir = layout.dataset(dataset_id, role, spec.dataset_name)
+        name = f"{role}/{spec.dataset_name}"
         if (out_dir / "manifest.json").exists() and read_manifest(
             out_dir
         ).config == config:
@@ -170,8 +183,10 @@ def build_datasets(
             logger.info("Rebuilding stale dataset %s", out_dir)
             shutil.rmtree(out_dir)
         out_dir.mkdir(parents=True)
-        split.write_parquet(layout.dataset_split(dataset_id, role, spec.kind))
-        selection.write_parquet(layout.dataset_selection(dataset_id, role, spec.kind))
+        split.write_parquet(layout.dataset_split(dataset_id, role, spec.dataset_name))
+        selection.write_parquet(
+            layout.dataset_selection(dataset_id, role, spec.dataset_name)
+        )
         logger.info("Building dataset %s: %d rows", name, selection.height)
         trainer.build_dataset(
             selection,
@@ -179,7 +194,7 @@ def build_datasets(
             spec,
             media,
             out_dir,
-            layout.dataset_guidance(dataset_id, role, spec.kind),
+            layout.dataset_guidance(dataset_id, role, spec.dataset_name),
         )
         # Written last, so an interrupted build is rebuilt next time
         write_manifest(

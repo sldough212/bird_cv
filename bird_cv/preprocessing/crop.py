@@ -174,6 +174,20 @@ def crop_bird(
     return crop
 
 
+def square_frame(frame: np.ndarray, size: int = 224) -> np.ndarray:
+    """Pad a frame with black on the bottom/right to a square, then resize to ``size``.
+
+    Keeps a whole cage frame for a square classifier input (ADR 0009), padded
+    on the same sides as cage frames are.
+    """
+    h, w = frame.shape[:2]
+    side = max(h, w)
+    padded = cv2.copyMakeBorder(
+        frame, 0, side - h, 0, side - w, cv2.BORDER_CONSTANT, value=0
+    )
+    return cv2.resize(padded, (size, size), interpolation=cv2.INTER_AREA)
+
+
 def smooth_centers(
     cx: np.ndarray, cy: np.ndarray, window: int = 5
 ) -> tuple[np.ndarray, np.ndarray]:

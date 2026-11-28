@@ -2,6 +2,7 @@ from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import ClassVar, Literal
 
+import cv2
 import numpy as np
 import pytest
 
@@ -9,10 +10,18 @@ import bird_cv.inference.chunks as chunks
 from bird_cv.classification.types import FramePrediction
 from bird_cv.core.labels import Behaviors
 from bird_cv.detection.types import Detection
-from bird_cv.inference.cages import CageMasks, cage_frame, check_sam2_configs
+from bird_cv.core.timing import StageTimer
+from bird_cv.inference.cages import (
+    CageMasks,
+    WholeFrameSegmenter,
+    cage_frame,
+    check_sam2_configs,
+)
 from bird_cv.inference.chunks import iter_chunks, stitch_overlapping
 from bird_cv.inference.classify import classify_runs
 from bird_cv.inference.gap_fill import cage_predictions, fill_gaps
+from bird_cv.inference.pipeline import infer_video
+from bird_cv.pipelines.config import InferConfig
 from bird_cv.preprocessing.crop import crop_cage_frame
 
 
@@ -24,6 +33,7 @@ class EchoClassifier:
 
     input_type: ClassVar[Literal["bbox_crop", "cage"]] = "bbox_crop"
     num_frames = 16
+    input_size = 224
 
     def predict_frames(self, frames: Sequence[np.ndarray]) -> list[FramePrediction]:
         assert len(frames) >= self.num_frames
@@ -153,3 +163,41 @@ def test_cage_masks_crop_box_matches_full_frame_crop() -> None:
         assert np.array_equal(got[:h, :w], expected)
         assert not got[h:].any() and not got[:, w:].any()
     assert masks.at(0, "2") is None
+
+
+class CageClassifier:
+    """Calls every frame resting, checking it gets squared cage frames."""
+
+    input_type: ClassVar[Literal["bbox_crop", "cage"]] = "cage"
+    num_frames = 4
+    input_size = 224
+
+    def predict_frames(self, frames: Sequence[np.ndarray]) -> list[FramePrediction]:
+        assert all(f.shape == (224, 224, 3) for f in frames)
+        return [FramePrediction(i, "resting", 1.0) for i in range(len(frames))]
+
+
+def test_cage_input_classifies_every_cage_frame_without_a_detector(
+    tmp_path: Path,
+) -> None:
+    raw = tmp_path / "raw" / "cam" / "vid.mp4"
+    raw.parent.mkdir(parents=True)
+    writer = cv2.VideoWriter(str(raw), cv2.VideoWriter.fourcc(*"mp4v"), 15, (40, 30))
+    for _ in range(20):
+        writer.write(np.full((30, 40, 3), 100, dtype=np.uint8))
+    writer.release()
+
+    preds = infer_video(
+        raw,
+        tmp_path / "run",
+        WholeFrameSegmenter(),
+        None,
+        CageClassifier(),
+        InferConfig(chunk_frames=10, chunk_overlap=2),
+        StageTimer(),
+        standard_fps=15,
+        vocab=VOCAB,
+    )
+    assert preds.height == 20
+    assert (preds["label"] == "resting").all()
+    assert preds["bbox_left"].is_null().all()

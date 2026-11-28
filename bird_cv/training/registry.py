@@ -139,7 +139,7 @@ class Trainer(Protocol):
         """The frame or clip list prepare sampled for this kind (frozen split)."""
         ...
 
-    def dataset_export(self, media: DatasetMedia) -> Path:
+    def dataset_export(self, media: DatasetMedia, spec: "ModelSpec") -> Path:
         """The export whose tasks' media :meth:`build_dataset` reads."""
         ...
 
@@ -296,7 +296,7 @@ class YoloTrainer:
     def prepared_selection(self, layout, dataset_id) -> Path:
         return layout.yolo_frames(dataset_id)
 
-    def dataset_export(self, media):
+    def dataset_export(self, media, spec):
         return media.detect_export
 
     def build_dataset(
@@ -355,7 +355,9 @@ class VideoMAETrainer:
     ``spec.options`` are :func:`train_video_model` keyword arguments for
     every run (e.g. ``num_frames``, ``batch_size``); ``spec.tune_options``
     are :func:`tune_video_model` arguments (``cpus_per_trial``,
-    ``grace_period``).
+    ``grace_period``). ``options.input`` picks bird-crop or cage clips
+    (ADR 0009), ``options.input_size`` the side cage frames are squared
+    to; neither is passed on.
     """
 
     def checkpoint_path(self, run_dir: Path) -> Path:
@@ -370,7 +372,11 @@ class VideoMAETrainer:
                 "epochs": spec.epochs,
                 "device": "cpu" if context.device == "cpu" else "cuda",
             }
-            | spec.options
+            | {
+                k: v
+                for k, v in spec.options.items()
+                if k not in ("input", "input_size")
+            }
             | overrides
         )
 
@@ -427,29 +433,97 @@ class VideoMAETrainer:
         """
         trained = {k: v for k, v in spec.options.items() if k == "num_frames"}
         return VideoMAEClassifier(
-            model_path=str(checkpoint), **(trained | spec.infer_options)
+            model_path=str(checkpoint),
+            input_type=spec.input,
+            input_size=spec.input_size,
+            **(trained | spec.infer_options),
         )
 
     def prepared_selection(self, layout, dataset_id) -> Path:
         return layout.videomae_clips(dataset_id)
 
-    def dataset_export(self, media):
-        return media.classify_export
+    def dataset_export(self, media, spec):
+        return media.detect_export if spec.input == "cage" else media.classify_export
 
     def build_dataset(
         self, selection, ground_truth, spec, media, out_dir, guidance_path
     ) -> None:
-        """Bird-crop clips, ``{split}/{label}/{clip}/``, one per selected clip.
+        """Clips, ``{split}/{label}/{clip}/``, one per selected clip.
 
-        Crop frame ``k`` is the cage's ``k``-th boxed canonical frame (ADR
-        0002). Clips shorter than ``num_frames`` widen into neighbouring crop
-        frames.
+        Bird-crop clips by default: crop frame ``k`` is the cage's ``k``-th
+        boxed canonical frame (ADR 0002). With ``input = "cage"``, whole cage
+        frames squared to ``input_size`` px, cut from the cage videos (frame ``k`` is
+        canonical ``k - 1``). Clips shorter than ``num_frames`` widen into
+        neighbouring frames.
 
         Raises:
-            ValueError: If a clip covers a frame with no box, or boxed frames
-                that aren't contiguous in the crop.
+            ValueError: If a bird-crop clip covers a frame with no box, or
+                boxed frames that aren't contiguous in the crop.
             RuntimeError: If any selected clip was not written.
         """
+        if spec.input == "cage":
+            ranges = self._cage_ranges(selection)
+        else:
+            ranges = self._crop_ranges(selection, ground_truth)
+        selection.select(
+            video_path=pl.col("camera_id") + "/" + pl.col("video_id") + ".mp4",
+            split="split",
+        ).unique().write_parquet(guidance_path)
+        num_frames = spec.options["num_frames"]
+        stream_annotations_to_mae(
+            path_to_videos=Path(),  # unused: media come from the export
+            path_to_annotations=self.dataset_export(media, spec),
+            path_to_guidance=guidance_path,
+            path_to_output=out_dir,
+            num_frames=num_frames,
+            # Each selected clip is at most num_frames long: one clip per range
+            stride=num_frames,
+            processes=media.processes,
+            ranges_by_cage=ranges,
+            square_size=spec.input_size if spec.input == "cage" else None,
+        )
+        split_of = dict(selection.select("camera_id", "split").unique().iter_rows())
+        missing = [
+            f"{key}/{i}"
+            for key, key_ranges in ranges.items()
+            for i, (label, _, _) in enumerate(key_ranges)
+            if not (
+                out_dir
+                / split_of[key[0]]
+                / label_dir_name(label)
+                / f"{key[0]}_{key[1]}_{key[2]}_s{i}_clip000"
+            ).is_dir()
+        ]
+        if missing:
+            raise RuntimeError(
+                f"{len(missing)} of {selection.height} selected clips were not "
+                f"written to {out_dir}, e.g. {missing[:10]}"
+            )
+
+    @staticmethod
+    def _cage_ranges(
+        selection,
+    ) -> dict[tuple[str, str, str], list[tuple[str, int, int]]]:
+        """Each clip as 1-indexed cage-video frames, by cage."""
+        ranges: dict[tuple[str, str, str], list[tuple[str, int, int]]] = {}
+        for row in selection.sort(
+            "camera_id", "video_id", "cage_id", "frame_begin"
+        ).iter_rows(named=True):
+            key = (row["camera_id"], row["video_id"], row["cage_id"])
+            ranges.setdefault(key, []).append(
+                (
+                    row["label"],
+                    canonical_to_ls(row["frame_begin"]),
+                    canonical_to_ls(row["frame_end"]),
+                )
+            )
+        return ranges
+
+    @staticmethod
+    def _crop_ranges(
+        selection, ground_truth
+    ) -> dict[tuple[str, str, str], list[tuple[str, int, int]]]:
+        """Each clip as 1-indexed bird-crop frames, by cage."""
         crop_index: dict[tuple[str, str, str], dict[int, int]] = {}
         boxed = (
             ground_truth.filter(pl.col("bbox_left").is_not_null())
@@ -475,40 +549,7 @@ class VideoMAETrainer:
             ):
                 raise ValueError(f"Clip {row} isn't a contiguous boxed range")
             ranges.setdefault(key, []).append((row["label"], begin + 1, end + 1))
-
-        selection.select(
-            video_path=pl.col("camera_id") + "/" + pl.col("video_id") + ".mp4",
-            split="split",
-        ).unique().write_parquet(guidance_path)
-        num_frames = spec.options["num_frames"]
-        stream_annotations_to_mae(
-            path_to_videos=Path(),  # unused: media come from the export
-            path_to_annotations=media.classify_export,
-            path_to_guidance=guidance_path,
-            path_to_output=out_dir,
-            num_frames=num_frames,
-            # Each selected clip is at most num_frames long: one clip per range
-            stride=num_frames,
-            processes=media.processes,
-            ranges_by_cage=ranges,
-        )
-        split_of = dict(selection.select("camera_id", "split").unique().iter_rows())
-        missing = [
-            f"{key}/{i}"
-            for key, key_ranges in ranges.items()
-            for i, (label, _, _) in enumerate(key_ranges)
-            if not (
-                out_dir
-                / split_of[key[0]]
-                / label_dir_name(label)
-                / f"{key[0]}_{key[1]}_{key[2]}_s{i}_clip000"
-            ).is_dir()
-        ]
-        if missing:
-            raise RuntimeError(
-                f"{len(missing)} of {selection.height} selected clips were not "
-                f"written to {out_dir}, e.g. {missing[:10]}"
-            )
+        return ranges
 
 
 def _trainers() -> dict[str, type]:

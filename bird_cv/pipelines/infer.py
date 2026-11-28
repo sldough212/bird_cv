@@ -25,7 +25,6 @@ import polars as pl
 
 from bird_cv.core.ids import parse_raw_video_path
 from bird_cv.core.layout import EvalRun, Layout, default_run_id
-from bird_cv.evaluation.e2e import sweep_settings
 from bird_cv.inference.pipeline import run_infer
 from bird_cv.inference.registry import inference_models
 from bird_cv.preprocessing.standardize import find_raw_videos
@@ -70,11 +69,8 @@ def split_run(
         if parse_raw_video_path(v) in labeled
     ]
     if split == "val":
-        ev = cfg.evaluate
         assert sweep_index is not None
-        gap, conf = sweep_settings(ev.sweep_gap_fill_frames, ev.sweep_det_conf)[
-            sweep_index
-        ]
+        gap, conf = cfg.sweep_settings()[sweep_index]
         run_dir = layout.sweep_infer_run(run_id, gap, conf).dir
     else:
         best = EvalRun(layout.evaluation_run("sweep", run_id)).best_setting

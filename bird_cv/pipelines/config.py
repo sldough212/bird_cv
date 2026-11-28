@@ -9,6 +9,8 @@ import msgspec
 import tomllib
 
 from bird_cv.core.labels import Behaviors
+from bird_cv.evaluation.e2e import sweep_settings
+from bird_cv.inference.protocols import ClassifierInput
 from bird_cv.inference.registry import segmenter_kinds, segmenter_option_keys
 from bird_cv.preprocessing.relabel import RELABELERS, Relabeler, RelabelName
 from bird_cv.training.registry import check_search_space, get_trainer, trainer_kinds
@@ -163,7 +165,11 @@ class ModelSpec:
             space, if it has one.
         options: Training arguments for every run of this role, tuned or
             not (e.g. ``batch_size``). A classifier's ``num_frames`` is also
-            the clip length prepare samples.
+            the clip length prepare samples, and its ``input`` (``"bbox_crop"``,
+            the default, or ``"cage"``) the media it classifies: ``"cage"``
+            trains and infers on whole cage frames, squared to
+            ``input_size`` px (default 224), and drops the detector role
+            (ADR 0009).
         tune_options: Arguments for the tuner only (e.g. ``grace_period``,
             ``cpus_per_trial``).
         checkpoint: Weights inference loads when it isn't given a training
@@ -182,6 +188,21 @@ class ModelSpec:
     tune_options: dict = field(default_factory=dict)
     checkpoint: Path | None = None
     infer_options: dict = field(default_factory=dict)
+
+    @property
+    def input(self) -> ClassifierInput:
+        """The media a classifier takes: ``options.input``, ``"bbox_crop"`` if unset."""
+        return self.options.get("input", "bbox_crop")
+
+    @property
+    def input_size(self) -> int:
+        """Side in px cage frames are squared to: ``options.input_size``, 224 if unset."""
+        return self.options.get("input_size", 224)
+
+    @property
+    def dataset_name(self) -> str:
+        """Directory of its training data: the kind, suffixed by a non-default input."""
+        return self.kind if self.input == "bbox_crop" else f"{self.kind}_{self.input}"
 
 
 @dataclass
@@ -236,11 +257,15 @@ class ModelsConfig:
     )
 
     def roles(self) -> dict[str, ModelSpec]:
-        """Every role (a :class:`ModelSpec` field), by name."""
+        """Every role in use (a :class:`ModelSpec` field), by name.
+
+        Leaves out the detector when the classifier takes ``"cage"`` input.
+        """
         return {
             f.name: getattr(self, f.name)
             for f in fields(self)
             if isinstance(getattr(self, f.name), ModelSpec)
+            and not (f.name == "detector" and self.classifier.input == "cage")
         }
 
 
@@ -301,7 +326,13 @@ def _convert_models_config(table: dict, dec_hook) -> ModelsConfig:
         checkpoint = merged[role].get("checkpoint")
         if checkpoint is not None and not Path(checkpoint).is_absolute():
             raise ValueError(f"{where} checkpoint must be absolute: {checkpoint!r}")
-    return msgspec.convert(merged, type=ModelsConfig, dec_hook=dec_hook)
+    models = msgspec.convert(merged, type=ModelsConfig, dec_hook=dec_hook)
+    if models.classifier.input not in ("bbox_crop", "cage"):
+        raise ValueError(
+            f"[models.classifier] options.input must be 'bbox_crop' or 'cage',"
+            f" not {models.classifier.input!r}"
+        )
+    return models
 
 
 def _convert_infer_config(table: dict, dec_hook) -> InferConfig:
@@ -420,6 +451,17 @@ class BirdCVConfig:
             self.path_to_base_output / "classify" / "training_data"
         )
         self.classify.path_to_output = self.path_to_base_output / "classify" / "output"
+
+    def sweep_settings(self) -> list[tuple[int, float]]:
+        """The val sweep's (gap fill, det conf) settings.
+
+        Just the ``[infer]`` values when no detector runs, since neither
+        affects the predictions then.
+        """
+        if "detector" not in self.models.roles():
+            return [(self.infer.gap_fill_frames, self.infer.det_conf)]
+        ev = self.evaluate
+        return sweep_settings(ev.sweep_gap_fill_frames, ev.sweep_det_conf)
 
 
 def load_config(
