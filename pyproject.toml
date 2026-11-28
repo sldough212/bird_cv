@@ -31,6 +31,7 @@ dependencies = [
     "tzdata>=2026,<2027",
     "sam-2",
     "label-studio-ml",
+    "rfdetr[train]>=1.12.1,<2",
 ]
 
 [dependency-groups]
@@ -40,6 +41,12 @@ dev = [
     "pytest>=9.0.0",
     "mypy>=1.15.0",
 ]
+
+[tool.uv]
+# rfdetr[train] pins the pre-release torch-hungarian==0.1.0rc0; naming it here
+# allows that one pre-release only.
+prerelease = "if-necessary-or-explicit"
+constraint-dependencies = ["torch-hungarian==0.1.0rc0"]
 
 [[tool.uv.index]]
 name = "pytorch-cuda"

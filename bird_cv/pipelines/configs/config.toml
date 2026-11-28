@@ -87,8 +87,9 @@ split_ratio = { train = 0.6, val = 0.2, test = 0.2 }
 # ---- Models ----
 # Each role table picks a model by `kind` (see bird_cv/training/registry.py)
 # for both training and inference, and overrides only the keys it sets; the
-# commented keys show the defaults. A table that changes `kind` starts from
-# scratch and must set `pretrained`. `options` apply to every training run of
+# commented keys show the defaults. A role's `kind` picks its
+# [models.<role>.<kind>] subtable, merged onto the role's shared keys; a kind
+# other than the default starts from scratch and must set `pretrained`. `options` apply to every training run of
 # the role; `tune_options` only to the tuner; `infer_options` to the inference
 # model. `checkpoint` (absolute) is what infer.py loads when it isn't given
 # --train-run-id. Training data, runs and every other output path come from
@@ -96,12 +97,18 @@ split_ratio = { train = 0.6, val = 0.2, test = 0.2 }
 # clip length prepare samples.
 
 [models.detector]
+# "yolo" or "rfdetr": the only line to change to swap detectors. infer_options
+# here are shared; each kind's other keys go in [models.detector.<kind>] (ADR 0010).
+kind = "yolo"
+# Both kinds track with this Ultralytics tracker config.
+infer_options = { tracker_path = "/home/pdoughe1/bird_cv/bird_cv/detection/tracker.yaml" }
+
+[models.detector.yolo]
 # Duplicated in [detect] path_to_yolo / path_to_tracker_config for the legacy
 # pipelines; these copies are for the new ones. Smoke-test weights (ADR 0004).
 checkpoint = "/gscratch/pdoughe1/full_pipeline/20260817/detect/output/20260901_011549/bird_yolo/weights/best.pt"
 # YoloDetector fields: tracker_path (required), conf, iou, max_det
-infer_options = { tracker_path = "/home/pdoughe1/bird_cv/bird_cv/detection/tracker.yaml" }
-# kind = "yolo"
+# infer_options = {}
 # pretrained = "yolo11n.pt"
 # epochs = 60
 # tune = false
@@ -112,6 +119,19 @@ infer_options = { tracker_path = "/home/pdoughe1/bird_cv/bird_cv/detection/track
 # options = {}
 # # Ultralytics run_ray_tune arguments, e.g. { grace_period = 10 }
 # tune_options = {}
+
+[models.detector.rfdetr]
+# An rfdetr model class (Apache-2.0 sizes: RFDETRNano, RFDETRSmall,
+# RFDETRMedium, RFDETRLarge). Trains on the yolo dataset; no tuning.
+pretrained = "RFDETRSmall"
+epochs = 50
+tune = false
+# rfdetr model.train arguments, e.g. resolution, lr, early_stopping
+options = { batch_size = 8, grad_accum_steps = 2 }
+# RfdetrDetector fields: tracker_path (required), threshold (keep under the
+# tracker's track_low_thresh), batch_size
+infer_options = { threshold = 0.05 }
+# checkpoint = "/abs/path/checkpoint_best_total.pth"
 
 [models.classifier]
 # Duplicated in [classify] path_to_mae for the legacy pipelines; this copy is

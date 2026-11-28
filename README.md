@@ -2,7 +2,7 @@
 
 Computer vision pipeline for detecting and classifying migratory songbird
 behavior in cage-mounted camera footage. Each raw video is standardized to a
-fixed frame rate, split into cages (SAM2), searched for birds (YOLO) and
+fixed frame rate, split into cages (SAM2), searched for birds (YOLO or RF-DETR) and
 classified per frame (VideoMAE), then scored against Label Studio
 annotations.
 
@@ -45,7 +45,9 @@ Useful options:
   pulling them from Label Studio.
 
 Models are picked in config: `[models.detector]` and `[models.classifier]`
-`kind`, and `[infer.segmenter]`. Ray Tune is off unless a model sets
+`kind`, and `[infer.segmenter]`. Swap detectors with one word,
+`[models.detector] kind = "yolo"` or `"rfdetr"`; each kind's settings live in
+`[models.detector.<kind>]`. Ray Tune is off unless a model sets
 `tune = true`. `standard_fps` sets the frame rate. `[prepare] relabel` maps
 the Classify labels onto a label scheme whose classes are the class vocabulary
 (`config.toml` groups them into awake / restful / restless). To
@@ -89,7 +91,7 @@ bird_cv/
   core/            layout, manifests, ids, frames, class vocabulary, schemas
   preprocessing/   snapshots, ground truth, splits, sampling, standardize, crop
   training/        model registry and training entry points
-  detection/       YOLO backend
+  detection/       YOLO and RF-DETR backends
   classification/  VideoMAE backend
   segmentation/    SAM2 cage segmentation
   inference/       end-to-end inference on raw videos
