@@ -3,7 +3,7 @@
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import ClassVar, Literal
+from typing import Literal
 
 import numpy as np
 import torch
@@ -214,15 +214,15 @@ class VideoMAEClassifier:
         num_frames: Frames per window. Must match the model's input size.
         stride: Step size between consecutive windows in frames.
         batch_size: Dataloader batch size for windowed inference.
+        input_type: Media it was trained on: 224 px bird crops, or whole
+            cage frames squared to 224 px.
     """
 
     model_path: str
     num_frames: int = 16
     stride: int = 8
     batch_size: int = 4
-
-    input_type: ClassVar[Literal["bbox_crop", "cage"]] = "bbox_crop"
-    """Media this classifier expects: 224 px bird crops."""
+    input_type: Literal["bbox_crop", "cage"] = "bbox_crop"
 
     def __post_init__(self) -> None:
         self.model, self.processor, self.device, self.id_to_label = load_videomae_model(

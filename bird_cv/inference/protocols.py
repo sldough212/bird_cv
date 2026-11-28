@@ -6,7 +6,7 @@ take in-memory frames.
 """
 
 from collections.abc import Iterable, Sequence
-from typing import ClassVar, Literal, Protocol
+from typing import Literal, Protocol
 
 import numpy as np
 
@@ -37,7 +37,11 @@ class StreamingDetector(Protocol):
 class FrameClassifier(Protocol):
     """A behavior classifier of in-memory frames."""
 
-    input_type: ClassVar[ClassifierInput]
+    @property
+    def input_type(self) -> ClassifierInput:
+        """The media it takes."""
+        ...
+
     num_frames: int
 
     def predict_frames(self, frames: Sequence[np.ndarray]) -> list[FramePrediction]:

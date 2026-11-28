@@ -44,6 +44,30 @@ def _without_checkpoints(models: ModelsConfig) -> ModelsConfig:
     return dataclasses.replace(models, **specs)
 
 
+def test_cage_input_drops_the_detector_role(tmp_path: Path) -> None:
+    path = _config(tmp_path)
+    text = path.read_text()
+    path.write_text(
+        text.replace(
+            "\n[models.classifier]\n",
+            '\n[models.classifier]\noptions = { num_frames = 16, input = "cage" }\n',
+        )
+    )
+    cfg = load_config(path, require_api_key=False)
+    assert list(cfg.models.roles()) == ["classifier"]
+    assert cfg.models.classifier.dataset_name == "videomae_cage"
+    assert cfg.sweep_settings() == [(cfg.infer.gap_fill_frames, cfg.infer.det_conf)]
+
+    path.write_text(
+        text.replace(
+            "\n[models.classifier]\n",
+            '\n[models.classifier]\noptions = { num_frames = 16, input = "frame" }\n',
+        )
+    )
+    with pytest.raises(ValueError, match="options.input"):
+        load_config(path, require_api_key=False)
+
+
 def test_train_tables_merge_onto_defaults(tmp_path: Path) -> None:
     cfg = load_config(_config(tmp_path, "epochs = 5"), require_api_key=False)
     defaults = ModelsConfig()

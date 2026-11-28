@@ -9,6 +9,7 @@ Test keeps everything. Also the per-split class counts
 """
 
 import logging
+from collections.abc import Sequence
 
 import polars as pl
 
@@ -80,16 +81,19 @@ def select_yolo_frames(
     )
 
 
-def labeled_stretches(frames: pl.DataFrame, vocab: Behaviors) -> pl.DataFrame:
-    """Contiguous same-behavior runs of canonical frames on each cage.
+def labeled_stretches(
+    frames: pl.DataFrame, vocab: Behaviors, labels: Sequence[str] | None = None
+) -> pl.DataFrame:
+    """Contiguous same-label runs of canonical frames on each cage.
 
     Args:
         frames: Ground truth rows with a ``split`` column.
         vocab: The class vocabulary (``BirdCVConfig.behaviors``).
+        labels: Labels to keep stretches of; the behaviors if None
+            (``no_bird`` and holes excluded).
 
     Returns:
-        One row per stretch of a behavior (``no_bird`` and holes excluded),
-        with ``frame_begin`` and ``frame_end`` inclusive.
+        One row per stretch, with ``frame_begin`` and ``frame_end`` inclusive.
     """
     runs = frames.sort([*CAGE_COLUMNS, "frame"]).with_columns(
         run=(
@@ -101,7 +105,7 @@ def labeled_stretches(frames: pl.DataFrame, vocab: Behaviors) -> pl.DataFrame:
         .over(CAGE_COLUMNS)
     )
     return (
-        runs.filter(pl.col("label").is_in(vocab.names))
+        runs.filter(pl.col("label").is_in(labels or vocab.names))
         .group_by([*CAGE_COLUMNS, "run"])
         .agg(
             pl.col("label").first(),
@@ -110,6 +114,75 @@ def labeled_stretches(frames: pl.DataFrame, vocab: Behaviors) -> pl.DataFrame:
             frame_end=pl.col("frame").max(),
         )
         .drop("run")
+    )
+
+
+def _windows(
+    stretches: pl.DataFrame, num_frames: int, stride: int, seed: int
+) -> pl.DataFrame:
+    """Clips of ``num_frames`` every ``stride`` frames of each stretch.
+
+    A stretch shorter than ``num_frames`` yields one clip covering it. Each
+    clip gets a ``rank``, seeded random within its cage video and label.
+    """
+    return (
+        stretches.with_columns(
+            frame_begin=pl.int_ranges(
+                pl.col("frame_begin"),
+                pl.max_horizontal(
+                    pl.col("frame_end") - num_frames + 2, pl.col("frame_begin") + 1
+                ),
+                stride,
+            )
+        )
+        .explode("frame_begin")
+        .with_columns(
+            frame_end=pl.min_horizontal(
+                pl.col("frame_begin") + num_frames - 1, pl.col("frame_end")
+            )
+        )
+        .sort([*CAGE_COLUMNS, "frame_begin"])
+        .with_columns(
+            rank=pl.int_range(pl.len())
+            .shuffle(seed=seed)
+            .over([*CAGE_COLUMNS, "label"])
+        )
+    )
+
+
+def _active_clip_caps(clips: pl.DataFrame, vocab: Behaviors) -> pl.DataFrame:
+    """Per split, the most common active behavior's clip count (``cap``)."""
+    return (
+        clips.filter(pl.col("label").is_in(vocab.active))
+        .group_by("split", "label")
+        .len()
+        .group_by("split")
+        .agg(cap=pl.col("len").max())
+    )
+
+
+def _cap(clips: pl.DataFrame, capped: pl.Expr, caps: pl.DataFrame) -> pl.DataFrame:
+    """Keep every clip, but at most ``cap`` per split and label where ``capped``.
+
+    Capped clips are taken in ``rank`` order across cage videos, so every
+    video contributes evenly.
+    """
+    kept = (
+        clips.filter(capped)
+        .join(caps, on="split", how="left")
+        .with_columns(pl.col("cap").fill_null(0))
+        .sort(["split", "rank", *CAGE_COLUMNS])
+        .filter(pl.int_range(pl.len()).over("split", "label") < pl.col("cap"))
+    )
+    return (
+        pl.concat(
+            [
+                clips.filter(~capped).select(list(VIDEOMAE_CLIPS_SCHEMA)),
+                kept.select(list(VIDEOMAE_CLIPS_SCHEMA)),
+            ]
+        )
+        .sort([*CAGE_COLUMNS, "frame_begin"])
+        .cast(VIDEOMAE_CLIPS_SCHEMA)
     )
 
 
@@ -136,55 +209,40 @@ def select_videomae_clips(
     Returns:
         Selected clips in :data:`VIDEOMAE_CLIPS_SCHEMA`.
     """
-    clips = (
-        labeled_stretches(frames, vocab)
-        .with_columns(
-            frame_begin=pl.int_ranges(
-                pl.col("frame_begin"),
-                pl.max_horizontal(
-                    pl.col("frame_end") - num_frames + 2, pl.col("frame_begin") + 1
-                ),
-                stride,
-            )
-        )
-        .explode("frame_begin")
-        .with_columns(
-            frame_end=pl.min_horizontal(
-                pl.col("frame_begin") + num_frames - 1, pl.col("frame_end")
-            )
-        )
-        .sort([*CAGE_COLUMNS, "frame_begin"])
-        .with_columns(
-            rank=pl.int_range(pl.len())
-            .shuffle(seed=seed)
-            .over([*CAGE_COLUMNS, "label"])
-        )
-    )
+    clips = _windows(labeled_stretches(frames, vocab), num_frames, stride, seed)
     capped = (pl.col("label") == vocab.resting) & (pl.col("split") != "test")
-    caps = (
-        clips.filter(pl.col("label").is_in(vocab.active))
-        .group_by("split", "label")
-        .len()
-        .group_by("split")
-        .agg(cap=pl.col("len").max())
+    return _cap(clips, capped, _active_clip_caps(clips, vocab))
+
+
+def select_no_bird_clips(
+    frames: pl.DataFrame,
+    clips: pl.DataFrame,
+    num_frames: int,
+    seed: int,
+    vocab: Behaviors,
+) -> pl.DataFrame:
+    """``no_bird`` clips for a cage-input classifier (ADR 0009).
+
+    Back-to-back windows of ``num_frames`` over ``no_bird`` stretches at
+    least ``num_frames`` long (shorter gaps would be mostly bird once
+    widened). In train and val, capped per split at ``clips``' most common
+    active behavior's clip count, as resting is.
+
+    Args:
+        frames: Ground truth rows with a ``split`` column.
+        clips: The behavior clips (:func:`select_videomae_clips`).
+        num_frames: Frames per clip.
+        seed: Random seed for the cap.
+        vocab: The class vocabulary (``BirdCVConfig.behaviors``).
+
+    Returns:
+        Selected clips in :data:`VIDEOMAE_CLIPS_SCHEMA`.
+    """
+    stretches = labeled_stretches(frames, vocab, [vocab.no_bird]).filter(
+        pl.col("frame_end") - pl.col("frame_begin") + 1 >= num_frames
     )
-    resting = (
-        clips.filter(capped)
-        .join(caps, on="split", how="left")
-        .with_columns(pl.col("cap").fill_null(0))
-        .sort(["split", "rank", *CAGE_COLUMNS])
-        .filter(pl.int_range(pl.len()).over("split") < pl.col("cap"))
-    )
-    return (
-        pl.concat(
-            [
-                clips.filter(~capped).select(list(VIDEOMAE_CLIPS_SCHEMA)),
-                resting.select(list(VIDEOMAE_CLIPS_SCHEMA)),
-            ]
-        )
-        .sort([*CAGE_COLUMNS, "frame_begin"])
-        .cast(VIDEOMAE_CLIPS_SCHEMA)
-    )
+    windows = _windows(stretches, num_frames, num_frames, seed)
+    return _cap(windows, pl.col("split") != "test", _active_clip_caps(clips, vocab))
 
 
 def clip_frames(clips: pl.DataFrame) -> pl.DataFrame:

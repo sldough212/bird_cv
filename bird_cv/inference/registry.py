@@ -170,7 +170,8 @@ class InferenceModels:
 
     Attributes:
         segmenter: The ``[infer.segmenter]`` spec.
-        detector: The ``[models.detector]`` spec.
+        detector: The ``[models.detector]`` spec; None when the classifier
+            takes cage input (no detector role).
         classifier: The ``[models.classifier]`` spec.
         checkpoints: Weights per role (``detector``, ``classifier``).
         context: Settings the segmenter reads.
@@ -180,18 +181,18 @@ class InferenceModels:
     """
 
     segmenter: "SegmenterSpec"
-    detector: "ModelSpec"
+    detector: "ModelSpec | None"
     classifier: "ModelSpec"
     checkpoints: Mapping[str, Path]
     context: SegmenterContext
     train_run_id: str | None = None
     dataset: dict[str, Any] | None = None
 
-    def kinds(self) -> dict[str, str]:
+    def kinds(self) -> dict[str, str | None]:
         """Each role's ``kind``, for manifests."""
         return {
             "segmenter": self.segmenter.kind,
-            "detector": self.detector.kind,
+            "detector": self.detector.kind if self.detector else None,
             "classifier": self.classifier.kind,
         }
 
@@ -205,8 +206,8 @@ class InferenceModels:
         """The per-camera segmenter factory (loads nothing until ``load()``)."""
         return get_segmenters(self.segmenter, self.context)
 
-    def load(self) -> tuple["StreamingDetector", "FrameClassifier"]:
-        """Build the detector and classifier (loads weights)."""
+    def load(self) -> tuple["StreamingDetector | None", "FrameClassifier"]:
+        """Build the detector (None if there is none) and classifier (loads weights)."""
 
         def load_role(role: str, spec: "ModelSpec") -> Any:
             return get_trainer(spec.kind).load_for_inference(
@@ -214,7 +215,7 @@ class InferenceModels:
             )
 
         return (
-            load_role("detector", self.detector),
+            load_role("detector", self.detector) if self.detector else None,
             load_role("classifier", self.classifier),
         )
 
@@ -241,7 +242,7 @@ def inference_models(
             datasets.
     """
     layout = Layout(cfg.path_to_base_output)
-    specs = {"detector": cfg.models.detector, "classifier": cfg.models.classifier}
+    specs = cfg.models.roles()
     checkpoints: dict[str, Path] = {}
     datasets: dict[str, dict[str, Any] | None] = {}
     for role, spec in specs.items():
@@ -272,7 +273,7 @@ def inference_models(
         )
     return InferenceModels(
         segmenter=cfg.infer.segmenter,
-        detector=specs["detector"],
+        detector=specs.get("detector"),
         classifier=specs["classifier"],
         checkpoints=checkpoints,
         context=SegmenterContext(

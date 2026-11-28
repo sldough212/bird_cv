@@ -10,7 +10,7 @@ import numpy as np
 import polars as pl
 from tqdm import tqdm
 
-from bird_cv.preprocessing.crop import center_window
+from bird_cv.preprocessing.crop import center_window, square_frame
 from bird_cv.core.ids import get_local_path, parse_media_path, with_raw_video_ids
 
 
@@ -125,6 +125,7 @@ def process_item(
     stride: int = 8,
     *,
     ranges_by_cage: Mapping[Tuple[str, str, str], List[ClipRange]] | None = None,
+    square_size: int | None = None,
 ) -> None:
     """Convert one Label Studio behavior task into VideoMAE training clips.
 
@@ -171,6 +172,9 @@ def process_item(
             ``{camera_id}_{video_id}_{cage}_s{range_idx}_clip{idx}``. A
             range shorter than ``num_frames`` widens into neighbouring
             frames, as annotation ranges do.
+        square_size: If given, write every frame through
+            :func:`~bird_cv.preprocessing.crop.square_frame` at this size
+            (whole cage frames).
 
     Returns:
         None. Clip frames are written to disk as a side effect.
@@ -208,6 +212,8 @@ def process_item(
     if not frames:
         print(f"No frames read from {full_video_path}, skipping.")
         return
+    if square_size is not None:
+        frames = [square_frame(f, square_size) for f in frames]
 
     if ranges_by_cage is not None:
         for range_idx, (label, first, last) in enumerate(
@@ -279,6 +285,7 @@ def stream_annotations_to_mae(
     processes: int = 4,
     *,
     ranges_by_cage: Mapping[Tuple[str, str, str], List[ClipRange]] | None = None,
+    square_size: int | None = None,
 ) -> None:
     """Stream a behavior annotation JSON and build VideoMAE train/val/test clips.
 
@@ -304,6 +311,7 @@ def stream_annotations_to_mae(
             than 1 enable multiprocessing.
         ranges_by_cage: Clip these ranges instead of the annotations (see
             :func:`process_item`).
+        square_size: Square frames to this size (see :func:`process_item`).
 
     Returns:
         None. Clip frames are written to disk as a side effect.
@@ -325,6 +333,7 @@ def stream_annotations_to_mae(
                     num_frames=num_frames,
                     stride=stride,
                     ranges_by_cage=ranges_by_cage,
+                    square_size=square_size,
                 )
         else:
             # Parallel execution
@@ -336,6 +345,7 @@ def stream_annotations_to_mae(
                 num_frames=num_frames,
                 stride=stride,
                 ranges_by_cage=ranges_by_cage,
+                square_size=square_size,
             )
 
             with Pool(processes=processes) as pool:

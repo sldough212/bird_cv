@@ -41,7 +41,6 @@ from bird_cv.evaluation.e2e import (
     load_ground_truth,
     load_predictions,
     run_sweep,
-    sweep_settings,
     write_e2e_result,
 )
 from bird_cv.pipelines.config import BirdCVConfig, load_config
@@ -138,7 +137,7 @@ def run_evaluate(
             dataset, [train_dir / "manifest.json"], f"training run {train_dir}"
         )
         checkpoint = get_trainer(spec.kind).checkpoint_path(train_dir)
-        data_dir = layout.dataset(dataset_id, role, spec.kind)
+        data_dir = layout.dataset(dataset_id, role, spec.dataset_name)
         context = TrainContext(
             device=cfg.train.device,
             select_conf=cfg.infer.det_conf,
@@ -171,9 +170,7 @@ def run_evaluate(
             val_truth = _truth_for(truth, _cameras(split, "val"))
             runs = {
                 setting: layout.sweep_infer_run(run_id, *setting)
-                for setting in sweep_settings(
-                    ev.sweep_gap_fill_frames, ev.sweep_det_conf
-                )
+                for setting in cfg.sweep_settings()
             }
             missing = [
                 str(r.dir) for r in runs.values() if not r.predictions_dir.exists()
@@ -226,6 +223,8 @@ def run_evaluate(
             config={
                 "mode": mode,
                 "evaluate": asdict(ev),
+                # One setting, the [infer] values, when no detector runs
+                "sweep_settings": cfg.sweep_settings(),
                 "dataset": dataset,
             },
             inputs=inputs,

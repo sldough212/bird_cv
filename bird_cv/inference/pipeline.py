@@ -10,8 +10,12 @@ canonical frames at a time:
    video, bird crops of boxed frames through the classifier, run by run,
    with chunk windows overlapping by ``chunk_overlap`` frames and stitched.
 
+A classifier taking ``cage`` input (ADR 0009) skips pass 2 and classifies
+every non-empty cage frame, squared to ``crop_size``; its rows have no box.
+
 Output is keyed by ``cage_id`` and canonical frame, one row per cage per
-frame; frames with no usable box are ``no_bird``.
+frame; frames with no usable box (or, for cage input, no cage) are
+``no_bird`` unless the classifier says otherwise.
 """
 
 import json
@@ -41,6 +45,7 @@ from bird_cv.inference.cages import CageMasks, cage_frame
 from bird_cv.inference.chunks import iter_chunks, stitch_overlapping
 from bird_cv.inference.classify import (
     bird_crop_rgb,
+    cage_rgb,
     classify_runs,
     contiguous_runs,
     smoothed_box_centers,
@@ -64,7 +69,7 @@ def infer_video(
     raw_video_path: Path,
     run_dir: Path,
     segmenter: CageSegmenter,
-    detector: StreamingDetector,
+    detector: StreamingDetector | None,
     classifier: FrameClassifier,
     cfg: InferConfig,
     timer: StageTimer,
@@ -75,15 +80,17 @@ def infer_video(
 ) -> pl.DataFrame:
     """Run the full pipeline on one raw video and write its outputs.
 
-    Writes the video's standardized copy, raw detections and predictions
-    where :class:`~bird_cv.core.layout.InferRun` puts them in ``run_dir``.
+    Writes the video's standardized copy, raw detections (if a detector
+    runs) and predictions where :class:`~bird_cv.core.layout.InferRun` puts
+    them in ``run_dir``.
 
     Args:
         raw_video_path: Raw video at ``.../{camera_id}/{video_id}.{ext}``.
         run_dir: Output directory of the run.
         segmenter: Splits frames into cages (SAM2 for real cameras).
-        detector: Detector whose trackers persist across chunks.
-        classifier: Behavior classifier; only ``bbox_crop`` input is supported.
+        detector: Detector whose trackers persist across chunks; None for a
+            ``cage``-input classifier.
+        classifier: Behavior classifier.
         cfg: Inference settings.
         timer: Collects one row per stage.
         standard_fps: Frame rate to standardize the video to.
@@ -95,12 +102,15 @@ def infer_video(
         (empty if the standardized video has no frames).
 
     Raises:
-        NotImplementedError: For classifiers taking ``cage`` input.
+        ValueError: If there is a detector exactly when the classifier
+            takes ``cage`` input.
         RuntimeError: If ffmpeg fails to standardize the video.
     """
-    if classifier.input_type != "bbox_crop":
-        raise NotImplementedError(
-            f"Classifier input {classifier.input_type!r} is not supported yet"
+    cage_input = classifier.input_type == "cage"
+    if cage_input != (detector is None):
+        raise ValueError(
+            f"A {classifier.input_type!r}-input classifier "
+            f"{'takes no' if cage_input else 'needs a'} detector"
         )
     camera_id, video_id = parse_raw_video_path(raw_video_path)
     out = InferRun(run_dir)
@@ -134,7 +144,91 @@ def infer_video(
     shapes = masks.cage_frame_shapes()
     cage_ids = masks.cage_ids
 
-    # Pass 2: tracking, one tracker per cage
+    if detector is None:
+        boxes: dict[str, list[Detection | None]] = {
+            c: [None] * n_frames for c in cage_ids
+        }
+        centers: dict[str, dict[int, tuple[float, float]]] = {}
+    else:
+        boxes = _track(
+            detector,
+            camera_id,
+            video_id,
+            std_path,
+            masks,
+            shapes,
+            n_frames,
+            cfg,
+            timer,
+            out,
+        )
+        centers = {c: smoothed_box_centers(boxes[c]) for c in cage_ids}
+
+    # Pass 3: classification over boxed (or non-empty cage) frames,
+    # overlapping chunk windows
+    windows: dict[str, list[tuple[int, int, dict[int, FramePrediction]]]] = {
+        c: [] for c in cage_ids
+    }
+    with timer.stage(camera_id, video_id, "classify", frames=n_frames):
+        for start, frames in iter_chunks(std_path, cfg.chunk_frames, cfg.chunk_overlap):
+            end = start + len(frames)
+            for cage_id in cage_ids:
+                targets: list[int] = []
+                crops = []
+                for f in range(start, end):
+                    if cage_id not in shapes or (
+                        not cage_input and f not in centers[cage_id]
+                    ):
+                        continue
+                    cropped = cage_frame(
+                        frames[f - start], masks.at(f, cage_id), shapes[cage_id]
+                    )
+                    if cropped is None:  # empty cage frame (never boxed)
+                        continue
+                    targets.append(f)
+                    crops.append(
+                        cage_rgb(cropped, cfg.crop_size)
+                        if cage_input
+                        else bird_crop_rgb(cropped, centers[cage_id][f], cfg.crop_size)
+                    )
+                preds = classify_runs(targets, crops, classifier) if targets else {}
+                windows[cage_id].append((start, end, preds))
+
+    with timer.stage(camera_id, video_id, "write", frames=n_frames):
+        predictions = pl.concat(
+            [
+                cage_predictions(
+                    camera_id,
+                    video_id,
+                    cage_id,
+                    boxes[cage_id],
+                    stitch_overlapping(windows[cage_id]),
+                    vocab,
+                )
+                for cage_id in cage_ids
+            ]
+        )
+        _write_parquet(predictions, out_path)
+    return predictions
+
+
+def _track(
+    detector: StreamingDetector,
+    camera_id: str,
+    video_id: str,
+    std_path: Path,
+    masks: CageMasks,
+    shapes: dict[str, tuple[int, int]],
+    n_frames: int,
+    cfg: InferConfig,
+    timer: StageTimer,
+    out: InferRun,
+) -> dict[str, list[Detection | None]]:
+    """Pass 2: track each cage with its own tracker, then filter and gap fill.
+
+    Writes the raw detections; returns each cage's box per canonical frame.
+    """
+    cage_ids = masks.cage_ids
     trackers = {c: detector.frame_tracker() for c in shapes}
     detections: dict[str, list[Detection]] = {c: [] for c in cage_ids}
     empty: dict[str, set[int]] = {c: set() for c in cage_ids}
@@ -158,8 +252,7 @@ def infer_video(
     _write_detections(
         detections, camera_id, video_id, out.detections(camera_id, video_id)
     )
-
-    boxes = {
+    return {
         c: fill_gaps(
             detections[c],
             n_frames,
@@ -169,45 +262,6 @@ def infer_video(
         )
         for c in cage_ids
     }
-    centers = {c: smoothed_box_centers(boxes[c]) for c in cage_ids}
-
-    # Pass 3: classification over boxed frames, overlapping chunk windows
-    windows: dict[str, list[tuple[int, int, dict[int, FramePrediction]]]] = {
-        c: [] for c in cage_ids
-    }
-    with timer.stage(camera_id, video_id, "classify", frames=n_frames):
-        for start, frames in iter_chunks(std_path, cfg.chunk_frames, cfg.chunk_overlap):
-            end = start + len(frames)
-            for cage_id in cage_ids:
-                boxed = [f for f in range(start, end) if f in centers[cage_id]]
-                crops = []
-                for f in boxed:
-                    cropped = cage_frame(
-                        frames[f - start], masks.at(f, cage_id), shapes[cage_id]
-                    )
-                    assert cropped is not None  # empty cage-frames have no box
-                    crops.append(
-                        bird_crop_rgb(cropped, centers[cage_id][f], cfg.crop_size)
-                    )
-                preds = classify_runs(boxed, crops, classifier) if boxed else {}
-                windows[cage_id].append((start, end, preds))
-
-    with timer.stage(camera_id, video_id, "write", frames=n_frames):
-        predictions = pl.concat(
-            [
-                cage_predictions(
-                    camera_id,
-                    video_id,
-                    cage_id,
-                    boxes[cage_id],
-                    stitch_overlapping(windows[cage_id]),
-                    vocab,
-                )
-                for cage_id in cage_ids
-            ]
-        )
-        _write_parquet(predictions, out_path)
-    return predictions
 
 
 def _expected_frames(

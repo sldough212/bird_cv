@@ -12,6 +12,7 @@ from bird_cv.core.layout import split_file
 from bird_cv.core.schemas import GROUND_TRUTH_SCHEMA
 from bird_cv.preprocessing.ground_truth import build_ground_truth, parse_detect_task
 from bird_cv.preprocessing.sampling import (
+    select_no_bird_clips,
     select_videomae_clips,
     select_yolo_frames,
     summarize,
@@ -245,6 +246,32 @@ def test_sampling_caps() -> None:
     assert (
         clips.filter(pl.col("split") == "test", pl.col("label") == "resting").height
         == 3
+    )
+
+
+def test_no_bird_clips_skip_short_gaps_and_cap_like_resting() -> None:
+    nb = VOCAB.no_bird
+    train = ["head_move"] * 16 + [nb] * 3 + ["resting"] * 8 + [nb] * 40
+    frames = pl.concat(
+        [
+            gt_rows("c", "a", train, "train"),
+            gt_rows("c", "b", [nb] * 24, "train"),
+            gt_rows("t", "test", [nb] * 40, "test"),
+        ]
+    )
+    clips = select_videomae_clips(frames, num_frames=8, stride=8, seed=0, vocab=VOCAB)
+    no_bird = select_no_bird_clips(frames, clips, num_frames=8, seed=0, vocab=VOCAB)
+
+    assert (no_bird["frame_end"] - no_bird["frame_begin"] + 1 == 8).all()
+    # The 3-frame gap is too short; train's 8 windows cap at head_move's 2
+    assert (
+        no_bird.filter(pl.col("video_id") == "a", pl.col("frame_begin") < 27).height
+        == 0
+    )
+    assert no_bird.filter(pl.col("split") == "train").height == 2
+    assert no_bird.filter(pl.col("split") == "test").height == 5
+    assert no_bird.equals(
+        select_no_bird_clips(frames, clips, num_frames=8, seed=0, vocab=VOCAB)
     )
 
 

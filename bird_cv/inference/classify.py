@@ -1,8 +1,8 @@
 """Behavior classification over contiguous detected runs of one cage.
 
 Mirrors how Classify training clips are built from bird-crop videos (which
-hold only boxed frames): the classifier only ever sees boxed frames, windows
-never span a gap, and a run shorter than one window is centered and padded
+hold only boxed frames): the classifier only ever sees boxed frames (or, for
+cage input, non-empty cage frames), windows never span a gap, and a run shorter than one window is centered and padded
 with neighboring boxed frames via :func:`~bird_cv.preprocessing.crop.center_window`.
 """
 
@@ -14,7 +14,12 @@ import numpy as np
 from bird_cv.classification.types import FramePrediction
 from bird_cv.detection.types import Detection
 from bird_cv.inference.protocols import FrameClassifier
-from bird_cv.preprocessing.crop import center_window, crop_bird, smooth_centers
+from bird_cv.preprocessing.crop import (
+    center_window,
+    crop_bird,
+    smooth_centers,
+    square_frame,
+)
 
 
 def smoothed_box_centers(
@@ -40,6 +45,11 @@ def bird_crop_rgb(
     """Bird crop of a BGR cage frame, converted to RGB for the classifier."""
     crop = crop_bird(cage_frame, center[0], center[1], crop_size=crop_size)
     return cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+
+
+def cage_rgb(cage_frame: np.ndarray, size: int) -> np.ndarray:
+    """A BGR cage frame squared to ``size`` (as cage clips are), in RGB."""
+    return cv2.cvtColor(square_frame(cage_frame, size), cv2.COLOR_BGR2RGB)
 
 
 def contiguous_runs(frames: Sequence[int]) -> list[tuple[int, int]]:

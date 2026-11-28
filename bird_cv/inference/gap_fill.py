@@ -77,8 +77,9 @@ def cage_predictions(
         camera_id: Camera id (from :mod:`bird_cv.core.ids`).
         video_id: Video id (from :mod:`bird_cv.core.ids`).
         cage_id: Cage id (from :mod:`bird_cv.core.ids`).
-        boxes: Output of :func:`fill_gaps`.
-        labels: Classifier prediction per boxed canonical frame. A boxed
+        boxes: Output of :func:`fill_gaps`, or all None when no detector
+            runs (box columns null).
+        labels: Classifier prediction per classified canonical frame. A
             frame missing here or labeled None (no window covered it) is
             ``no_bird``.
         vocab: The class vocabulary (``BirdCVConfig.behaviors``).
@@ -88,8 +89,8 @@ def cage_predictions(
     """
     rows = []
     for frame, box in enumerate(boxes):
-        pred = labels.get(frame) if box is not None else None
-        if box is None or pred is None or pred.label is None:
+        pred = labels.get(frame)
+        if pred is None or pred.label is None:
             rows.append(
                 {
                     "camera_id": camera_id,
@@ -108,11 +109,17 @@ def cage_predictions(
                 "frame": frame,
                 "label": vocab.validate(pred.label),
                 "confidence": pred.confidence,
-                "bbox_left": box.left,
-                "bbox_top": box.top,
-                "bbox_width": box.width,
-                "bbox_height": box.height,
-                "det_conf": box.conf,
             }
+            | (
+                {
+                    "bbox_left": box.left,
+                    "bbox_top": box.top,
+                    "bbox_width": box.width,
+                    "bbox_height": box.height,
+                    "det_conf": box.conf,
+                }
+                if box is not None
+                else {}
+            )
         )
     return pl.DataFrame(rows, schema=PREDICTION_SCHEMA)
