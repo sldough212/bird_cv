@@ -33,6 +33,7 @@ class EchoClassifier:
 
     input_type: ClassVar[Literal["bbox_crop", "cage"]] = "bbox_crop"
     num_frames = 16
+    input_size = 224
 
     def predict_frames(self, frames: Sequence[np.ndarray]) -> list[FramePrediction]:
         assert len(frames) >= self.num_frames
@@ -169,6 +170,7 @@ class CageClassifier:
 
     input_type: ClassVar[Literal["bbox_crop", "cage"]] = "cage"
     num_frames = 4
+    input_size = 224
 
     def predict_frames(self, frames: Sequence[np.ndarray]) -> list[FramePrediction]:
         assert all(f.shape == (224, 224, 3) for f in frames)

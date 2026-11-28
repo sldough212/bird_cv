@@ -215,7 +215,8 @@ class VideoMAEClassifier:
         stride: Step size between consecutive windows in frames.
         batch_size: Dataloader batch size for windowed inference.
         input_type: Media it was trained on: 224 px bird crops, or whole
-            cage frames squared to 224 px.
+            cage frames squared to ``input_size`` px.
+        input_size: Side in px cage frames are squared to.
     """
 
     model_path: str
@@ -223,6 +224,7 @@ class VideoMAEClassifier:
     stride: int = 8
     batch_size: int = 4
     input_type: Literal["bbox_crop", "cage"] = "bbox_crop"
+    input_size: int = 224
 
     def __post_init__(self) -> None:
         self.model, self.processor, self.device, self.id_to_label = load_videomae_model(

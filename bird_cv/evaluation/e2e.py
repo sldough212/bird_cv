@@ -148,6 +148,7 @@ def evaluate_e2e(
     classes: Sequence[str],
     iou_threshold: float = 0.5,
     with_mot: bool = True,
+    with_detection: bool = True,
 ) -> E2EResult:
     """Score end-to-end predictions against ground truth.
 
@@ -159,6 +160,9 @@ def evaluate_e2e(
         classes: Class vocabulary (``Behaviors.classes``).
         iou_threshold: Minimum IoU for a presence hit. Defaults to 0.5.
         with_mot: Also compute MOT metrics (slower). Defaults to ``True``.
+        with_detection: False when no detector ran (ADR 0009): presence
+            metrics are NaN and MOT is skipped, rather than scoring null
+            boxes as misses. Defaults to ``True``.
 
     Returns:
         The scores, see :class:`E2EResult`.
@@ -169,13 +173,18 @@ def evaluate_e2e(
         *KEY_COLUMNS, *[pl.col(f"{prefix}{c}").alias(c) for c in box_columns()]
     )
     pred_label = f"{prefix}label"
+    detection = detection_presence_metrics(
+        truth, pred_boxes, iou_threshold=iou_threshold
+    )
+    if not with_detection:
+        detection = {k: math.nan for k in detection}
     return E2EResult(
         frame=frame_metrics(joined, classes, pred_col=pred_label),
         per_camera=per_camera_frame_metrics(joined, classes, pred_col=pred_label),
-        detection=detection_presence_metrics(
-            truth, pred_boxes, iou_threshold=iou_threshold
-        ),
-        mot=mot_metrics(truth, pred_boxes) if with_mot else pl.DataFrame(),
+        detection=detection,
+        mot=mot_metrics(truth, pred_boxes)
+        if with_mot and with_detection
+        else pl.DataFrame(),
         n_frames_without_prediction=int(joined[pred_label].null_count()),
     )
 
@@ -215,6 +224,7 @@ def run_sweep(
     predictions_by_setting: Mapping[tuple[int, float], pl.DataFrame],
     classes: Sequence[str],
     iou_threshold: float = 0.5,
+    with_detection: bool = True,
 ) -> pl.DataFrame:
     """Score each (gap fill, det conf) setting on val, best first.
 
@@ -227,6 +237,7 @@ def run_sweep(
             ``(gap_fill_frames, det_conf)`` setting.
         classes: Class vocabulary (``Behaviors.classes``).
         iou_threshold: Minimum IoU for a presence hit.
+        with_detection: As for :func:`evaluate_e2e`.
 
     Returns:
         One row per setting: ``gap_fill_frames``, ``det_conf`` and the
@@ -234,7 +245,14 @@ def run_sweep(
     """
     rows = []
     for (gap, conf), pred in predictions_by_setting.items():
-        result = evaluate_e2e(truth, pred, classes, iou_threshold, with_mot=False)
+        result = evaluate_e2e(
+            truth,
+            pred,
+            classes,
+            iou_threshold,
+            with_mot=False,
+            with_detection=with_detection,
+        )
         rows.append({"gap_fill_frames": gap, "det_conf": conf} | result.summary())
     return pl.DataFrame(rows, nan_to_null=True).sort(
         "macro_f1", descending=True, nulls_last=True

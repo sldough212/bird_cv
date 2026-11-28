@@ -43,6 +43,8 @@ class FrameClassifier(Protocol):
         ...
 
     num_frames: int
+    # Side in px cage frames are squared to, for ``cage`` input
+    input_size: int
 
     def predict_frames(self, frames: Sequence[np.ndarray]) -> list[FramePrediction]:
         """One prediction per RGB frame, ``frame`` being its position in ``frames``."""

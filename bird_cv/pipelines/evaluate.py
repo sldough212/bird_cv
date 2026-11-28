@@ -112,6 +112,8 @@ def run_evaluate(
         The output directory.
     """
     ev = cfg.evaluate
+    # No detector (cage-input classifier, ADR 0009): no boxes to score
+    with_detection = "detector" in cfg.models.roles()
     layout = Layout(cfg.path_to_base_output)
     if mode not in ("sweep", "test", "model"):
         raise ValueError(f"Unknown mode {mode!r}")
@@ -185,7 +187,11 @@ def run_evaluate(
                 predictions[setting] = load_predictions(infer_run.predictions_dir)
             sweep_root = layout.sweep_root(run_id)
             sweep = run_sweep(
-                val_truth, predictions, cfg.behaviors.classes, ev.iou_threshold
+                val_truth,
+                predictions,
+                cfg.behaviors.classes,
+                ev.iou_threshold,
+                with_detection=with_detection,
             )
             print(sweep)
             sweep.write_parquet(results.sweep)
@@ -209,6 +215,7 @@ def run_evaluate(
                 load_predictions(pred_dir),
                 cfg.behaviors.classes,
                 ev.iou_threshold,
+                with_detection=with_detection,
             )
             print(json.dumps(result.summary(), indent=2, default=float))
             print(result.per_camera)

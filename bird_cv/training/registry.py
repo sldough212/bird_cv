@@ -356,7 +356,8 @@ class VideoMAETrainer:
     every run (e.g. ``num_frames``, ``batch_size``); ``spec.tune_options``
     are :func:`tune_video_model` arguments (``cpus_per_trial``,
     ``grace_period``). ``options.input`` picks bird-crop or cage clips
-    (ADR 0009) and is not passed on.
+    (ADR 0009), ``options.input_size`` the side cage frames are squared
+    to; neither is passed on.
     """
 
     def checkpoint_path(self, run_dir: Path) -> Path:
@@ -371,7 +372,11 @@ class VideoMAETrainer:
                 "epochs": spec.epochs,
                 "device": "cpu" if context.device == "cpu" else "cuda",
             }
-            | {k: v for k, v in spec.options.items() if k != "input"}
+            | {
+                k: v
+                for k, v in spec.options.items()
+                if k not in ("input", "input_size")
+            }
             | overrides
         )
 
@@ -430,6 +435,7 @@ class VideoMAETrainer:
         return VideoMAEClassifier(
             model_path=str(checkpoint),
             input_type=spec.input,
+            input_size=spec.input_size,
             **(trained | spec.infer_options),
         )
 
@@ -446,7 +452,7 @@ class VideoMAETrainer:
 
         Bird-crop clips by default: crop frame ``k`` is the cage's ``k``-th
         boxed canonical frame (ADR 0002). With ``input = "cage"``, whole cage
-        frames squared to 224 px, cut from the cage videos (frame ``k`` is
+        frames squared to ``input_size`` px, cut from the cage videos (frame ``k`` is
         canonical ``k - 1``). Clips shorter than ``num_frames`` widen into
         neighbouring frames.
 
@@ -474,8 +480,7 @@ class VideoMAETrainer:
             stride=num_frames,
             processes=media.processes,
             ranges_by_cage=ranges,
-            # VideoMAE's input size, as bird crops are
-            square_size=224 if spec.input == "cage" else None,
+            square_size=spec.input_size if spec.input == "cage" else None,
         )
         split_of = dict(selection.select("camera_id", "split").unique().iter_rows())
         missing = [

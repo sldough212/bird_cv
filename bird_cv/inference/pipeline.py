@@ -11,7 +11,8 @@ canonical frames at a time:
    with chunk windows overlapping by ``chunk_overlap`` frames and stitched.
 
 A classifier taking ``cage`` input (ADR 0009) skips pass 2 and classifies
-every non-empty cage frame, squared to ``crop_size``; its rows have no box.
+every non-empty cage frame, squared to the classifier's ``input_size``; its
+rows have no box.
 
 Output is keyed by ``cage_id`` and canonical frame, one row per cage per
 frame; frames with no usable box (or, for cage input, no cage) are
@@ -187,7 +188,7 @@ def infer_video(
                         continue
                     targets.append(f)
                     crops.append(
-                        cage_rgb(cropped, cfg.crop_size)
+                        cage_rgb(cropped, classifier.input_size)
                         if cage_input
                         else bird_crop_rgb(cropped, centers[cage_id][f], cfg.crop_size)
                     )

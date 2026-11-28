@@ -167,8 +167,9 @@ class ModelSpec:
             not (e.g. ``batch_size``). A classifier's ``num_frames`` is also
             the clip length prepare samples, and its ``input`` (``"bbox_crop"``,
             the default, or ``"cage"``) the media it classifies: ``"cage"``
-            trains and infers on whole cage frames and drops the detector
-            role (ADR 0009).
+            trains and infers on whole cage frames, squared to
+            ``input_size`` px (default 224), and drops the detector role
+            (ADR 0009).
         tune_options: Arguments for the tuner only (e.g. ``grace_period``,
             ``cpus_per_trial``).
         checkpoint: Weights inference loads when it isn't given a training
@@ -192,6 +193,11 @@ class ModelSpec:
     def input(self) -> ClassifierInput:
         """The media a classifier takes: ``options.input``, ``"bbox_crop"`` if unset."""
         return self.options.get("input", "bbox_crop")
+
+    @property
+    def input_size(self) -> int:
+        """Side in px cage frames are squared to: ``options.input_size``, 224 if unset."""
+        return self.options.get("input_size", 224)
 
     @property
     def dataset_name(self) -> str:
