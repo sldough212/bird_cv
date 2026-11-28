@@ -60,9 +60,10 @@ instead of bird crops and drops the detector from every stage (ADR 0009);
 remove it to go back. It trains on the same dataset id, so the two runs
 compare directly.
 
-`[models.classifier] kind = "vjepa2"` swaps VideoMAE for V-JEPA 2 (ADR 0010;
-see the example block in `config.toml`). Its `options.input_size` (e.g. 256)
-recrops bird crops from the cage videos at that size on the same dataset id.
+`[models.classifier] kind = "vjepa2"` swaps VideoMAE for V-JEPA 2 (ADR 0011),
+with its settings in `[models.classifier.vjepa2]`. Its `options.input_size`
+(e.g. 256) recrops bird crops from the cage videos at that size on the same
+dataset id.
 
 ### Label Studio pipelines
 

@@ -491,7 +491,7 @@ class VideoMAETrainer:
         frames squared to ``input_size`` px, cut from the cage videos (frame ``k`` is
         canonical ``k - 1``). Bird crops other than 224 px are recropped
         from the cage videos at ``input_size`` around the smoothed
-        ground-truth box centers, as inference crops them (ADR 0010).
+        ground-truth box centers, as inference crops them (ADR 0011).
         Clips shorter than ``num_frames`` widen into neighbouring frames.
 
         Raises:
@@ -649,7 +649,7 @@ class RfdetrTrainer(YoloTrainer):
 
 
 class VJEPA2Trainer(VideoMAETrainer):
-    """V-JEPA 2 clip classifier: VideoMAE's training with another backbone (ADR 0010).
+    """V-JEPA 2 clip classifier: VideoMAE's training with another backbone (ADR 0011).
 
     Any ``input_size`` that fits its 16 px patches; a frozen encoder still
     trains the attentive pooler and the classifier.

@@ -174,7 +174,7 @@ def test_prepare_build_evaluate_connect(
         roles=["classifier"],
         processes=1,
     )
-    recrops = layout.dataset(run_id, "classifier", "vjepa2_32")
+    recrops = layout.dataset(run_id, "classifier", "videomae_32")
     frames = [cv2.imread(str(p)) for p in recrops.glob("*/*/*/*.jpg")]
     assert frames and all(f.shape[:2] == (32, 32) for f in frames)
     assert min(int(f[16, 16, 0]) for f in frames) >= 45  # never an unboxed frame

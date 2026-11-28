@@ -169,7 +169,7 @@ class ModelSpec:
             trains and infers on whole cage frames, squared to
             ``input_size`` px (default 224), and drops the detector role
             (ADR 0009). Bird crops are ``input_size`` px too: other than 224,
-            they are recropped from the cage videos (ADR 0010).
+            they are recropped from the cage videos (ADR 0011).
         tune_options: Arguments for the tuner only (e.g. ``grace_period``,
             ``cpus_per_trial``).
         checkpoint: Weights inference loads when it isn't given a training
@@ -373,8 +373,8 @@ def _convert_models_config(table: dict, dec_hook) -> ModelsConfig:
             f"[models.classifier] options.input must be 'bbox_crop' or 'cage',"
             f" not {models.classifier.input!r}"
         )
-    for role, spec in models.roles().items():
-        get_trainer(spec.kind).check_spec(spec, f"[models.{role}]")
+    for role, role_spec in models.roles().items():
+        get_trainer(role_spec.kind).check_spec(role_spec, f"[models.{role}]")
     return models
 
 
