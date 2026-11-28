@@ -608,6 +608,7 @@ class RfdetrTrainer(YoloTrainer):
             split=split,
             conf=context.select_conf,
             iou_threshold=context.iou_threshold,
+            device=context.device,
         )
 
     def infer_option_keys(self) -> set[str]:

@@ -98,6 +98,11 @@ def test_kind_swaps_the_detector_subtable(tmp_path: Path) -> None:
     assert set(detector.infer_options) == {"tracker_path", "threshold"}
     assert detector.dataset_name == "yolo"
 
+    # The yolo kind's role-level keys never reach rfdetr
+    path.write_text(text.replace('kind = "yolo"', 'kind = "rfdetr"\nepochs = 5', 1))
+    with pytest.raises(ValueError, match="epochs.*apply only to kind 'yolo'"):
+        load_config(path, require_api_key=False)
+
     # An inactive subtable is validated too
     path.write_text(text.replace("{ threshold = 0.05 }", "{ conf = 0.05 }", 1))
     with pytest.raises(ValueError, match="rfdetr.*conf"):

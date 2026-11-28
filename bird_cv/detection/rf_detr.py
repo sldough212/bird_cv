@@ -36,6 +36,11 @@ def top_box(detections: sv.Detections) -> np.ndarray:
     )
 
 
+def _torch_device(device: int | str) -> str:
+    """A GPU index as ``cuda:N``; strings pass through."""
+    return f"cuda:{device}" if isinstance(device, int) else device
+
+
 def rfdetr_predict(model: Any, threshold: float) -> PredictBoxes:
     """An RF-DETR model's top box per image, normalized."""
 
@@ -67,9 +72,15 @@ def rfdetr_presence_metrics(
     split: str = "val",
     conf: float = 0.25,
     iou_threshold: float = 0.5,
+    device: int | str | None = None,
 ) -> dict[str, float | int]:
-    """Presence metrics of an RF-DETR checkpoint on a YOLO-format split."""
-    model = rfdetr.RFDETR.from_checkpoint(str(checkpoint))
+    """Presence metrics of an RF-DETR checkpoint on a YOLO-format split.
+
+    ``device`` is a GPU index or torch device string; None lets RF-DETR choose.
+    """
+    model = rfdetr.RFDETR.from_checkpoint(
+        str(checkpoint), **({} if device is None else {"device": _torch_device(device)})
+    )
     return split_presence_metrics(
         dataset_root, rfdetr_predict(model, conf), split, iou_threshold
     )
@@ -108,13 +119,13 @@ def train_rfdetr(
     model.train(
         dataset_dir=str(dataset_root),
         epochs=epochs,
-        device=f"cuda:{device}" if isinstance(device, int) else device,
+        device=_torch_device(device),
         output_dir=str(run_dir),
         **train_options,
     )
     checkpoint = run_dir / "checkpoint_best_total.pth"
     metrics = rfdetr_presence_metrics(
-        dataset_root, checkpoint, "val", select_conf, iou_threshold
+        dataset_root, checkpoint, "val", select_conf, iou_threshold, device
     )
     pl.DataFrame(
         [{"candidate": run_dir.name, "checkpoint": str(checkpoint)} | metrics]

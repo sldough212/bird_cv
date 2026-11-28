@@ -309,8 +309,9 @@ def _convert_models_config(table: dict, dec_hook) -> ModelsConfig:
     """Build :class:`ModelsConfig`, merging role tables onto their defaults.
 
     A role table may hold one subtable per kind (``[models.detector.rfdetr]``);
-    ``kind`` picks which one merges onto the role's shared keys, so swapping
-    models is one word. Every subtable is validated, active or not. A spec
+    ``kind`` picks which one merges onto the role's keys, so swapping models
+    is one word. Role-level keys other than ``infer_options`` (shared by every
+    kind) are the default kind's. Every subtable is validated, active or not. A spec
     that keeps the default ``kind`` overrides only the keys it sets; one that
     changes ``kind`` starts from a bare :class:`ModelSpec`. Kinds, search
     spaces and ``infer_options`` are validated against
@@ -318,7 +319,8 @@ def _convert_models_config(table: dict, dec_hook) -> ModelsConfig:
 
     Raises:
         ValueError: On unknown keys in ``[models]`` or a role table, an
-            unknown ``kind``, a new ``kind`` without ``pretrained``, unknown
+            unknown ``kind``, a new ``kind`` without ``pretrained`` or with
+            role-level keys of the default kind, unknown
             ``infer_options``, a relative ``checkpoint``, or a malformed
             ``search_space`` entry.
     """
@@ -338,13 +340,25 @@ def _convert_models_config(table: dict, dec_hook) -> ModelsConfig:
                 f"{where} kind {kind!r} has no trainer; known: {trainer_kinds()}"
             )
         subtables = {k: v for k, v in role_table.items() if k in trainer_kinds()}
-        shared = {
+        # Role-level keys are the default kind's; only infer_options are shared
+        role_keys = {
             k: v for k, v in role_table.items() if k not in subtables and k != "kind"
         }
+        own = sorted(set(role_keys) - {"infer_options"})
+        if kind != default.kind and own:
+            raise ValueError(
+                f"{where} keys {own} apply only to kind {default.kind!r};"
+                f" set {kind!r}'s in [models.{role}.{kind}]"
+            )
         for sub_kind in subtables.keys() | {kind}:
             sub = subtables.get(sub_kind, {})
             if not isinstance(sub, dict):
                 raise ValueError(f"{where}.{sub_kind} must be a table")
+            shared = (
+                role_keys
+                if sub_kind == default.kind
+                else {k: v for k, v in role_keys.items() if k == "infer_options"}
+            )
             spec_table = shared | sub
             for key in ("options", "tune_options", "infer_options"):
                 if isinstance(shared.get(key), dict) and isinstance(sub.get(key), dict):

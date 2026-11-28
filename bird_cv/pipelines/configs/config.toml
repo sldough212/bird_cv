@@ -97,8 +97,8 @@ split_ratio = { train = 0.6, val = 0.2, test = 0.2 }
 # clip length prepare samples.
 
 [models.detector]
-# "yolo" or "rfdetr": the only line to change to swap detectors. Keys here are
-# shared; [models.detector.<kind>] holds each kind's own (ADR 0010).
+# "yolo" or "rfdetr": the only line to change to swap detectors. infer_options
+# here are shared; each kind's other keys go in [models.detector.<kind>] (ADR 0010).
 kind = "yolo"
 # Both kinds track with this Ultralytics tracker config.
 infer_options = { tracker_path = "/home/pdoughe1/bird_cv/bird_cv/detection/tracker.yaml" }
