@@ -153,7 +153,8 @@ class ModelSpec:
         kind: Registry key, e.g. ``"yolo"`` or ``"videomae"``.
         pretrained: Generic pretrained weights to start from (ADR 0004).
         epochs: Epochs per training run or tuning trial.
-        tune: Tune hyperparameters on the frozen split before training.
+        tune: Tune hyperparameters on the frozen split before training
+            (off unless set).
         tune_trials: Number of tuning trials.
         search_space: Parameter name to distribution spec, e.g.
             ``{type = "loguniform", lower = 1e-5, upper = 1e-3}`` or
@@ -181,7 +182,7 @@ class ModelSpec:
     kind: str
     pretrained: str
     epochs: int = 10
-    tune: bool = True
+    tune: bool = False
     tune_trials: int = 20
     search_space: dict[str, dict] = field(default_factory=dict)
     options: dict = field(default_factory=dict)
