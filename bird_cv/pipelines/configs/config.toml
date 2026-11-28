@@ -147,8 +147,9 @@ checkpoint = "/gscratch/pdoughe1/20260415_163412/training/videomae_behavior/best
 # # detector role; ADR 0009), squared to options.input_size px (default
 # # 224). options replaces the default table, so keep
 # # num_frames and batch_size: { num_frames = 16, batch_size = 8, input = "cage" }
+# # VideoMAE takes only input_size = 224.
 # tune_options = { cpus_per_trial = 8, grace_period = 2 }
-# # VideoMAEClassifier fields (num_frames follows options): stride, batch_size
+# # VideoClassifier fields (num_frames follows options): stride, batch_size
 # infer_options = {}
 #
 # [models.classifier.search_space]
@@ -156,6 +157,22 @@ checkpoint = "/gscratch/pdoughe1/20260415_163412/training/videomae_behavior/best
 # freeze_encoder = { type = "choice", values = [true, false] }
 # weight_decay = { type = "loguniform", lower = 1e-4, upper = 1e-1 }
 # class_weighted_loss = { type = "choice", values = [true, false] }
+#
+# ---- V-JEPA 2 instead (ADR 0010) ----
+# A new kind starts from a bare spec, so set every key below, and drop or
+# replace the VideoMAE checkpoint above. options.input_size is the model's
+# input side (a multiple of 16): bird crops other than 224 are recropped from
+# the cage videos at that size, never resized, into classifier/vjepa2_{size}/.
+# freeze_encoder (default true) trains the attentive pooler and classifier.
+# kind = "vjepa2"
+# pretrained = "facebook/vjepa2-vitl-fpc64-256"
+# epochs = 10
+# tune = false
+# tune_trials = 20
+# options = { num_frames = 16, input_size = 256, batch_size = 8 }
+# # Cage input: { num_frames = 16, input_size = 256, batch_size = 8, input = "cage" }
+# tune_options = { cpus_per_trial = 8, grace_period = 2 }
+# search_space = { lr = { type = "loguniform", lower = 1e-5, upper = 1e-3 }, weight_decay = { type = "loguniform", lower = 1e-4, upper = 1e-1 }, class_weighted_loss = { type = "choice", values = [true, false] } }
 
 [infer.segmenter]
 # "sam2" (prompts from path_to_segmentation_configs, model sam_model_id;

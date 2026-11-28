@@ -1,12 +1,11 @@
-"""Evaluate a fine-tuned VideoMAE model on one split of its clip dataset."""
+"""Evaluate a fine-tuned video classifier on one split of its clip dataset."""
 
 from pathlib import Path
 
 import polars as pl
 import torch
 from torch.utils.data import DataLoader
-from transformers import AutoImageProcessor, VideoMAEForVideoClassification
-
+from bird_cv.classification.backbones import get_backbone
 from bird_cv.classification.train_video_model import (
     BehaviorClipDataset,
     predict_clip_indices,
@@ -24,6 +23,8 @@ def evaluate_video_model(
     device: str = "cuda",
     *,
     split: str = "test",
+    input_size: int = 224,
+    backbone: str = "videomae",
 ) -> dict:
     """Score a model on ``clips_root/{split}/`` with window macro-F1.
 
@@ -43,6 +44,9 @@ def evaluate_video_model(
         device: Device string. Defaults to ``"cuda"``.
         split: Split subdirectory of ``clips_root`` to evaluate. Defaults to
             ``"test"``.
+        input_size: Side in px of the clip frames; must match the checkpoint.
+        backbone: Classifier kind, see
+            :func:`~bird_cv.classification.backbones.get_backbone`.
 
     Returns:
         ``macro_f1`` (over the classes present in truth or predictions, see
@@ -52,9 +56,9 @@ def evaluate_video_model(
     output_path.mkdir(parents=True, exist_ok=True)
     dev = torch.device(device if torch.cuda.is_available() else "cpu")
 
-    processor = AutoImageProcessor.from_pretrained(model_path, num_frames=num_frames)
-    model = VideoMAEForVideoClassification.from_pretrained(model_path)
-    model = model.to(dev)
+    bb = get_backbone(backbone)
+    processor = bb.processor(model_path, num_frames, input_size)
+    model = bb.fine_tuned(model_path, num_frames, input_size).to(dev)
     model.eval()
 
     label_to_idx = dict(model.config.label2id)

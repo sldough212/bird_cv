@@ -1,4 +1,4 @@
-"""Ray Tune + ASHA search over VideoMAE fine-tuning hyperparameters.
+"""Ray Tune + ASHA search over video-classifier fine-tuning hyperparameters.
 
 Each trial runs :func:`train_video_model` without saving checkpoints and
 reports validation window macro-F1 (ADR 0005) after every epoch, so ASHA can
@@ -32,7 +32,7 @@ def tune_video_model(
     gpus_per_trial: float = 1,
     train_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Search VideoMAE hyperparameters on validation window macro-F1.
+    """Search fine-tuning hyperparameters on validation window macro-F1.
 
     Args:
         clips_root: Root with ``train/`` and ``val/`` clip splits (see
@@ -114,5 +114,5 @@ def tune_video_model(
         "epoch": int(best_epoch["epoch"]),
     }
     TrainRun(output_root).best_hyperparameters.write_text(json.dumps(summary, indent=2))
-    print(f"Best VideoMAE config: {summary}")
+    print(f"Best classifier config: {summary}")
     return summary

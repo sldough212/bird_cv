@@ -190,7 +190,9 @@ def infer_video(
                     crops.append(
                         cage_rgb(cropped, classifier.input_size)
                         if cage_input
-                        else bird_crop_rgb(cropped, centers[cage_id][f], cfg.crop_size)
+                        else bird_crop_rgb(
+                            cropped, centers[cage_id][f], classifier.input_size
+                        )
                     )
                 preds = classify_runs(targets, crops, classifier) if targets else {}
                 windows[cage_id].append((start, end, preds))

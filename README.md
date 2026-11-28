@@ -3,7 +3,7 @@
 Computer vision pipeline for detecting and classifying migratory songbird
 behavior in cage-mounted camera footage. Each raw video is standardized to a
 fixed frame rate, split into cages (SAM2), searched for birds (YOLO or RF-DETR) and
-classified per frame (VideoMAE), then scored against Label Studio
+classified per frame (VideoMAE or V-JEPA 2), then scored against Label Studio
 annotations.
 
 ## Setup
@@ -31,7 +31,7 @@ cluster, submit the whole chain as SLURM jobs:
    labels (`[prepare] relabel`), build ground truth on canonical frames,
    assign cameras to the label scheme's frozen split, sample training frames
    and clips.
-2. **build_datasets**: write the YOLO and VideoMAE training data.
+2. **build_datasets**: write the YOLO and classifier training data.
 3. **train** (one job per `[models]` role) and its model evaluation.
 4. **infer**: run end to end on the val cameras for every `[evaluate]`
    (gap fill, det_conf) setting, then on the test cameras at the best one.
@@ -59,6 +59,12 @@ relabel or resplit already downloaded data, rerun prepare with
 instead of bird crops and drops the detector from every stage (ADR 0009);
 remove it to go back. It trains on the same dataset id, so the two runs
 compare directly.
+
+`[models.classifier] kind = "vjepa2"` swaps VideoMAE for V-JEPA 2 (ADR 0010;
+see the example block in `config.toml`). Its `options.input_size` (e.g. 256)
+recrops bird crops from the cage videos at that size on the same dataset id;
+`python bird_cv/pipelines/check_recrop.py CONFIG --dataset ID` checks recrops
+against the Classify videos.
 
 ### Label Studio pipelines
 
@@ -92,7 +98,7 @@ bird_cv/
   preprocessing/   snapshots, ground truth, splits, sampling, standardize, crop
   training/        model registry and training entry points
   detection/       YOLO and RF-DETR backends
-  classification/  VideoMAE backend
+  classification/  VideoMAE and V-JEPA 2 backends
   segmentation/    SAM2 cage segmentation
   inference/       end-to-end inference on raw videos
   evaluation/      all metrics and plots

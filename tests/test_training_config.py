@@ -68,6 +68,33 @@ def test_cage_input_drops_the_detector_role(tmp_path: Path) -> None:
         load_config(path, require_api_key=False)
 
 
+def test_vjepa2_options_are_checked_at_load(tmp_path: Path) -> None:
+    path = _config(tmp_path)
+    text = path.read_text()
+
+    def load(classifier: str):
+        path.write_text(
+            text.replace(
+                "\n[models.classifier]\n", f"\n[models.classifier]\n{classifier}\n"
+            )
+        )
+        return load_config(path, require_api_key=False).models.classifier
+
+    vjepa2 = 'kind = "vjepa2"\npretrained = "facebook/vjepa2-vitl-fpc64-256"\n'
+    spec = load(vjepa2 + "options = { num_frames = 16, input_size = 256 }")
+    assert spec.dataset_name == "vjepa2_256"
+    for bad, match in (
+        ("options = { num_frames = 16, input_size = 250 }", "multiple of 16"),
+        ("options = { num_frames = 15, input_size = 256 }", "even"),
+    ):
+        with pytest.raises(ValueError, match=match):
+            load(vjepa2 + bad)
+    with pytest.raises(ValueError, match="facebook/vjepa2"):
+        load('kind = "vjepa2"\npretrained = "MCG-NJU/videomae-base"')
+    with pytest.raises(ValueError, match="224"):
+        load("options = { num_frames = 16, input_size = 256 }")
+
+
 def test_train_tables_merge_onto_defaults(tmp_path: Path) -> None:
     cfg = load_config(_config(tmp_path, "epochs = 5"), require_api_key=False)
     defaults = ModelsConfig()
