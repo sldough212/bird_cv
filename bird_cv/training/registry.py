@@ -18,6 +18,13 @@ from ray import tune
 from bird_cv.detection.train_yolo import train_select_yolo
 from bird_cv.detection.evaluate_yolo import yolo_presence_metrics
 from bird_cv.detection.track import YoloDetector
+from bird_cv.detection.rf_detr import (
+    RfdetrDetector,
+    rfdetr_presence_metrics,
+    train_rfdetr,
+)
+import logging
+
 import polars as pl
 from bird_cv.core.frames import canonical_to_ls
 from bird_cv.preprocessing.annotations_to_yolo import stream_annotations_to_yolo
@@ -34,6 +41,8 @@ from bird_cv.core.layout import Layout
 
 if TYPE_CHECKING:
     from bird_cv.pipelines.config import ModelSpec
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -88,6 +97,9 @@ class DatasetMedia:
 
 class Trainer(Protocol):
     """Trains one model kind from a :class:`ModelSpec`."""
+
+    # Training data format; kinds sharing one share a dataset directory
+    data_format: str
 
     def checkpoint_path(self, run_dir: Path) -> Path:
         """Where :meth:`train` and :meth:`tune` put the selected checkpoint."""
@@ -232,6 +244,8 @@ class YoloTrainer:
     (e.g. ``grace_period``).
     """
 
+    data_format = "yolo"
+
     def checkpoint_path(self, run_dir: Path) -> Path:
         return run_dir / "best.pt"
 
@@ -359,6 +373,8 @@ class VideoMAETrainer:
     (ADR 0009), ``options.input_size`` the side cage frames are squared
     to; neither is passed on.
     """
+
+    data_format = "videomae"
 
     def checkpoint_path(self, run_dir: Path) -> Path:
         return run_dir / "model" / "best"
@@ -552,9 +568,62 @@ class VideoMAETrainer:
         return ranges
 
 
+class RfdetrTrainer(YoloTrainer):
+    """RF-DETR on the YOLO kind's dataset, scored on val presence F1 (ADR 0010).
+
+    ``spec.pretrained`` is an ``rfdetr`` model class (e.g. ``"RFDETRSmall"``);
+    ``spec.options`` are its ``model.train`` arguments. Not tunable.
+    """
+
+    def checkpoint_path(self, run_dir: Path) -> Path:
+        return run_dir / "checkpoint_best_total.pth"
+
+    def train(self, spec, dataset, run_dir, hyperparameters, context) -> TrainResult:
+        result = train_rfdetr(
+            dataset_root=dataset,
+            run_dir=run_dir,
+            pretrained=spec.pretrained,
+            epochs=spec.epochs,
+            device=context.device,
+            train_options=spec.options | hyperparameters,
+            select_conf=context.select_conf,
+            iou_threshold=context.iou_threshold,
+        )
+        return TrainResult(
+            checkpoint=result.pop("checkpoint"),
+            hyperparameters=dict(hyperparameters),
+            metrics=result,
+        )
+
+    def tune(self, spec, dataset, run_dir, context) -> TrainResult:
+        logger.warning("rfdetr has no tuning; training once with fixed options")
+        return self.train(spec, dataset, run_dir, {}, context)
+
+    def evaluate(
+        self, checkpoint, spec, dataset, split, output_dir, context
+    ) -> dict[str, Any]:
+        return rfdetr_presence_metrics(
+            dataset,
+            checkpoint,
+            split=split,
+            conf=context.select_conf,
+            iou_threshold=context.iou_threshold,
+        )
+
+    def infer_option_keys(self) -> set[str]:
+        """:class:`RfdetrDetector` fields; ``tracker_path`` is required."""
+        return {"tracker_path", "threshold", "batch_size"}
+
+    def load_for_inference(self, checkpoint: Path, spec: "ModelSpec") -> Any:
+        """An :class:`RfdetrDetector`; ``infer_options`` are its fields."""
+        if "tracker_path" not in spec.infer_options:
+            raise ValueError("rfdetr needs infer_options.tracker_path")
+        return RfdetrDetector(model_path=checkpoint, **spec.infer_options)
+
+
 def _trainers() -> dict[str, type]:
     """The registry: ``ModelSpec.kind`` to trainer class."""
-    return {"yolo": YoloTrainer, "videomae": VideoMAETrainer}
+    return {"yolo": YoloTrainer, "rfdetr": RfdetrTrainer, "videomae": VideoMAETrainer}
 
 
 def trainer_kinds() -> list[str]:

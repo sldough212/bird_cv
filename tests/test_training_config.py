@@ -84,6 +84,26 @@ def test_train_tables_merge_onto_defaults(tmp_path: Path) -> None:
     assert _without_checkpoints(models) == defaults
 
 
+def test_kind_swaps_the_detector_subtable(tmp_path: Path) -> None:
+    path = _config(tmp_path)
+    text = path.read_text()
+    path.write_text(text.replace('kind = "yolo"', 'kind = "rfdetr"', 1))
+    detector = load_config(path, require_api_key=False).models.detector
+    assert (detector.kind, detector.pretrained, detector.tune) == (
+        "rfdetr",
+        "RFDETRSmall",
+        False,
+    )
+    assert detector.checkpoint is None  # the yolo subtable's stays there
+    assert set(detector.infer_options) == {"tracker_path", "threshold"}
+    assert detector.dataset_name == "yolo"
+
+    # An inactive subtable is validated too
+    path.write_text(text.replace("{ threshold = 0.05 }", "{ conf = 0.05 }", 1))
+    with pytest.raises(ValueError, match="rfdetr.*conf"):
+        load_config(path, require_api_key=False)
+
+
 def test_registry_and_search_space() -> None:
     assert isinstance(get_trainer("yolo"), YoloTrainer)
     assert isinstance(get_trainer("videomae"), VideoMAETrainer)

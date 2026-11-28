@@ -201,8 +201,10 @@ class ModelSpec:
 
     @property
     def dataset_name(self) -> str:
-        """Directory of its training data: the kind, suffixed by a non-default input."""
-        return self.kind if self.input == "bbox_crop" else f"{self.kind}_{self.input}"
+        """Directory of its training data: the kind's data format, suffixed by a
+        non-default input."""
+        name = get_trainer(self.kind).data_format
+        return name if self.input == "bbox_crop" else f"{name}_{self.input}"
 
 
 @dataclass
@@ -269,12 +271,49 @@ class ModelsConfig:
         }
 
 
+def _role_spec(where: str, kind: str, default: ModelSpec, table: dict) -> dict:
+    """One kind's merged spec for a role, validated against the registry.
+
+    ``table`` is the role table minus its kind subtables, merged with the
+    ``kind`` subtable (``options``, ``tune_options`` and ``infer_options``
+    key by key).
+    """
+    unknown = set(table) - {f.name for f in fields(ModelSpec)}
+    if unknown:
+        raise ValueError(f"Unknown keys in {where}: {sorted(unknown)}")
+    if kind == default.kind:
+        base = msgspec.to_builtins(default, enc_hook=lambda p: str(p))
+    elif "pretrained" not in table:
+        raise ValueError(f"{where} kind {kind!r} must set 'pretrained'")
+    else:
+        base = {}
+    spec = base | table | {"kind": kind}
+    check_search_space(spec.get("search_space", {}), where=where)
+    options = spec.get("infer_options", {})
+    if not isinstance(options, dict):
+        raise ValueError(f"{where} infer_options must be a table")
+    known = get_trainer(kind).infer_option_keys()
+    if set(options) - known:
+        raise ValueError(
+            f"{where} infer_options has unknown keys "
+            f"{sorted(set(options) - known)} for kind {kind!r}; "
+            f"known: {sorted(known)}"
+        )
+    checkpoint = spec.get("checkpoint")
+    if checkpoint is not None and not Path(checkpoint).is_absolute():
+        raise ValueError(f"{where} checkpoint must be absolute: {checkpoint!r}")
+    return spec
+
+
 def _convert_models_config(table: dict, dec_hook) -> ModelsConfig:
     """Build :class:`ModelsConfig`, merging role tables onto their defaults.
 
-    A role table that keeps the default ``kind`` overrides only the keys it
-    sets; one that changes ``kind`` starts from a bare :class:`ModelSpec`.
-    Kinds, search spaces and ``infer_options`` are validated against
+    A role table may hold one subtable per kind (``[models.detector.rfdetr]``);
+    ``kind`` picks which one merges onto the role's shared keys, so swapping
+    models is one word. Every subtable is validated, active or not. A spec
+    that keeps the default ``kind`` overrides only the keys it sets; one that
+    changes ``kind`` starts from a bare :class:`ModelSpec`. Kinds, search
+    spaces and ``infer_options`` are validated against
     :mod:`bird_cv.training.registry` (without importing Ray or any model).
 
     Raises:
@@ -287,45 +326,32 @@ def _convert_models_config(table: dict, dec_hook) -> ModelsConfig:
     unknown = set(table) - set(defaults)
     if unknown:
         raise ValueError(f"Unknown keys in [models]: {sorted(unknown)}")
-    spec_keys = {f.name for f in fields(ModelSpec)}
     merged = {}
     for role, default in defaults.items():
         where = f"[models.{role}]"
         role_table = table.get(role, {})
         if not isinstance(role_table, dict):
             raise ValueError(f"{where} must be a table")
-        unknown = set(role_table) - spec_keys
-        if unknown:
-            raise ValueError(f"Unknown keys in {where}: {sorted(unknown)}")
         kind = role_table.get("kind", default.kind)
         if kind not in trainer_kinds():
             raise ValueError(
                 f"{where} kind {kind!r} has no trainer; known: {trainer_kinds()}"
             )
-        if kind == default.kind:
-            base = msgspec.to_builtins(default, enc_hook=lambda p: str(p))
-        else:
-            missing = sorted({"pretrained"} - set(role_table))
-            if missing:
-                raise ValueError(
-                    f"{where} changes kind to {kind!r}, so it must set {missing}"
-                )
-            base = {}
-        merged[role] = base | role_table
-        check_search_space(merged[role].get("search_space", {}), where=where)
-        options = merged[role].get("infer_options", {})
-        if not isinstance(options, dict):
-            raise ValueError(f"{where} infer_options must be a table")
-        known = get_trainer(kind).infer_option_keys()
-        if set(options) - known:
-            raise ValueError(
-                f"{where} infer_options has unknown keys "
-                f"{sorted(set(options) - known)} for kind {kind!r}; "
-                f"known: {sorted(known)}"
-            )
-        checkpoint = merged[role].get("checkpoint")
-        if checkpoint is not None and not Path(checkpoint).is_absolute():
-            raise ValueError(f"{where} checkpoint must be absolute: {checkpoint!r}")
+        subtables = {k: v for k, v in role_table.items() if k in trainer_kinds()}
+        shared = {
+            k: v for k, v in role_table.items() if k not in subtables and k != "kind"
+        }
+        for sub_kind in subtables.keys() | {kind}:
+            sub = subtables.get(sub_kind, {})
+            if not isinstance(sub, dict):
+                raise ValueError(f"{where}.{sub_kind} must be a table")
+            spec_table = shared | sub
+            for key in ("options", "tune_options", "infer_options"):
+                if isinstance(shared.get(key), dict) and isinstance(sub.get(key), dict):
+                    spec_table[key] = shared[key] | sub[key]
+            spec = _role_spec(f"{where}.{sub_kind}", sub_kind, default, spec_table)
+            if sub_kind == kind:
+                merged[role] = spec
     models = msgspec.convert(merged, type=ModelsConfig, dec_hook=dec_hook)
     if models.classifier.input not in ("bbox_crop", "cage"):
         raise ValueError(

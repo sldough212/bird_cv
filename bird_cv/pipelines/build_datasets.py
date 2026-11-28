@@ -68,7 +68,8 @@ def dataset_config(
     return {
         "builder_version": builder_version,
         "role": role,
-        "kind": spec.kind,
+        # The data format, so kinds sharing one share the dataset
+        "kind": get_trainer(spec.kind).data_format,
         "num_frames": spec.options.get("num_frames"),
         "dataset_key": key,
         "split": [list(r) for r in split.sort("camera_id").iter_rows()],
