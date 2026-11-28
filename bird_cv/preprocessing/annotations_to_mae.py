@@ -10,7 +10,7 @@ import numpy as np
 import polars as pl
 from tqdm import tqdm
 
-from bird_cv.preprocessing.crop import center_window, square_frame
+from bird_cv.preprocessing.crop import center_window, crop_bird, square_frame
 from bird_cv.core.ids import get_local_path, parse_media_path, with_raw_video_ids
 
 
@@ -126,6 +126,8 @@ def process_item(
     *,
     ranges_by_cage: Mapping[Tuple[str, str, str], List[ClipRange]] | None = None,
     square_size: int | None = None,
+    crop_centers: Mapping[int, Tuple[float, float]] | None = None,
+    crop_size: int = 224,
 ) -> None:
     """Convert one Label Studio behavior task into VideoMAE training clips.
 
@@ -175,6 +177,11 @@ def process_item(
         square_size: If given, write every frame through
             :func:`~bird_cv.preprocessing.crop.square_frame` at this size
             (whole cage frames).
+        crop_centers: If given, the task is a cage video and these are its
+            smoothed normalized box centers by 0-based frame: frames become
+            ``crop_size`` bird crops of just those frames, in order, as a
+            bird-crop video's are (ranges index them like one).
+        crop_size: Side in px of the bird crops from ``crop_centers``.
 
     Returns:
         None. Clip frames are written to disk as a side effect.
@@ -214,6 +221,17 @@ def process_item(
         return
     if square_size is not None:
         frames = [square_frame(f, square_size) for f in frames]
+    if crop_centers is not None:
+        boxed = [f for f in sorted(crop_centers) if f < len(frames)]
+        if len(boxed) < len(crop_centers):
+            # Only trailing crop frames go, so earlier ones keep their index
+            print(
+                f"{len(crop_centers) - len(boxed)} boxes past the end of"
+                f" {full_video_path} ({len(frames)} frames), dropped."
+            )
+        frames = [
+            crop_bird(frames[f], *crop_centers[f], crop_size=crop_size) for f in boxed
+        ]
 
     if ranges_by_cage is not None:
         for range_idx, (label, first, last) in enumerate(
@@ -286,6 +304,11 @@ def stream_annotations_to_mae(
     *,
     ranges_by_cage: Mapping[Tuple[str, str, str], List[ClipRange]] | None = None,
     square_size: int | None = None,
+    crop_centers_by_cage: Mapping[
+        Tuple[str, str, str], Mapping[int, Tuple[float, float]]
+    ]
+    | None = None,
+    crop_size: int = 224,
 ) -> None:
     """Stream a behavior annotation JSON and build VideoMAE train/val/test clips.
 
@@ -312,6 +335,10 @@ def stream_annotations_to_mae(
         ranges_by_cage: Clip these ranges instead of the annotations (see
             :func:`process_item`).
         square_size: Square frames to this size (see :func:`process_item`).
+        crop_centers_by_cage: Recrop each cage video's bird at ``crop_size``
+            from its ``crop_centers`` (see :func:`process_item`), by
+            ``(camera_id, video_id, cage)``; needs ``ranges_by_cage``.
+        crop_size: Side in px of those crops.
 
     Returns:
         None. Clip frames are written to disk as a side effect.
@@ -320,11 +347,20 @@ def stream_annotations_to_mae(
     guidance = load_split_guidance(path_to_guidance)
 
     with open(path_to_annotations, "rb") as f:
-        items = ijson.items(f, "item")
+        # Each task carries only its own cage's centers
+        pairs = (
+            (
+                item,
+                None
+                if crop_centers_by_cage is None
+                else crop_centers_by_cage.get(parse_media_path(item["data"]["video"])),
+            )
+            for item in ijson.items(f, "item")
+        )
 
         if processes == 1:
             # Serial execution (recommended for unit tests)
-            for item in items:
+            for item, centers in pairs:
                 process_item(
                     item=item,
                     path_to_videos=path_to_videos,
@@ -334,11 +370,13 @@ def stream_annotations_to_mae(
                     stride=stride,
                     ranges_by_cage=ranges_by_cage,
                     square_size=square_size,
+                    crop_centers=centers,
+                    crop_size=crop_size,
                 )
         else:
             # Parallel execution
             worker_func = partial(
-                process_item,
+                _process_pair,
                 path_to_videos=path_to_videos,
                 path_to_output=path_to_output,
                 guidance=guidance,
@@ -346,11 +384,20 @@ def stream_annotations_to_mae(
                 stride=stride,
                 ranges_by_cage=ranges_by_cage,
                 square_size=square_size,
+                crop_size=crop_size,
             )
 
             with Pool(processes=processes) as pool:
                 for _ in tqdm(
-                    pool.imap(worker_func, items, chunksize=1),
+                    pool.imap(worker_func, pairs, chunksize=1),
                     desc="Processing behavior clips",
                 ):
                     pass
+
+
+def _process_pair(
+    pair: Tuple[Dict[str, Any], Mapping[int, Tuple[float, float]] | None],
+    **kwargs: Any,
+) -> None:
+    """:func:`process_item` on an ``(item, crop_centers)`` pair, for ``Pool.imap``."""
+    process_item(pair[0], crop_centers=pair[1], **kwargs)

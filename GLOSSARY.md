@@ -25,6 +25,9 @@ A standardized video cropped and masked to one cage. The media labeled in the De
 A 224 px square video centered on the bird's box in a cage video, containing only frames that have a box. The media labeled in the Classify project.
 _Avoid_: bbox video (in prose), crop video
 
+**Recrop**:
+Bird crops of a classifier's `input_size` other than 224 px, cut from the cage video's boxed frames as a bird-crop video's are, never resized (ADR 0011).
+
 **Cage clip**:
 A VideoMAE training clip of whole cage-video frames, squared to 224 px, for a classifier with `input = "cage"` (ADR 0009). Includes `no_bird` clips.
 

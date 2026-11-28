@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 import torch
 from PIL import Image
+from transformers import AutoImageProcessor, VideoMAEForVideoClassification
 
 from bird_cv.classification import train_video_model as tvm
 from bird_cv.detection import train_yolo as ty
@@ -40,10 +41,10 @@ def test_val_missing_class_uses_train_indices(tmp_path, monkeypatch):
 
     monkeypatch.setattr(tvm, "BehaviorClipDataset", RecordingDataset)
     monkeypatch.setattr(
-        tvm.AutoImageProcessor, "from_pretrained", lambda *a, **k: stub_processor
+        AutoImageProcessor, "from_pretrained", lambda *a, **k: stub_processor
     )
     monkeypatch.setattr(
-        tvm.VideoMAEForVideoClassification,
+        VideoMAEForVideoClassification,
         "from_pretrained",
         MagicMock(side_effect=StopBeforeModel),
     )

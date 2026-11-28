@@ -124,7 +124,6 @@ class InferConfig:
     gap_fill_frames: int = 8
     # Detection confidence threshold for e2e output (not Label Studio pre-labels).
     det_conf: float = 0.25
-    crop_size: int = 224
     segmenter: SegmenterSpec = field(default_factory=SegmenterSpec)
 
 
@@ -169,7 +168,8 @@ class ModelSpec:
             the default, or ``"cage"``) the media it classifies: ``"cage"``
             trains and infers on whole cage frames, squared to
             ``input_size`` px (default 224), and drops the detector role
-            (ADR 0009).
+            (ADR 0009). Bird crops are ``input_size`` px too: other than 224,
+            they are recropped from the cage videos (ADR 0011).
         tune_options: Arguments for the tuner only (e.g. ``grace_period``,
             ``cpus_per_trial``).
         checkpoint: Weights inference loads when it isn't given a training
@@ -196,15 +196,16 @@ class ModelSpec:
 
     @property
     def input_size(self) -> int:
-        """Side in px cage frames are squared to: ``options.input_size``, 224 if unset."""
+        """Side in px of bird crops or squared cage frames: ``options.input_size``, 224 if unset."""
         return self.options.get("input_size", 224)
 
     @property
     def dataset_name(self) -> str:
         """Directory of its training data: the kind's data format, suffixed by a
-        non-default input."""
+        non-default input and size."""
         name = get_trainer(self.kind).data_format
-        return name if self.input == "bbox_crop" else f"{name}_{self.input}"
+        name = name if self.input == "bbox_crop" else f"{name}_{self.input}"
+        return name if self.input_size == 224 else f"{name}_{self.input_size}"
 
 
 @dataclass
@@ -372,6 +373,8 @@ def _convert_models_config(table: dict, dec_hook) -> ModelsConfig:
             f"[models.classifier] options.input must be 'bbox_crop' or 'cage',"
             f" not {models.classifier.input!r}"
         )
+    for role, role_spec in models.roles().items():
+        get_trainer(role_spec.kind).check_spec(role_spec, f"[models.{role}]")
     return models
 
 

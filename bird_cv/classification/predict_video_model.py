@@ -1,15 +1,14 @@
-"""Windowed VideoMAE inference: load a model and predict behavior segments for a video."""
+"""Windowed video-classifier inference: load a model and predict behavior per frame."""
 
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
-from transformers import AutoImageProcessor, VideoMAEForVideoClassification
-
+from bird_cv.classification.backbones import get_backbone, pixel_values
 from bird_cv.classification.types import FramePrediction
 
 
@@ -22,7 +21,7 @@ class VideoWindowDataset(Dataset):
 
     Args:
         frames: RGB frames, in order.
-        processor: HuggingFace image processor for the VideoMAE model.
+        processor: The model's HuggingFace image or video processor.
         num_frames: Number of frames per window. Must match the model's input size.
         stride: Step size between consecutive windows in frames.
         cover_tail: If True, add one final window ending on the last frame
@@ -33,7 +32,7 @@ class VideoWindowDataset(Dataset):
     def __init__(
         self,
         frames: Sequence[np.ndarray],
-        processor: AutoImageProcessor,
+        processor: Any,
         num_frames: int = 16,
         stride: int = 8,
         *,
@@ -54,30 +53,35 @@ class VideoWindowDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         start = self.start_frames[idx]
         window = self.frames[start : start + self.num_frames]
-        inputs = self.processor(window, return_tensors="pt")
         return {
-            "pixel_values": inputs["pixel_values"].squeeze(0),
+            "pixel_values": pixel_values(self.processor, window),
             "start_frame": start,
         }
 
 
-def load_videomae_model(
-    model_path: str, num_frames: int = 16
-) -> tuple[VideoMAEForVideoClassification, AutoImageProcessor, torch.device, dict]:
-    """Load a fine-tuned VideoMAE model and processor for inference.
+def load_video_model(
+    model_path: str,
+    num_frames: int = 16,
+    input_size: int = 224,
+    backbone: str = "videomae",
+) -> tuple[Any, Any, torch.device, dict]:
+    """Load a fine-tuned video classifier and its processor for inference.
 
     Args:
-        model_path: Path to the VideoMAE model weights.
+        model_path: Path to the fine-tuned weights.
         num_frames: Number of frames per window the processor expects. Defaults to 16.
+        input_size: Side in px of the frames; must match the checkpoint.
+        backbone: Classifier kind, see
+            :func:`~bird_cv.classification.backbones.get_backbone`.
 
     Returns:
         Tuple of ``(model, processor, device, id_to_label)``, with the model
         already moved to ``device`` and set to eval mode.
     """
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    processor = AutoImageProcessor.from_pretrained(model_path, num_frames=num_frames)
-    model = VideoMAEForVideoClassification.from_pretrained(model_path)
-    model = model.to(dev)
+    bb = get_backbone(backbone)
+    model = bb.fine_tuned(model_path, num_frames, input_size).to(dev)
+    processor = bb.processor(model_path, num_frames, input_size)
     model.eval()
     id_to_label = model.config.id2label
     return model, processor, dev, id_to_label
@@ -85,8 +89,8 @@ def load_videomae_model(
 
 def _predict_frame_votes(
     frames: Sequence[np.ndarray],
-    model: VideoMAEForVideoClassification,
-    processor: AutoImageProcessor,
+    model: Any,
+    processor: Any,
     dev: torch.device,
     num_frames: int = 16,
     stride: int = 8,
@@ -94,15 +98,15 @@ def _predict_frame_votes(
     *,
     cover_tail: bool = True,
 ) -> list[list[int]]:
-    """Run windowed VideoMAE inference and collect per-frame class-id votes.
+    """Run windowed inference and collect per-frame class-id votes.
 
     Slides a ``num_frames``-frame window across the frames and classifies
     each window.
 
     Args:
         frames: RGB frames, in order.
-        model: Loaded VideoMAE classification model, already on ``dev``.
-        processor: HuggingFace image processor for the VideoMAE model.
+        model: Loaded classification model, already on ``dev``.
+        processor: The model's HuggingFace image or video processor.
         dev: Device the model is loaded on.
         num_frames: Frames per window. Must match the model's input size.
             Defaults to 16.
@@ -124,8 +128,7 @@ def _predict_frame_votes(
     window_preds: list[tuple[int, int]] = []
     with torch.no_grad():
         for batch in loader:
-            pixel_values = batch["pixel_values"].to(dev)
-            outputs = model(pixel_values=pixel_values)
+            outputs = model(batch["pixel_values"].to(dev))
             pred_ids = outputs.logits.argmax(dim=-1).cpu().tolist()
             start_frames = batch["start_frame"].tolist()
             window_preds.extend(zip(start_frames, pred_ids))
@@ -142,8 +145,8 @@ def _predict_frame_votes(
 
 def predict_frame_list(
     frames: Sequence[np.ndarray],
-    model: VideoMAEForVideoClassification,
-    processor: AutoImageProcessor,
+    model: Any,
+    processor: Any,
     dev: torch.device,
     id_to_label: dict,
     num_frames: int = 16,
@@ -152,12 +155,12 @@ def predict_frame_list(
     *,
     cover_tail: bool = True,
 ) -> list[FramePrediction]:
-    """Windowed VideoMAE inference over in-memory RGB frames, one row per frame.
+    """Windowed inference over in-memory RGB frames, one row per frame.
 
     Args:
         frames: RGB frames, in order.
-        model: Loaded VideoMAE classification model, already on ``dev``.
-        processor: HuggingFace image processor for the VideoMAE model.
+        model: Loaded classification model, already on ``dev``.
+        processor: The model's HuggingFace image or video processor.
         dev: Device the model is loaded on.
         id_to_label: Mapping from predicted class id to label name.
         num_frames: Frames per window. Defaults to 16.
@@ -206,17 +209,19 @@ def _votes_to_predictions(
 
 
 @dataclass
-class VideoMAEClassifier:
-    """:class:`~bird_cv.inference.protocols.FrameClassifier` backed by VideoMAE.
+class VideoClassifier:
+    """:class:`~bird_cv.inference.protocols.FrameClassifier` backed by a video model.
 
     Attributes:
-        model_path: Path to the VideoMAE model weights.
+        model_path: Path to the fine-tuned weights.
         num_frames: Frames per window. Must match the model's input size.
         stride: Step size between consecutive windows in frames.
         batch_size: Dataloader batch size for windowed inference.
-        input_type: Media it was trained on: 224 px bird crops, or whole
-            cage frames squared to ``input_size`` px.
-        input_size: Side in px cage frames are squared to.
+        input_type: Media it was trained on: bird crops, or whole cage
+            frames squared to ``input_size`` px.
+        input_size: Side in px of its bird crops or squared cage frames.
+        backbone: Classifier kind, see
+            :func:`~bird_cv.classification.backbones.get_backbone`.
     """
 
     model_path: str
@@ -225,10 +230,11 @@ class VideoMAEClassifier:
     batch_size: int = 4
     input_type: Literal["bbox_crop", "cage"] = "bbox_crop"
     input_size: int = 224
+    backbone: str = "videomae"
 
     def __post_init__(self) -> None:
-        self.model, self.processor, self.device, self.id_to_label = load_videomae_model(
-            self.model_path, num_frames=self.num_frames
+        self.model, self.processor, self.device, self.id_to_label = load_video_model(
+            self.model_path, self.num_frames, self.input_size, self.backbone
         )
 
     def predict_frames(self, frames: Sequence[np.ndarray]) -> list[FramePrediction]:

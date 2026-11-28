@@ -27,11 +27,12 @@ import logging
 
 import polars as pl
 from bird_cv.core.frames import canonical_to_ls
+from bird_cv.preprocessing.crop import ground_truth_crop_centers
 from bird_cv.preprocessing.annotations_to_yolo import stream_annotations_to_yolo
 from bird_cv.classification.train_video_model import train_video_model
 from bird_cv.classification.tune_video_model import tune_video_model
 from bird_cv.classification.evaluate_video_model import evaluate_video_model
-from bird_cv.classification.predict_video_model import VideoMAEClassifier
+from bird_cv.classification.predict_video_model import VideoClassifier
 from bird_cv.preprocessing.annotations_to_mae import (
     label_dir_name,
     stream_annotations_to_mae,
@@ -136,6 +137,10 @@ class Trainer(Protocol):
 
     def infer_option_keys(self) -> set[str]:
         """``infer_options`` this kind accepts (checked at config load)."""
+        ...
+
+    def check_spec(self, spec: "ModelSpec", where: str) -> None:
+        """Raise ``ValueError`` on options this kind can't use (at config load)."""
         ...
 
     def load_for_inference(self, checkpoint: Path, spec: "ModelSpec") -> Any:
@@ -301,6 +306,9 @@ class YoloTrainer:
         """:class:`YoloDetector` fields; ``tracker_path`` is required."""
         return {"tracker_path", "conf", "iou", "max_det"}
 
+    def check_spec(self, spec, where) -> None:
+        return None
+
     def load_for_inference(self, checkpoint: Path, spec: "ModelSpec") -> Any:
         """A :class:`YoloDetector`; ``infer_options`` are its fields."""
         if "tracker_path" not in spec.infer_options:
@@ -367,14 +375,14 @@ class VideoMAETrainer:
     """VideoMAE clip classifier, selected on val window macro-F1 (ADR 0005).
 
     ``spec.options`` are :func:`train_video_model` keyword arguments for
-    every run (e.g. ``num_frames``, ``batch_size``); ``spec.tune_options``
-    are :func:`tune_video_model` arguments (``cpus_per_trial``,
-    ``grace_period``). ``options.input`` picks bird-crop or cage clips
-    (ADR 0009), ``options.input_size`` the side cage frames are squared
-    to; neither is passed on.
+    every run (e.g. ``num_frames``, ``batch_size``, ``input_size``);
+    ``spec.tune_options`` are :func:`tune_video_model` arguments
+    (``cpus_per_trial``, ``grace_period``). ``options.input`` picks
+    bird-crop or cage clips (ADR 0009) and isn't passed on.
     """
 
     data_format = "videomae"
+    backbone = "videomae"
 
     def checkpoint_path(self, run_dir: Path) -> Path:
         return run_dir / "model" / "best"
@@ -387,12 +395,10 @@ class VideoMAETrainer:
             {
                 "epochs": spec.epochs,
                 "device": "cpu" if context.device == "cpu" else "cuda",
+                "backbone": self.backbone,
+                "input_size": spec.input_size,
             }
-            | {
-                k: v
-                for k, v in spec.options.items()
-                if k not in ("input", "input_size")
-            }
+            | {k: v for k, v in spec.options.items() if k != "input"}
             | overrides
         )
 
@@ -436,30 +442,44 @@ class VideoMAETrainer:
             output_path=output_dir,
             num_frames=spec.options.get("num_frames", 16),
             split=split,
+            input_size=spec.input_size,
+            backbone=self.backbone,
         )
 
     def infer_option_keys(self) -> set[str]:
-        """:class:`VideoMAEClassifier` fields other than the checkpoint."""
+        """:class:`VideoClassifier` fields other than the checkpoint."""
         return {"num_frames", "stride", "batch_size"}
 
+    def check_spec(self, spec, where) -> None:
+        """VideoMAE's position embeddings are fixed to its 224 px checkpoint."""
+        if spec.input_size != 224:
+            raise ValueError(f"{where} videomae needs options.input_size = 224")
+
     def load_for_inference(self, checkpoint: Path, spec: "ModelSpec") -> Any:
-        """A :class:`VideoMAEClassifier`; ``infer_options`` are its fields.
+        """A :class:`VideoClassifier`; ``infer_options`` are its fields.
 
         ``num_frames`` follows training (``spec.options``) unless set there.
         """
         trained = {k: v for k, v in spec.options.items() if k == "num_frames"}
-        return VideoMAEClassifier(
+        return VideoClassifier(
             model_path=str(checkpoint),
             input_type=spec.input,
             input_size=spec.input_size,
+            backbone=self.backbone,
             **(trained | spec.infer_options),
         )
 
     def prepared_selection(self, layout, dataset_id) -> Path:
         return layout.videomae_clips(dataset_id)
 
+    @staticmethod
+    def _recrop(spec) -> bool:
+        """Bird crops of a size other than the Classify videos' 224 px."""
+        return spec.input == "bbox_crop" and spec.input_size != 224
+
     def dataset_export(self, media, spec):
-        return media.detect_export if spec.input == "cage" else media.classify_export
+        cage_media = spec.input == "cage" or self._recrop(spec)
+        return media.detect_export if cage_media else media.classify_export
 
     def build_dataset(
         self, selection, ground_truth, spec, media, out_dir, guidance_path
@@ -469,8 +489,10 @@ class VideoMAETrainer:
         Bird-crop clips by default: crop frame ``k`` is the cage's ``k``-th
         boxed canonical frame (ADR 0002). With ``input = "cage"``, whole cage
         frames squared to ``input_size`` px, cut from the cage videos (frame ``k`` is
-        canonical ``k - 1``). Clips shorter than ``num_frames`` widen into
-        neighbouring frames.
+        canonical ``k - 1``). Bird crops other than 224 px are recropped
+        from the cage videos at ``input_size`` around the smoothed
+        ground-truth box centers, as inference crops them (ADR 0011).
+        Clips shorter than ``num_frames`` widen into neighbouring frames.
 
         Raises:
             ValueError: If a bird-crop clip covers a frame with no box, or
@@ -497,6 +519,10 @@ class VideoMAETrainer:
             processes=media.processes,
             ranges_by_cage=ranges,
             square_size=spec.input_size if spec.input == "cage" else None,
+            crop_centers_by_cage=ground_truth_crop_centers(ground_truth, ranges)
+            if self._recrop(spec)
+            else None,
+            crop_size=spec.input_size,
         )
         split_of = dict(selection.select("camera_id", "split").unique().iter_rows())
         missing = [
@@ -622,9 +648,40 @@ class RfdetrTrainer(YoloTrainer):
         return RfdetrDetector(model_path=checkpoint, **spec.infer_options)
 
 
+class VJEPA2Trainer(VideoMAETrainer):
+    """V-JEPA 2 clip classifier: VideoMAE's training with another backbone (ADR 0011).
+
+    Any ``input_size`` that fits its 16 px patches; a frozen encoder still
+    trains the attentive pooler and the classifier.
+    """
+
+    backbone = "vjepa2"
+
+    def check_spec(self, spec, where) -> None:
+        num_frames = spec.options.get("num_frames", 16)
+        if spec.input_size % 16 or num_frames % 2:
+            raise ValueError(
+                f"{where} vjepa2 needs options.input_size a multiple of 16 and"
+                f" an even options.num_frames, not {spec.input_size}, {num_frames}"
+            )
+        if not (
+            spec.pretrained.startswith("facebook/vjepa2")
+            or Path(spec.pretrained).is_absolute()
+        ):
+            raise ValueError(
+                f"{where} vjepa2 pretrained must be a facebook/vjepa2-* model"
+                f" or an absolute path, not {spec.pretrained!r}"
+            )
+
+
 def _trainers() -> dict[str, type]:
     """The registry: ``ModelSpec.kind`` to trainer class."""
-    return {"yolo": YoloTrainer, "rfdetr": RfdetrTrainer, "videomae": VideoMAETrainer}
+    return {
+        "yolo": YoloTrainer,
+        "rfdetr": RfdetrTrainer,
+        "videomae": VideoMAETrainer,
+        "vjepa2": VJEPA2Trainer,
+    }
 
 
 def trainer_kinds() -> list[str]:

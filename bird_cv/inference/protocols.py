@@ -43,7 +43,7 @@ class FrameClassifier(Protocol):
         ...
 
     num_frames: int
-    # Side in px cage frames are squared to, for ``cage`` input
+    # Side in px of its bird crops, or of cage frames squared for ``cage`` input
     input_size: int
 
     def predict_frames(self, frames: Sequence[np.ndarray]) -> list[FramePrediction]:

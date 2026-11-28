@@ -68,6 +68,40 @@ def test_cage_input_drops_the_detector_role(tmp_path: Path) -> None:
         load_config(path, require_api_key=False)
 
 
+def test_vjepa2_options_are_checked_at_load(tmp_path: Path) -> None:
+    path = _config(tmp_path)
+    text = path.read_text()
+
+    def load(*edits: tuple[str, str], kind: str = "vjepa2"):
+        new = text.replace('kind = "videomae"', f'kind = "{kind}"', 1)
+        for old, replacement in edits:
+            assert old in new
+            new = new.replace(old, replacement, 1)
+        path.write_text(new)
+        return load_config(path, require_api_key=False).models.classifier
+
+    # Swapping is the kind line alone
+    spec = load()
+    assert (spec.kind, spec.dataset_name) == ("vjepa2", "videomae_256")
+    options = "options = { num_frames = 16, input_size = 256, batch_size = 8 }"
+    for bad, match in (
+        ("num_frames = 16, input_size = 250", "multiple of 16"),
+        ("num_frames = 15, input_size = 256", "even"),
+    ):
+        with pytest.raises(ValueError, match=match):
+            load((options, f"options = {{ {bad} }}"))
+    with pytest.raises(ValueError, match="facebook/vjepa2"):
+        load(("facebook/vjepa2-vitl-fpc64-256", "MCG-NJU/videomae-base"))
+    with pytest.raises(ValueError, match="224"):
+        load(
+            (
+                "\n[models.classifier.videomae]\n",
+                "\n[models.classifier.videomae]\noptions = { num_frames = 16, input_size = 256 }\n",
+            ),
+            kind="videomae",
+        )
+
+
 def test_train_tables_merge_onto_defaults(tmp_path: Path) -> None:
     cfg = load_config(_config(tmp_path, "epochs = 5"), require_api_key=False)
     defaults = ModelsConfig()

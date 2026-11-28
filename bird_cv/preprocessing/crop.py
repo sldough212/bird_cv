@@ -2,6 +2,7 @@
 
 import json
 import tempfile
+from collections.abc import Collection
 from pathlib import Path
 
 import cv2
@@ -219,6 +220,34 @@ def smooth_centers(
     cy_smooth = np.convolve(np.pad(cy, pad, mode="edge"), kernel, mode="valid")
     # An even window yields one extra trailing value; drop it
     return cx_smooth[:n], cy_smooth[:n]
+
+
+def ground_truth_crop_centers(
+    ground_truth: pl.DataFrame, keys: Collection[tuple[str, str, str]]
+) -> dict[tuple[str, str, str], dict[int, tuple[float, float]]]:
+    """Smoothed normalized box center by canonical frame, for each cage in ``keys``.
+
+    Centers are smoothed across each cage's boxed frames in order, as for
+    inference bird crops (:func:`bird_cv.inference.classify.smoothed_box_centers`).
+    """
+    boxed = (
+        ground_truth.filter(pl.col("bbox_left").is_not_null())
+        .sort("camera_id", "video_id", "cage_id", "frame")
+        .group_by("camera_id", "video_id", "cage_id", maintain_order=True)
+        .agg(
+            "frame",
+            cx=pl.col("bbox_left") + pl.col("bbox_width") / 2,
+            cy=pl.col("bbox_top") + pl.col("bbox_height") / 2,
+        )
+    )
+    centers = {}
+    for camera_id, video_id, cage_id, frames, cx, cy in boxed.iter_rows():
+        if (camera_id, video_id, cage_id) in keys:
+            cx_s, cy_s = smooth_centers(np.array(cx), np.array(cy))
+            centers[(camera_id, video_id, cage_id)] = {
+                f: (float(x), float(y)) for f, x, y in zip(frames, cx_s, cy_s)
+            }
+    return centers
 
 
 def center_window(

@@ -1,4 +1,4 @@
-"""Train a VideoMAE-based behavior classification model."""
+"""Fine-tune a video classifier (VideoMAE or V-JEPA 2) for behavior classification."""
 
 from collections.abc import Callable
 from pathlib import Path
@@ -10,11 +10,7 @@ import torch.nn as nn
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
-from transformers import (
-    AutoImageProcessor,
-    VideoMAEForVideoClassification,
-)
-
+from bird_cv.classification.backbones import get_backbone, pixel_values
 from bird_cv.evaluation.metrics import window_macro_f1
 
 
@@ -34,7 +30,7 @@ class BehaviorClipDataset(Dataset):
 
     Args:
         clips_root: Path to the split directory (e.g. ``clips/train``).
-        processor: HuggingFace image processor for the VideoMAE model.
+        processor: The model's HuggingFace image or video processor.
         num_frames: Number of frames per clip. Must match the model's
             expected input length. Defaults to 16.
         label_to_idx: Fixed label-to-index mapping (e.g. the train split's,
@@ -47,7 +43,7 @@ class BehaviorClipDataset(Dataset):
     def __init__(
         self,
         clips_root: Path,
-        processor: AutoImageProcessor,
+        processor: Any,
         num_frames: int = 16,
         *,
         label_to_idx: dict[str, int] | None = None,
@@ -87,10 +83,8 @@ class BehaviorClipDataset(Dataset):
         clip_dir, label_idx = self.clips[idx]
         frame_paths = sorted(clip_dir.glob("*.jpg"))[: self.num_frames]
         frames_np = [np.array(Image.open(p)) for p in frame_paths]  # HWC uint8
-        inputs = self.processor(frames_np, return_tensors="pt")
-
         return {
-            "pixel_values": inputs["pixel_values"].squeeze(0),
+            "pixel_values": pixel_values(self.processor, frames_np),
             "labels": torch.tensor(label_idx, dtype=torch.long),
         }
 
@@ -112,11 +106,13 @@ def train_video_model(
     class_weighted_loss: bool = False,
     save_checkpoint: bool = True,
     epoch_callback: Callable[[dict[str, Any]], None] | None = None,
+    backbone: str = "videomae",
+    input_size: int = 224,
 ) -> dict[str, Any]:
-    """Fine-tune a VideoMAE model for behavior classification.
+    """Fine-tune a video classifier for behavior classification.
 
-    Loads the train and val splits from ``clips_root``, fine-tunes a
-    VideoMAE classification head (and optionally the full encoder), and
+    Loads the train and val splits from ``clips_root``, fine-tunes the
+    model's classification head (and optionally the full encoder), and
     saves the best checkpoint by validation ``selection_metric``
     (window macro-F1 by default).
 
@@ -127,7 +123,7 @@ def train_video_model(
         output_root: Directory where run outputs will be saved.
         output_name: Name of the run — a subdirectory with this name is
             created under ``output_root``.
-        model_checkpoint: Local path to load VideoMAE weights from.
+        model_checkpoint: Pretrained weights (hub id or local path).
         num_frames: Frames per clip — must match what was used in
             :func:`~bird_cv.preprocessing.annotations_to_mae.stream_annotations_to_mae`. Defaults to 16.
         epochs: Number of training epochs. Defaults to 10.
@@ -135,8 +131,8 @@ def train_video_model(
         lr: Learning rate. Defaults to 1e-4.
         device: Device string passed to ``torch.device``. Defaults to
             ``"cuda"``.
-        freeze_encoder: If ``True``, freeze the VideoMAE encoder and only
-            train the classification head. Defaults to ``True``.
+        freeze_encoder: If ``True``, freeze the encoder and train only the
+            backbone's head modules. Defaults to ``True``.
         selection_metric: Validation metric that picks the saved epoch:
             window ``"macro_f1"`` (default, per ADR 0005) or ``"accuracy"``.
             Either way the val split is indexed by the train split's
@@ -151,6 +147,9 @@ def train_video_model(
         epoch_callback: Called after each epoch with that epoch's
             ``epoch``, ``train_loss``, ``val_accuracy`` and
             ``val_macro_f1``, e.g. to report to Ray Tune.
+        backbone: Classifier kind, see
+            :func:`~bird_cv.classification.backbones.get_backbone`.
+        input_size: Side in px of the clip frames.
 
     Returns:
         ``selection_metric``, ``best_score``, ``best_epoch`` (1-indexed)
@@ -166,9 +165,8 @@ def train_video_model(
         print(f"GPU: {torch.cuda.get_device_name(0)}")
 
     print(f"\nLoading model: {model_checkpoint}")
-    processor = AutoImageProcessor.from_pretrained(
-        str(model_checkpoint), num_frames=num_frames
-    )
+    bb = get_backbone(backbone)
+    processor = bb.processor(model_checkpoint, num_frames, input_size)
 
     print("Building datasets...")
     train_ds = BehaviorClipDataset(clips_root / "train", processor, num_frames)
@@ -187,8 +185,10 @@ def train_video_model(
     print(f"  Train clips: {len(train_ds)}")
     print(f"  Val clips:   {len(val_ds)}")
 
-    model = VideoMAEForVideoClassification.from_pretrained(
+    model = bb.pretrained(
         model_checkpoint,
+        num_frames,
+        input_size,
         num_labels=num_classes,
         id2label=id2label,
         label2id=label_to_idx,
@@ -197,7 +197,7 @@ def train_video_model(
 
     if freeze_encoder:
         for name, param in model.named_parameters():
-            if "classifier" not in name:
+            if name.split(".")[0] not in bb.head:
                 param.requires_grad = False
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"  Encoder frozen — trainable params: {trainable:,}")
@@ -241,7 +241,7 @@ def train_video_model(
             pixel_values = batch["pixel_values"].to(dev)
             labels = batch["labels"].to(dev)
 
-            outputs = model(pixel_values=pixel_values)
+            outputs = model(pixel_values)
             loss = criterion(outputs.logits, labels)
 
             optimizer.zero_grad()
@@ -308,7 +308,7 @@ def _class_weights(dataset: BehaviorClipDataset, num_classes: int) -> torch.Tens
 
 
 def predict_clip_indices(
-    model: VideoMAEForVideoClassification,
+    model: Any,
     loader: DataLoader,
     dev: torch.device,
     desc: str = "predict",
@@ -329,7 +329,7 @@ def predict_clip_indices(
     all_preds: list[int] = []
     with torch.no_grad():
         for batch in tqdm(loader, desc=desc, unit="batch", leave=False):
-            outputs = model(pixel_values=batch["pixel_values"].to(dev))
+            outputs = model(batch["pixel_values"].to(dev))
             all_preds.extend(outputs.logits.argmax(dim=-1).cpu().tolist())
             all_labels.extend(batch["labels"].tolist())
     return all_labels, all_preds

@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import re
 import sys
@@ -156,6 +157,31 @@ def test_prepare_build_evaluate_connect(
                 assert (camera, frame) in selected
                 label = out / "labels" / image.parent.name / f"{image.stem}.txt"
                 assert bool(label.read_text().strip()) == ((camera, frame) in boxed)
+
+    # 32 px bird crops are recropped from the cage videos' boxed frames
+    # (canonical 5+, cage frame i filled with i * 10): crop frame 1 is canonical 5
+    recrop = dataclasses.replace(
+        cfg.models.classifier,
+        kind="vjepa2",
+        pretrained="facebook/vjepa2-vitl-fpc64-256",
+        options=cfg.models.classifier.options | {"input_size": 32},
+    )
+    build_datasets(
+        dataclasses.replace(
+            cfg, models=dataclasses.replace(cfg.models, classifier=recrop)
+        ),
+        run_id,
+        roles=["classifier"],
+        processes=1,
+    )
+    recrops = layout.dataset(run_id, "classifier", "videomae_32")
+    frames = [cv2.imread(str(p)) for p in recrops.glob("*/*/*/*.jpg")]
+    assert frames and all(f.shape[:2] == (32, 32) for f in frames)
+    assert min(int(f[16, 16, 0]) for f in frames) >= 45  # never an unboxed frame
+    firsts = list(recrops.glob("*/awake/*/00000.jpg"))  # preening, crop frames 1-7
+    assert firsts
+    for first in firsts:
+        assert abs(int(cv2.imread(str(first))[16, 16, 0]) - 50) <= 5
 
     # Evaluate through the layout: setting 1 perfect, the rest empty
     predictions = truth.with_columns(
