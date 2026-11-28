@@ -1,9 +1,8 @@
 """The class vocabulary shared by ground truth and predictions.
 
-See ``docs/adr/0003-no-bird-class.md``. Built from the ``[behaviors]`` config
-table (``BirdCVConfig.behaviors``); behavior names match the Classify
-project's ``timelinelabels`` exactly, so no translation is needed when
-parsing exports.
+See ``docs/adr/0003-no-bird-class.md``. ``BirdCVConfig.behaviors`` is the
+``[prepare] relabel`` relabeler's (``bird_cv/preprocessing/relabel.py``);
+the defaults are the Classify project's ``timelinelabels``.
 """
 
 from dataclasses import dataclass, field

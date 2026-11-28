@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import msgspec
 import pytest
 
 from bird_cv.core.frames import canonical_to_ls, ls_to_canonical
@@ -51,6 +52,12 @@ def test_optional_config_table_rejects_typos(
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(CONFIG.read_text() + "\n[infer]\ngap_fil_frames = 3\n")
     with pytest.raises(ValueError, match="gap_fil_frames"):
+        load_config(cfg_path)
+    # An unknown relabeler fails at load, not in prepare
+    cfg_path.write_text(
+        CONFIG.read_text().replace('"activity_groups"', '"activity_group"')
+    )
+    with pytest.raises(msgspec.ValidationError, match="relabel"):
         load_config(cfg_path)
 
 

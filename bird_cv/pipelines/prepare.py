@@ -1,4 +1,4 @@
-"""Prepare a dataset: snapshot → ground truth → split → summary → sampling.
+"""Prepare a dataset: snapshot → relabel → ground truth → split → summary → sampling.
 
 Writes ``datasets/{dataset_id}/`` (see :class:`bird_cv.core.layout.Layout`);
 the dataset id is ``--run-id`` (a timestamp if not given). Its manifest's
@@ -145,6 +145,8 @@ def run_prepare(
         "standardized_max_frames": pcfg.standardized_max_frames,
         "standard_fps": cfg.standard_fps,
         "behaviors": asdict(cfg.behaviors),
+        "relabel": pcfg.relabel,
+        "relabel_options": pcfg.relabel_options,
     }
     detect_path, classify_path = snapshot_files(annotations)
     detect_tasks = json.loads(detect_path.read_text())
@@ -156,7 +158,7 @@ def run_prepare(
     )
     result = build_ground_truth(
         detect_tasks,
-        json.loads(classify_path.read_text()),
+        pcfg.relabeler()(json.loads(classify_path.read_text())),
         cfg.standard_fps,
         cfg.behaviors,
         standard_counts=standard_counts(rates),
@@ -170,6 +172,7 @@ def run_prepare(
         split_ratio=pcfg.split_ratio,
         seed=pcfg.split_seed,
         vocab=cfg.behaviors,
+        relabel=pcfg.relabel,
     )
     split = pl.read_parquet(layout.split(version))
 

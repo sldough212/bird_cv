@@ -1,12 +1,15 @@
 """Camera splits: the frozen, append-only split of the new pipelines, and
 the split guidance of the Label Studio pipelines.
 
-See ``docs/adr/0001-split-by-camera.md``. The first frozen version is chosen
-once by a deterministic rule (:data:`SPLIT_RULE`) so that every behavior is in
-train and test (val best effort). Later versions only append newly labeled
-cameras; a camera's split never changes once assigned. Each version writes
-``split_v{n}/manifest.json`` with its rule and per-camera behavior frame
-counts. :func:`simulate_split_guidance` and :func:`split_guidance_within_camera`
+See ``docs/adr/0001-split-by-camera.md`` and
+``docs/adr/0008-relabeling-and-split-schemes.md``. Each label scheme (relabeler
+plus behavior names) has its own lineage of versions in one numbered sequence.
+A scheme's first version is chosen by a deterministic rule
+(:data:`SPLIT_RULE`), sized by ``split_ratio``, so that every behavior is in
+train and test (val best effort). Its later versions only append newly labeled
+cameras; a camera's split never changes once assigned within a scheme. Each
+version writes ``split_v{n}/manifest.json`` with its scheme, rule and
+per-camera behavior frame counts. :func:`simulate_split_guidance` and :func:`split_guidance_within_camera`
 serve the Label Studio upload pipelines.
 """
 
@@ -26,19 +29,40 @@ from bird_cv.core.layout import (
     split_manifest_dir,
     split_version_of,
 )
-from bird_cv.core.manifest import new_manifest, write_manifest
+from bird_cv.core.manifest import new_manifest, read_manifest, write_manifest
 from bird_cv.core.schemas import SPLIT_SCHEMA, SPLITS
 
 logger = logging.getLogger(__name__)
 
 
-def latest_split_version(splits_dir: Path) -> int | None:
-    """Highest split version written in ``splits_dir``, or None if there is none."""
+def split_scheme(relabel: str, vocab: Behaviors) -> dict[str, object]:
+    """The label scheme a split version is chosen for."""
+    return {"relabel": relabel, "behaviors": list(vocab.names)}
+
+
+def latest_split_version(
+    splits_dir: Path, scheme: dict[str, object] | None = None
+) -> int | None:
+    """Highest split version in ``splits_dir``, or None if there is none.
+
+    With ``scheme``, only versions of that scheme count; a version whose
+    manifest records none is the default 8-behavior ``identity`` scheme.
+    """
     versions = [
         v
         for p in splits_dir.glob("split_v*.parquet")
         if (v := split_version_of(p)) is not None
     ]
+    if scheme is not None:
+        default = split_scheme("identity", Behaviors())
+        versions = [
+            v
+            for v in versions
+            if read_manifest(split_manifest_dir(splits_dir, v)).config.get(
+                "scheme", default
+            )
+            == scheme
+        ]
     return max(versions, default=None)
 
 
@@ -49,7 +73,7 @@ def camera_behaviors(
 
     Args:
         ground_truth: Table with ``camera_id`` and ``label`` columns.
-        vocab: The class vocabulary (``[behaviors]`` in config).
+        vocab: The class vocabulary (``BirdCVConfig.behaviors``).
 
     Returns:
         The set of behaviors (not ``no_bird``) on each camera; every camera
@@ -79,7 +103,7 @@ def camera_behavior_frames(
 
     Args:
         ground_truth: Table with ``camera_id`` and ``label`` columns.
-        vocab: The class vocabulary (``[behaviors]`` in config).
+        vocab: The class vocabulary (``BirdCVConfig.behaviors``).
 
     Returns:
         ``{camera_id: {behavior: frames}}``; every camera in the table is a
@@ -103,17 +127,18 @@ def _rank(
     cameras: tuple[str, ...],
     frames: Mapping[str, Mapping[str, int]],
     totals: Mapping[str, int],
+    share: float,
 ) -> tuple[float, int, int, tuple[str, ...]]:
-    """Rare-frame cost of holding ``cameras`` out of train (lower is better).
+    """How far holding ``cameras`` out is from ``share`` of every behavior.
 
-    The cost is the sum over behaviors of the cameras' share of that
-    behavior's frames, so taking a rare behavior's only stretches costs more
-    than taking a lot of resting. Ties go to fewer frames, then fewer
-    cameras, then names.
+    The cost is the sum over behaviors of (the cameras' share of that
+    behavior's frames - ``share``) squared, so a held-out split gets about
+    its ``split_ratio`` of every behavior, rare ones included. Lower is
+    better; ties go to fewer frames, then fewer cameras, then names.
     """
     held = {b: sum(frames[c].get(b, 0) for c in cameras) for b in totals}
     return (
-        sum(held[b] / totals[b] for b in totals),
+        sum((held[b] / totals[b] - share) ** 2 for b in totals),
         sum(held.values()),
         len(cameras),
         cameras,
@@ -121,36 +146,44 @@ def _rank(
 
 
 SPLIT_RULE = (
-    "test: the camera pair covering every behavior with the lowest "
-    "sum over behaviors of (pair frames / total frames), ties to fewer frames; "
-    "val: 1-2 of the remaining cameras covering the most behaviors, same "
-    "score; train: the rest, which must keep every behavior"
+    "test: round(split_ratio test x cameras) cameras covering every behavior "
+    "with the lowest sum over behaviors of (test frames / total frames - "
+    "split_ratio test)^2, ties to fewer frames; val: round(split_ratio val x "
+    "cameras) of the remaining cameras covering the most behaviors, same "
+    "score with split_ratio val; train: the rest, which must keep every "
+    "behavior"
 )
 """How :func:`choose_initial_split` picks cameras, recorded in the manifest."""
 
 
 def choose_initial_split(
     frames: Mapping[str, Mapping[str, int]],
+    split_ratio: Mapping[str, float],
 ) -> dict[str, list[str]]:
-    """Choose the first camera split by rule (see :data:`SPLIT_RULE`).
+    """Choose a scheme's first camera split by rule (see :data:`SPLIT_RULE`).
 
-    Test is the pair of cameras covering every behavior that removes the
-    fewest rare-behavior frames from training; val is the 1-2 remaining
+    Test is the ``split_ratio`` share of cameras (at least one) covering
+    every behavior whose share of each behavior's frames is closest to its
+    ``split_ratio``; val is the ``split_ratio`` share of the remaining
     cameras covering as many behaviors as possible, ranked the same way;
-    train is everything else. A candidate is only allowed if train keeps
-    every behavior. Deterministic: ties go to fewer frames, then names.
+    train is everything else. A candidate is only allowed if train keeps every
+    behavior. Deterministic: ties go to fewer frames, then names.
 
     Args:
         frames: Frames of each behavior on each camera.
+        split_ratio: Fraction of cameras, and target fraction of each
+            behavior's frames, in each split.
 
     Returns:
         Cameras in each split.
 
     Raises:
-        ValueError: If no camera pair covers every behavior while leaving
+        ValueError: If no test group covers every behavior while leaving
             every behavior in train.
     """
     cameras = sorted(frames)
+    n_test = max(1, round(split_ratio["test"] * len(cameras)))
+    n_val = round(split_ratio["val"] * len(cameras))
     totals: dict[str, int] = {}
     for counts in frames.values():
         for b, n in counts.items():
@@ -162,29 +195,28 @@ def choose_initial_split(
 
     tests = sorted(
         (
-            _rank(pair, frames, totals)
-            for pair in combinations(cameras, 2)
-            if covers(pair) == target
-            and covers(c for c in cameras if c not in pair) == target
+            _rank(group, frames, totals, split_ratio["test"])
+            for group in combinations(cameras, n_test)
+            if covers(group) == target
+            and covers(c for c in cameras if c not in group) == target
         ),
     )
     if not tests:
         raise ValueError(
-            "No camera pair covers every behavior while leaving every behavior "
-            f"in train; behaviors per camera: {dict(frames)}"
+            f"No {n_test} test cameras cover every behavior while leaving every "
+            f"behavior in train; behaviors per camera: {dict(frames)}"
         )
     test = tests[0][3]
 
     rest = [c for c in cameras if c not in test]
     vals = sorted(
-        (-len(covers(group)), *_rank(group, frames, totals))
-        for size in (1, 2)
-        for group in combinations(rest, size)
+        (-len(covers(group)), *_rank(group, frames, totals, split_ratio["val"]))
+        for group in combinations(rest, n_val)
         if covers(c for c in rest if c not in group) == target
     )
     val = vals[0][4] if vals else ()
-    if not vals:
-        logger.warning("No val camera leaves every behavior in train; val is empty")
+    if not val:
+        logger.warning("Val is empty (too few cameras, or none leaving train whole)")
     elif -vals[0][0] < len(target):
         logger.warning("Val lacks %s", sorted(target - covers(val)))
     return {
@@ -278,7 +310,7 @@ def split_behavior_frames(
     Args:
         split: Split assignment in :data:`~bird_cv.core.schemas.SPLIT_SCHEMA`.
         frames: Frames of each behavior on each camera.
-        vocab: The class vocabulary (``[behaviors]`` in config).
+        vocab: The class vocabulary (``BirdCVConfig.behaviors``).
 
     Returns:
         ``{split: {behavior: frames}}`` for every split and every behavior.
@@ -296,31 +328,35 @@ def update_split(
     split_ratio: dict[str, float],
     seed: int,
     vocab: Behaviors,
+    relabel: str = "identity",
 ) -> int:
-    """Return the split version covering every camera, writing a new one if needed.
+    """Return the scheme's split version covering every camera, writing one if needed.
 
-    With no split yet, chooses version 1 with :func:`choose_initial_split`. If the ground truth has cameras the
-    latest version lacks, writes version ``n + 1``: the old rows unchanged
-    plus the new cameras. Otherwise writes nothing.
+    The scheme is ``relabel`` plus ``vocab``'s names. With no version of it
+    yet, writes the next version number chosen by
+    :func:`choose_initial_split`. If the ground truth has cameras the
+    scheme's latest version lacks, writes the next version number: that
+    version's rows unchanged plus the new cameras. Otherwise writes nothing.
 
     Args:
         ground_truth: Table with ``camera_id`` and ``label`` columns.
         splits_dir: Directory holding ``split_v{n}.parquet``.
-        split_ratio: Target fraction of cameras per split, used only when
-            appending cameras.
+        split_ratio: Target fraction of cameras per split.
         seed: Base random seed for appending cameras.
-        vocab: The class vocabulary (``[behaviors]`` in config).
+        vocab: The class vocabulary (``BirdCVConfig.behaviors``).
+        relabel: The relabeler ground truth was built with.
 
     Returns:
         The split version to use.
     """
     behaviors = camera_behaviors(ground_truth, vocab)
     behavior_frames = camera_behavior_frames(ground_truth, vocab)
-    latest = latest_split_version(splits_dir)
+    scheme = split_scheme(relabel, vocab)
+    latest = latest_split_version(splits_dir, scheme)
 
     if latest is None:
-        version = 1
-        draw = choose_initial_split(behavior_frames)
+        version = (latest_split_version(splits_dir) or 0) + 1
+        draw = choose_initial_split(behavior_frames, split_ratio)
         rule = SPLIT_RULE
         split = pl.DataFrame(
             [
@@ -337,7 +373,7 @@ def update_split(
         if not new:
             logger.info("Split v%d already covers every camera", latest)
             return latest
-        version = latest + 1
+        version = (latest_split_version(splits_dir) or 0) + 1
         rule = (
             f"v{latest} unchanged; new cameras to train if both train and test "
             "lack one of their behaviors, else to test/train/val if it lacks one, "
@@ -371,6 +407,7 @@ def update_split(
             "split",
             split_version=version,
             config={
+                "scheme": scheme,
                 "rule": rule,
                 "split_ratio": split_ratio,
                 "seed": seed,

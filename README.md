@@ -27,9 +27,10 @@ cluster, submit the whole chain as SLURM jobs:
 `submit.sh` chains these stages, each one also runnable by itself as
 `python bird_cv/pipelines/<stage>.py CONFIG ...`:
 
-1. **prepare**: snapshot the Label Studio exports, build ground truth on
-   canonical frames, assign cameras to the frozen split, sample training
-   frames and clips.
+1. **prepare**: snapshot the Label Studio exports, relabel the Classify
+   labels (`[prepare] relabel`), build ground truth on canonical frames,
+   assign cameras to the label scheme's frozen split, sample training frames
+   and clips.
 2. **build_datasets**: write the YOLO and VideoMAE training data.
 3. **train** (one job per `[models]` role) and its model evaluation.
 4. **infer**: run end to end on the val cameras for every `[evaluate]`
@@ -45,8 +46,12 @@ Useful options:
 
 Models are picked in config: `[models.detector]` and `[models.classifier]`
 `kind`, and `[infer.segmenter]`. Ray Tune is off unless a model sets
-`tune = true`. `standard_fps` and the `[behaviors]` table set the frame rate
-and class vocabulary.
+`tune = true`. `standard_fps` sets the frame rate. `[prepare] relabel` maps
+the Classify labels onto a label scheme whose classes are the class vocabulary
+(`config.toml` groups them into awake / restful / restless). To
+relabel or resplit already downloaded data, rerun prepare with
+`--detect-export` / `--classify-export` pointing at a dataset's
+`annotations/` files.
 
 ### Label Studio pipelines
 
@@ -60,7 +65,7 @@ the older paths derived from `path_to_base_output`.
 Under `path_to_base_output`:
 
 ```
-splits/split_v{n}.parquet        frozen camera split, shared by every run
+splits/split_v{n}.parquet        frozen camera split of one label scheme
 datasets/{id}/                   prepare + build_datasets output; a symlink if
                                  an identical dataset already exists
 models/{role}/{id}/              a training run
