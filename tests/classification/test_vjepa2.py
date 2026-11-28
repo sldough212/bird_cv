@@ -7,6 +7,7 @@ import pytest
 import torch
 from PIL import Image
 from transformers import (
+    VideoMAEConfig,
     VJEPA2Config,
     VJEPA2ForVideoClassification,
     VJEPA2VideoProcessor,
@@ -82,3 +83,8 @@ def test_frozen_vjepa2_trains_head_and_predicts(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="48 px|input_size"):
         VideoClassifier(str(best), num_frames=FRAMES, input_size=48, backbone="vjepa2")
+
+    # A leftover VideoMAE checkpoint is refused, not loaded with random weights
+    VideoMAEConfig().save_pretrained(tmp_path / "videomae")
+    with pytest.raises(ValueError, match="videomae checkpoint"):
+        VideoClassifier(str(tmp_path / "videomae"), backbone="vjepa2")

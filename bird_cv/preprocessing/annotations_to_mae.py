@@ -222,12 +222,15 @@ def process_item(
     if square_size is not None:
         frames = [square_frame(f, square_size) for f in frames]
     if crop_centers is not None:
-        if max(crop_centers) >= len(frames):
-            print(f"Boxes past the end of {full_video_path}, skipping.")
-            return
+        boxed = [f for f in sorted(crop_centers) if f < len(frames)]
+        if len(boxed) < len(crop_centers):
+            # Only trailing crop frames go, so earlier ones keep their index
+            print(
+                f"{len(crop_centers) - len(boxed)} boxes past the end of"
+                f" {full_video_path} ({len(frames)} frames), dropped."
+            )
         frames = [
-            crop_bird(frames[f], *crop_centers[f], crop_size=crop_size)
-            for f in sorted(crop_centers)
+            crop_bird(frames[f], *crop_centers[f], crop_size=crop_size) for f in boxed
         ]
 
     if ranges_by_cage is not None:

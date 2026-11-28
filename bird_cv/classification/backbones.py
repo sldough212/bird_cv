@@ -15,6 +15,7 @@ import numpy as np
 import torch
 
 from transformers import (
+    AutoConfig,
     AutoImageProcessor,
     AutoVideoProcessor,
     VideoMAEForVideoClassification,
@@ -50,6 +51,12 @@ class Backbone:
 
     def fine_tuned(self, path: str | Path, num_frames: int, input_size: int) -> Any:
         """A fine-tuned checkpoint, checked against the run's settings."""
+        # Another architecture's weights would load with random weights and
+        # only a warning, so check the saved config before loading
+        saved = AutoConfig.from_pretrained(path).model_type
+        expected = self.model_class.config_class.model_type
+        if saved != expected:
+            raise ValueError(f"{path} is a {saved} checkpoint, not {expected}")
         model = self.model_class.from_pretrained(path)
         self.check(model.config, num_frames, input_size)
         return model

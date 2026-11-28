@@ -57,8 +57,8 @@ def evaluate_video_model(
     dev = torch.device(device if torch.cuda.is_available() else "cpu")
 
     bb = get_backbone(backbone)
-    processor = bb.processor(model_path, num_frames, input_size)
     model = bb.fine_tuned(model_path, num_frames, input_size).to(dev)
+    processor = bb.processor(model_path, num_frames, input_size)
     model.eval()
 
     label_to_idx = dict(model.config.label2id)
